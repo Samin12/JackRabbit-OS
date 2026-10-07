@@ -31,6 +31,7 @@ include(
     ":feature:background-run",
     ":feature:genui",
     ":feature:t3",
+    ":feature:compose",
     ":runtime-host",
     ":system:motor-service",
     ":system:power-overlay",
