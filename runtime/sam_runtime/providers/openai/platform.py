@@ -290,10 +290,11 @@ DICTATION_INSTRUCTION = (
     "Never respond, never call tools, never speak."
 )
 
-# Dictation is English: without a language the transcriber turns room noise into text in other
-# scripts (seen on the R1). Server VAD needs a clear voice near the mic (Voice uses 0.92).
+# Dictation is English: without a language the transcriber turned room noise into text in another
+# script (seen on the R1). VAD 0.6 hears a normal voice at arm's length; 0.7 missed a phrase from a
+# nearby speaker in the device test (Voice uses 0.92, but it talks back and must ignore itself).
 DICTATION_LANGUAGE = "en"
-DICTATION_VAD_THRESHOLD = 0.7
+DICTATION_VAD_THRESHOLD = 0.6
 
 # Tried in order until OpenAI accepts one (the ChatGPT subscription credential may not allow a
 # transcription-only session); the controller remembers the first accepted variant.
