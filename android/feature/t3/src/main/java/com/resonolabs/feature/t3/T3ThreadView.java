@@ -570,7 +570,8 @@ final class T3ThreadView extends View {
             pieces.add(notice);
             y += 100f;
         }
-        if (thread != null && T3Status.working(thread.status)) {
+        boolean streamingLast = !messages.isEmpty() && messages.get(messages.size() - 1).streaming;
+        if (thread != null && T3Status.working(thread.status) && !streamingLast) {
             Piece typing = new Piece(Kind.TYPING);
             typing.text = thread.phase.isEmpty() ? "Working…" : thread.phase;
             typing.rect.set(24f, y, 464f, y + 30f);
@@ -724,9 +725,10 @@ final class T3ThreadView extends View {
             if (cut) break;
         }
         if (message.streaming) {
+            T3Model.Summary thread = current();
             Piece typing = new Piece(Kind.TYPING);
-            typing.text = "";
-            typing.rect.set(26f, y + 6f, 200f, y + 30f);
+            typing.text = thread == null || thread.phase.isEmpty() ? "" : thread.phase;
+            typing.rect.set(26f, y + 6f, 464f, y + 30f);
             pieces.add(typing);
             y += 30f;
         }
