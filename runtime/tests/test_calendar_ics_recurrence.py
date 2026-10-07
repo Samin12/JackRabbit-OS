@@ -174,6 +174,23 @@ SUMMARY:Until
         self.assertEqual(["2026-10-06T14:00Z", "2026-10-07T14:00Z", "2026-10-08T14:00Z"], starts(events, "Count"))
         self.assertEqual(["2026-10-07T13:00Z", "2026-10-09T13:00Z", "2026-10-12T13:00Z"], starts(events, "Until"))
 
+    def test_weekly_interval_periods_start_on_the_rules_week_start(self) -> None:
+        # Every 2 weeks on Sunday and Monday from Sunday Oct 4. With WKST=SU (as Google writes it)
+        # Sunday and Monday share a period; with the default WKST=MO they fall in different weeks.
+        biweekly = """
+DTSTART;TZID=America/New_York:20261004T100000
+DTEND;TZID=America/New_York:20261004T110000
+RRULE:FREQ=WEEKLY;{wkst}INTERVAL=2;BYDAY=SU,MO
+UID:biweekly-{name}
+SUMMARY:{name}
+"""
+        events = parse(feed(biweekly.format(wkst="WKST=SU;", name="Sunday weeks"),
+                            biweekly.format(wkst="", name="Monday weeks")), WINDOW_FROM, WINDOW_FROM + timedelta(days=30))
+        self.assertEqual(["2026-10-18T14:00Z", "2026-10-19T14:00Z", "2026-11-01T15:00Z", "2026-11-02T15:00Z"],
+                         starts(events, "Sunday weeks"))
+        self.assertEqual(["2026-10-12T14:00Z", "2026-10-18T14:00Z", "2026-10-26T14:00Z", "2026-11-01T15:00Z"],
+                         starts(events, "Monday weeks"))
+
     def test_monthly_and_yearly_rules(self) -> None:
         events = parse(feed("""
 DTSTART:20260113T150000Z

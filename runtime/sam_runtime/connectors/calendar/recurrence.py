@@ -5,7 +5,7 @@ and repeat them with ``RRULE`` masters plus ``RECURRENCE-ID`` overrides and ``EX
 This module resolves the zones (IANA names through ``zoneinfo``, which the Android build gets
 from the bundled ``tzdata`` wheel, plus the common Windows names) and expands DAILY, WEEKLY,
 MONTHLY and YEARLY rules with INTERVAL, COUNT, UNTIL, BYDAY (with ordinals for monthly and
-yearly rules), BYMONTHDAY and BYMONTH. Rules are expanded in wall-clock time, so a 7:00 event
+yearly rules), BYMONTHDAY, BYMONTH and WKST. Rules are expanded in wall-clock time, so a 7:00 event
 stays at 7:00 across daylight-saving changes. Unsupported rules (BYSETPOS, BYWEEKNO, sub-daily
 frequencies) return ``None`` and the caller keeps the first occurrence only, as before.
 """
@@ -87,6 +87,9 @@ class Rule:
     by_day: tuple[tuple[int, int], ...]
     by_month_day: tuple[int, ...]
     by_month: tuple[int, ...]
+    # WKST (0 = Monday): where a WEEKLY period starts. Matters with INTERVAL > 1, e.g. Google's
+    # "every 2 weeks on Sunday and Monday" with WKST=SU keeps Sunday and Monday in one period.
+    week_start: int = 0
 
 
 def parse_rule(value: str, *, zone: tzinfo | None, all_day: bool) -> Rule | None:
@@ -106,6 +109,7 @@ def parse_rule(value: str, *, zone: tzinfo | None, all_day: bool) -> Rule | None
         by_month_day = tuple(int(item) for item in _items(parts.get("BYMONTHDAY")))
         by_month = tuple(int(item) for item in _items(parts.get("BYMONTH")))
         until = _until(parts.get("UNTIL"), zone=zone, all_day=all_day)
+        week_start = _WEEKDAYS.get(parts.get("WKST", "MO").upper(), 0)
     except (ValueError, KeyError):
         return None
     if count is not None and count < 1:
@@ -114,7 +118,7 @@ def parse_rule(value: str, *, zone: tzinfo | None, all_day: bool) -> Rule | None
         return None
     if freq == "YEARLY" and by_day and not by_month:
         return None  # ordinals within the whole year ("20MO") are not expanded
-    return Rule(freq, interval, count, until, by_day, by_month_day, by_month)
+    return Rule(freq, interval, count, until, by_day, by_month_day, by_month, week_start)
 
 
 def expand(
@@ -231,7 +235,7 @@ def _period_start(rule: Rule, first: date, index: int) -> date:
     if rule.freq == "DAILY":
         return first + timedelta(days=index * rule.interval)
     if rule.freq == "WEEKLY":
-        return first - timedelta(days=first.weekday()) + timedelta(weeks=index * rule.interval)
+        return first - timedelta(days=(first.weekday() - rule.week_start) % 7) + timedelta(weeks=index * rule.interval)
     if rule.freq == "MONTHLY":
         year, month = _add_months(first, index * rule.interval)
         return date(year, month, 1)
@@ -265,7 +269,7 @@ def _period_days(rule: Rule, first: date, index: int) -> list[date] | None:
         days = [start]
     elif rule.freq == "WEEKLY":
         weekdays = sorted({weekday for _, weekday in rule.by_day}) or [first.weekday()]
-        days = [start + timedelta(days=weekday) for weekday in weekdays]
+        days = [start + timedelta(days=(weekday - rule.week_start) % 7) for weekday in weekdays]
     elif rule.freq == "MONTHLY":
         days = _month_days(rule, first, start.year, start.month)
     else:
