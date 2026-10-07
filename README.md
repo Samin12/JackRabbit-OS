@@ -5,10 +5,6 @@
 > Hey, dude, this works on your GPT subscriptions. It's meant to use T3 Code and Hermes Agent, et cetera, as an orchestrator.
 
 <p align="center">
-  <img src="images/r1-device-photo.jpg" width="42%" alt="SAM Project running on a Rabbit R1">
-</p>
-
-<p align="center">
   <img src="images/r1-voice.png" width="30%" alt="Voice page with the floating orb">
   &nbsp;
   <img src="images/r1-cards-calendar.png" width="30%" alt="Calendar card">
