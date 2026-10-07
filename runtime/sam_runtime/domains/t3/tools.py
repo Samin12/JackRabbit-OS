@@ -219,7 +219,7 @@ class T3ToolHandlers:
         text = " ".join(str(query or "").split())
         if not text:
             raise T3InvalidRequest("Say which thread.")
-        self._service.ensure_snapshot()
+        self._service.ensure_snapshot(required=True)
         summaries = self._service.summaries()
         result = match_item(text, summaries)
         if result.item is not None:
@@ -250,6 +250,7 @@ class T3ToolHandlers:
     def _list(self, arguments: dict[str, object]) -> dict[str, object]:
         if not self._service.connected():
             raise T3NotConnected("T3 Code is not connected.")
+        self._service.ensure_snapshot(required=True)
         view = self._service.threads_view(limit=100)
         threads = list(view["threads"])
         mode = str(arguments.get("filter") or "all")

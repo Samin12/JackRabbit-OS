@@ -4,12 +4,15 @@ import json
 import unittest
 
 from sam_runtime.agents import AgentKind
+from sam_runtime.domains.t3.service import T3Service
 from sam_runtime.domains.t3.tools import MAX_OUTPUT_BYTES, register_t3_tools
+from sam_runtime.security.credentials import ConnectionCredentialEnvelopes
 from sam_runtime.tools import ToolCatalog
 
 from t3_fixtures import (
     PAIRING_CODE,
     FakeT3Server,
+    StubBridge,
     approval_requested,
     detail,
     input_requested,
@@ -25,7 +28,7 @@ TOOL_NAMES = {"t3_list_threads", "t3_read_thread", "t3_new_thread", "t3_send_mes
 class T3VoiceToolsTest(unittest.TestCase):
     def setUp(self) -> None:
         self.fake = FakeT3Server().__enter__()
-        self.service, _, _, _, self.directory = make_service()
+        self.service, _, self.repository, _, self.directory = make_service()
         self.catalog = ToolCatalog()
         register_t3_tools(self.catalog, self.service)
 
@@ -104,6 +107,25 @@ class T3VoiceToolsTest(unittest.TestCase):
         self.assertIn("Several threads could match", value)
         ok, value = self._call("t3_read_thread", {"thread": "quantum toaster"})
         self.assertFalse(ok)
+
+    def test_unreachable_mac_before_the_first_sync_is_reported_as_unreachable(self) -> None:
+        # Runtime restarted while the Mac sleeps: paired, but no snapshot yet. Voice must
+        # not hear "no projects yet" or "no threads".
+        self._connect([thread("a", "Fix the login bug")])
+        restarted = T3Service(self.repository, ConnectionCredentialEnvelopes(StubBridge()))
+        catalog = ToolCatalog()
+        register_t3_tools(catalog, restarted)
+        self.fake.unavailable = True
+        count = len(self.fake.dispatched)
+        for name, arguments in (
+            ("t3_new_thread", {"prompt": "Add dark mode"}),
+            ("t3_list_threads", {}),
+            ("t3_read_thread", {"thread": "login bug"}),
+        ):
+            result = catalog.invoke(name, arguments, agent=AgentKind.VOICE)
+            self.assertTrue(result.is_error, result.text)
+            self.assertIn("unreachable", result.text, name)
+        self.assertEqual(count, len(self.fake.dispatched))
 
     def test_latest_means_most_recently_active_not_highest_priority(self) -> None:
         self._connect([

@@ -417,15 +417,21 @@ class T3Service:
             self._announce(record, client, transitions)
         return self.has_active()
 
-    def ensure_snapshot(self) -> None:
-        """Load the first snapshot on demand (route/tool called before the poller ran)."""
+    def ensure_snapshot(self, *, required: bool = False) -> None:
+        """Load the first snapshot on demand (route/tool called before the poller ran).
+
+        ``required`` re-raises the failure when there is still no snapshot, so callers
+        that would otherwise report "no projects" or "no threads" say the Mac is
+        unreachable instead.
+        """
         with self._lock:
             ready = self._has_snapshot
         if not ready:
             try:
                 self.sync_once(probe=False)
             except T3Error:
-                pass
+                if required:
+                    raise
 
     def _apply_shell(self, shell: dict[str, object]) -> list[Transition]:
         sequence = shell.get("snapshotSequence")
@@ -814,7 +820,7 @@ class T3Service:
         return value if isinstance(value, dict) else {}
 
     def resolve_project(self, project_id: str | None = None, project: str | None = None) -> dict[str, object]:
-        self.ensure_snapshot()
+        self.ensure_snapshot(required=True)
         with self._lock:
             projects = list(self._projects)
             order = [item["id"] for item in self._project_views]
