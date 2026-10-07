@@ -113,12 +113,13 @@ class HttpTransport:
         finally:
             connection.close()
 
-    def post_form(self, url: str, fields: dict[str, str]) -> HttpResponse:
+    def post_form(self, url: str, fields: dict[str, str], *, timeout: float | None = None) -> HttpResponse:
         return self.request(
             "POST",
             url,
             body=urlencode(fields).encode(),
             headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
+            timeout=timeout,
         )
 
     def post_json(self, url: str, payload: dict[str, object]) -> HttpResponse:

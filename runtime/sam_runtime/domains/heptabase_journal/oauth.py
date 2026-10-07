@@ -43,6 +43,9 @@ CLIENT_NAME = "SamRabbit R1 Journal"
 STATE_TTL_SECONDS = 600
 REFRESH_LEEWAY_SECONDS = 300
 MAX_PENDING = 8
+# Two revocations run inside the management disconnect request, which the :8443 proxy
+# abandons after 30 s (ManagementRuntimeProxy.readTimeoutMillis); keep both well under it.
+REVOKE_TIMEOUT_SECONDS = 10.0
 _LOG = runtime_logger()
 
 
@@ -288,7 +291,7 @@ class HeptabaseOAuth:
             try:
                 self._transport.post_form(self._endpoints.revocation, {
                     "token": token, "token_type_hint": hint, "client_id": str(record.get("client_id", "")),
-                })
+                }, timeout=REVOKE_TIMEOUT_SECONDS)
             except HeptabaseError:
                 _LOG.warning("heptabase.revoke.unreachable", extra={"hint": hint})
 

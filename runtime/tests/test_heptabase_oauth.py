@@ -8,6 +8,7 @@ from heptabase_fakes import JournalHarness
 
 from sam_runtime.domains.heptabase_journal import (AuthorizationError, HEPTABASE_CONNECTION_ID,
                                                    LOOPBACK_REDIRECT_URI, NotConnected, ReconnectRequired)
+from sam_runtime.domains.heptabase_journal.client import HttpTransport
 
 
 class HeptabaseOAuthTest(unittest.TestCase):
@@ -218,6 +219,23 @@ class HeptabaseOAuthTest(unittest.TestCase):
         self.assertIsNone(self.h.credentials.get_envelope(HEPTABASE_CONNECTION_ID))
         with self.assertRaises(NotConnected):
             self.h.service.record_note("hello")
+
+    def test_disconnect_fits_inside_the_proxy_timeout(self) -> None:
+        timeouts: list[float | None] = []
+
+        class Recording(HttpTransport):
+            def request(self, method, url, **kwargs):  # noqa: ANN001
+                if url.endswith("/token/revocation"):
+                    timeouts.append(kwargs.get("timeout"))
+                return super().request(method, url, **kwargs)
+
+        harness = JournalHarness(transport=Recording(timeout=20.0))
+        self.addCleanup(harness.close)
+        harness.connect()
+        harness.service.disconnect()
+        self.assertEqual(2, len(timeouts), "refresh and access token are both revoked")
+        # ManagementRuntimeProxy gives /v1/management/heptabase/disconnect 30 s in total.
+        self.assertLess(sum(value or 20.0 for value in timeouts), 30.0)
 
     def test_reconnect_revokes_the_previous_grant(self) -> None:
         self.h.connect()
