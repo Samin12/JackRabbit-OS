@@ -68,6 +68,15 @@ public final class T3FakeBackendTest {
     }
 
     @Test
+    public void emptyModeIsConnectedWithProjectsButNoThreads() {
+        T3Model.Snapshot snapshot = T3Model.Snapshot.from(new T3FakeBackend(NOW, false).threads(NOW, 40));
+        assertTrue(snapshot.connected);
+        assertTrue(snapshot.threads.isEmpty());
+        assertEquals(3, snapshot.projects.size());
+        assertEquals("p-samrabbit", snapshot.defaultProject().id);
+    }
+
+    @Test
     public void unchangedStateKeepsRevisionStable() {
         T3FakeBackend fake = new T3FakeBackend(NOW);
         long first = fake.threads(NOW, 40).optLong("revision");

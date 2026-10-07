@@ -13,7 +13,7 @@ import org.json.JSONObject;
 
 /**
  * The T3 tab's single data source. Normally a thin parser over {@link T3Client}; in a debuggable
- * build with {@code debug.sam.t3.fake=1} it falls back to {@link T3FakeBackend} when the runtime
+ * build with {@code debug.sam.t3.fake=1} (or {@code =empty}) it falls back to {@link T3FakeBackend} when the runtime
  * answers 404 for the T3 routes (they are not installed yet). Everything is delivered on the
  * main thread.
  */
@@ -38,6 +38,7 @@ final class T3Repository implements AutoCloseable {
     private final Handler main = new Handler(Looper.getMainLooper());
     /** Demo backend; kept across re-probes so its state survives tab switches. */
     private T3FakeBackend demo;
+    private boolean demoEmpty;
     /** Non-null while serving demo data. */
     private T3FakeBackend fake;
     private boolean closed;
@@ -204,9 +205,11 @@ final class T3Repository implements AutoCloseable {
 
     private boolean enterFakeIfMissing(T3Client.Failure failure) {
         if (closed || fake != null || !failure.routeMissing() || !fakeAllowed()) return false;
-        if (demo == null) {
-            Log.i(LOG_TAG, "runtime has no /v1/t3 routes; serving demo data (" + FAKE_PROPERTY + "=1)");
-            demo = new T3FakeBackend(System.currentTimeMillis());
+        boolean empty = "empty".equals(systemProperty(FAKE_PROPERTY));
+        if (demo == null || demoEmpty != empty) {
+            Log.i(LOG_TAG, "runtime has no /v1/t3 routes; serving " + (empty ? "empty " : "") + "demo data");
+            demo = new T3FakeBackend(System.currentTimeMillis(), !empty);
+            demoEmpty = empty;
         }
         fake = demo;
         return true;
@@ -218,7 +221,8 @@ final class T3Repository implements AutoCloseable {
 
     private boolean fakeAllowed() {
         boolean debuggable = (context.getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
-        return debuggable && "1".equals(systemProperty(FAKE_PROPERTY));
+        String value = systemProperty(FAKE_PROPERTY);
+        return debuggable && ("1".equals(value) || "empty".equals(value));
     }
 
     private static String systemProperty(String key) {

@@ -171,6 +171,7 @@ public final class T3PageView extends FrameLayout implements UiInputTarget, Auto
         String id = thread.threadId();
         T3Model.Summary shown = thread.summary();
         if (shown != null && shown.unread) repository.seen(id);
+        list.resetFocus();
         showList();
     }
 
@@ -332,7 +333,11 @@ public final class T3PageView extends FrameLayout implements UiInputTarget, Auto
                     schedule(0L);
                     return;
                 }
-                if (failure.httpStatus == 404 && !failure.routeMissing()) {
+                if (failure.routeMissing() || failure.notConnected()) {
+                    showList(); // The list explains how to connect.
+                    return;
+                }
+                if (failure.httpStatus == 404) {
                     toast.show("That thread is no longer available", T3Status.AMBER);
                     showList();
                     return;

@@ -53,7 +53,7 @@ public final class T3MarkdownTest {
 
     @Test
     public void tablesBecomeReadableRows() {
-        assertEquals("TEXT:Suite  ·  Result\nTEXT:webhooks  ·  14 passed\n",
+        assertEquals("HEADING:Suite  ·  Result\nTEXT:webhooks  ·  14 passed\n",
                 dump("| Suite | Result |\n|---|:---:|\n| webhooks | 14 passed |"));
     }
 

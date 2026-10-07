@@ -96,9 +96,8 @@ final class T3NewThreadView extends View {
     private void type() {
         T3Model.Project project = project();
         if (project == null || creating) return;
-        String where = project.id.isEmpty() ? "New thread" : "New thread · " + project.title;
-        T3Composer.open(activity, where, "What should the agent do?", "Start",
-                value -> actions.create(project(), value));
+        String where = project.id.isEmpty() ? "What should it do?" : "What should it do in " + project.title + "?";
+        T3Composer.open(activity, where, "Start", value -> actions.create(project(), value));
     }
 
     private void talk() {
@@ -241,7 +240,7 @@ final class T3NewThreadView extends View {
             if (i == focus) surface.focus(canvas, rect, 20f);
         }
         canvas.restore();
-        surface.fadeEdges(canvas, 0f, W, LIST_TOP - 4f, LIST_BOTTOM, 12f);
+        surface.fadeEdges(canvas, 0f, W, LIST_TOP - 4f, LIST_BOTTOM, 12f, scroll > 1f, scroll < maxScroll() - 1f);
 
         surface.glass(canvas, TYPE, 28f, false);
         float typeText = surface.measure("Type", 19f, T3Surface.MEDIUM);
@@ -266,7 +265,7 @@ final class T3NewThreadView extends View {
         }
         animating |= toast.draw(canvas, surface, 520f);
         canvas.restore();
-        if (animating && isShown()) postInvalidateOnAnimation();
+        if (animating && isShown()) postInvalidateDelayed(33L);
     }
 
     private RectF rect(float left, float top, float right, float bottom) {

@@ -95,6 +95,7 @@ final class T3ListView extends View {
     private float downY;
     private float lastY;
     private boolean dragging;
+    private boolean caughtMotion;
     private boolean anyWorking;
 
     T3ListView(Context context, T3Toast toast, Actions actions) {
@@ -137,6 +138,14 @@ final class T3ListView extends View {
         return snapshot != null && !snapshot.threads.isEmpty();
     }
 
+    /** Back from a thread: focus the most urgent row and show the top of the list. */
+    void resetFocus() {
+        focus = threadRows.isEmpty() ? -1 : 0;
+        rememberFocus();
+        scroller.forceFinished(true);
+        scrollTarget = 0f;
+    }
+
     /** Keep a "can't reach T3" note in the header while still showing the last good list. */
     void showStale(String detail) {
         subline = detail;
@@ -151,8 +160,8 @@ final class T3ListView extends View {
         if (snapshot == null) return;
         headline.addAll(T3Sections.headline(snapshot.counts));
         headlineSize = 21f;
-        while (headlineSize > 16f && headlineWidth() > NEW_BUTTON.left - 36f) headlineSize -= 1f;
-        while (headline.size() > 1 && headlineWidth() > NEW_BUTTON.left - 36f) headline.remove(headline.size() - 1);
+        while (headlineSize > 17f && headlineWidth() > NEW_BUTTON.left - 46f) headlineSize -= 0.5f;
+        while (headline.size() > 1 && headlineWidth() > NEW_BUTTON.left - 46f) headline.remove(headline.size() - 1);
         String synced = T3Time.synced(layoutAt, snapshot.updatedAt > 0 ? snapshot.updatedAt : layoutAt);
         String source = demo ? "Demo data" : connectionLabel.isEmpty() ? "T3 Code" : connectionLabel;
         subline = surface.ellipsize(source + " · " + synced, NEW_BUTTON.left - 40f, 14f, T3Surface.REGULAR);
@@ -174,11 +183,11 @@ final class T3ListView extends View {
                 if (T3Status.working(thread.status) && !thread.phase.isEmpty()) status = thread.phase;
                 String when = T3Time.relative(layoutAt, thread.updatedAt);
                 StringBuilder rest = new StringBuilder();
-                if (!thread.projectTitle.isEmpty()) rest.append("  ·  ").append(thread.projectTitle);
-                if (!when.isEmpty()) rest.append("  ·  ").append(when);
+                if (!thread.projectTitle.isEmpty()) rest.append("·  ").append(thread.projectTitle);
+                if (!when.isEmpty()) rest.append(rest.length() > 0 ? "  ·  " : "·  ").append(when);
                 float statusWidth = surface.measure(status, 14f, T3Surface.MEDIUM);
                 String shownStatus = statusWidth > 250f ? surface.ellipsize(status, 250f, 14f, T3Surface.MEDIUM) : status;
-                float restWidth = 448f - 72f - surface.measure(shownStatus, 14f, T3Surface.MEDIUM);
+                float restWidth = 448f - 78f - surface.measure(shownStatus, 14f, T3Surface.MEDIUM);
                 Row row = new Row(false, y, ROW_H, thread,
                         surface.ellipsize(thread.title, 448f - 72f, 18.5f, T3Surface.MEDIUM),
                         shownStatus, surface.ellipsize(rest.toString(), restWidth, 14f, T3Surface.REGULAR),
@@ -293,7 +302,10 @@ final class T3ListView extends View {
         velocity.addMovement(event);
         switch (event.getActionMasked()) {
             case MotionEvent.ACTION_DOWN -> {
+                // A touch that stops a fling (or the wheel's glide) is not also a tap.
+                caughtMotion = !scroller.isFinished() || Math.abs(scrollTarget - scroll) > 2f;
                 scroller.forceFinished(true);
+                scrollTarget = scroll;
                 downX = x;
                 downY = y;
                 lastY = y;
@@ -314,7 +326,7 @@ final class T3ListView extends View {
                     float vy = velocity.getYVelocity() * H / Math.max(1f, getHeight());
                     scroller.fling(0, Math.round(scroll), 0, Math.round(-vy), 0, 0, 0, Math.round(maxScroll()));
                     invalidate();
-                } else {
+                } else if (!caughtMotion || y < LIST_TOP) {
                     tap(x, y);
                 }
                 recycleVelocity();
@@ -372,14 +384,15 @@ final class T3ListView extends View {
     @Override protected void onDraw(Canvas canvas) {
         long now = System.currentTimeMillis();
         if (mode == Mode.READY && snapshot != null && now - layoutAt > 30_000L) relayout();
+        boolean moving = false;
         boolean animating = false;
         if (scroller.computeScrollOffset()) {
             scroll = clamp(scroller.getCurrY(), 0f, maxScroll());
             scrollTarget = scroll;
-            animating = true;
+            moving = true;
         } else if (Math.abs(scrollTarget - scroll) > 0.5f) {
             scroll += (scrollTarget - scroll) * 0.28f;
-            animating = true;
+            moving = true;
         } else {
             scroll = scrollTarget;
         }
@@ -391,14 +404,16 @@ final class T3ListView extends View {
         if (mode == Mode.READY && !threadRows.isEmpty()) {
             drawHeader(canvas);
             drawRows(canvas, now);
-            animating |= anyWorking;
+            animating |= anyWorking || focus < 0;
         } else {
             drawState(canvas);
             animating = true;
         }
         animating |= toast.draw(canvas, surface, 600f);
         canvas.restore();
-        if (animating && isShown()) postInvalidateOnAnimation();
+        // Scrolling runs at vsync; ambient motion (orbs, spinners, toasts) at ~30 fps.
+        if (moving && isShown()) postInvalidateOnAnimation();
+        else if (animating && isShown()) postInvalidateDelayed(33L);
         else if (isShown()) postInvalidateDelayed(1_000L);
     }
 
@@ -417,7 +432,8 @@ final class T3ListView extends View {
 
         boolean focused = focus < 0;
         surface.glass(canvas, NEW_BUTTON, 24f, focused);
-        newOrb.setEnergy(focused ? 0.7f : 0.35f).setSpeed(focused ? 1.3f : 0.7f);
+        // Frozen when nothing on screen moves, so an idle list costs ~nothing to keep up.
+        newOrb.setEnergy(focused ? 0.7f : 0.35f).setSpeed(focused ? 1.3f : anyWorking ? 0.7f : 0f);
         newOrb.draw(canvas, 377f, 134f, 14f);
         surface.plus(canvas, 377f, 134f, 5.5f, SamTheme.BACKGROUND);
         surface.text(canvas, "New", 401f, 141f, 19f, SamTheme.INK, Paint.Align.LEFT, T3Surface.MEDIUM);
@@ -439,7 +455,7 @@ final class T3ListView extends View {
             drawThread(canvas, row, top, threadRows.indexOf(row) == focus, now);
         }
         canvas.restore();
-        surface.fadeEdges(canvas, 0f, W, LIST_TOP, H, 16f);
+        surface.fadeEdges(canvas, 0f, W, LIST_TOP, H, 16f, scroll > 1f, scroll < maxScroll() - 1f);
     }
 
     private void drawThread(Canvas canvas, Row row, float top, boolean focused, long now) {
@@ -455,7 +471,7 @@ final class T3ListView extends View {
                 quiet ? SamTheme.withAlpha(SamTheme.INK, 196) : SamTheme.INK, Paint.Align.LEFT, T3Surface.MEDIUM);
         int statusColor = quiet ? SamTheme.MUTED : row.color;
         surface.text(canvas, row.metaStatus, 72f, top + 57f, 14f, statusColor, Paint.Align.LEFT, T3Surface.MEDIUM);
-        float metaX = 72f + surface.measure(row.metaStatus, 14f, T3Surface.MEDIUM);
+        float metaX = 78f + surface.measure(row.metaStatus, 14f, T3Surface.MEDIUM);
         surface.text(canvas, row.meta, metaX, top + 57f, 14f, SamTheme.MUTED, Paint.Align.LEFT, T3Surface.REGULAR);
         if (working && thread.progress >= 0d) {
             rect.set(72f, top + 65f, 448f, top + 67.5f);

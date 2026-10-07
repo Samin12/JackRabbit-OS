@@ -56,6 +56,7 @@ final class T3Markdown {
         if (raw == null) return blocks;
         String[] lines = raw.replace("\r\n", "\n").replace('\r', '\n').split("\n", -1);
         StringBuilder code = null;
+        boolean tableRow = false;
         for (String source : lines) {
             String line = stripTrailing(source);
             if (FENCE.matcher(line).find()) {
@@ -81,11 +82,20 @@ final class T3Markdown {
                 continue;
             }
             if (isTableRow(line)) {
-                if (TABLE_SEPARATOR.matcher(line).matches()) continue;
+                if (TABLE_SEPARATOR.matcher(line).matches()) {
+                    // The row above the separator is the header: show it bold.
+                    int last = blocks.size() - 1;
+                    if (tableRow && last >= 0 && blocks.get(last).kind == Kind.TEXT) {
+                        blocks.set(last, new Block(Kind.HEADING, blocks.get(last).text, 0));
+                    }
+                    continue;
+                }
                 String row = tableRow(line);
                 if (!row.isEmpty()) blocks.add(new Block(Kind.TEXT, row, 0));
+                tableRow = true;
                 continue;
             }
+            tableRow = false;
             Matcher bullet = BULLET.matcher(line);
             if (bullet.matches() && !RULE.matcher(line).matches()) {
                 int indent = bullet.group(1).replace("\t", "    ").length();

@@ -50,10 +50,15 @@ final class T3FakeBackend {
     }
 
     T3FakeBackend(long now) {
+        this(now, true);
+    }
+
+    /** {@code withThreads=false} starts connected but empty (debug.sam.t3.fake=empty). */
+    T3FakeBackend(long now, boolean withThreads) {
         projects.put(SAM, "SamRabbit");
         projects.put(WEB, "bookedin-web");
         projects.put(HERMES, "Agent Club");
-        seed(now);
+        if (withThreads) seed(now);
     }
 
     synchronized JSONObject status(long now) {

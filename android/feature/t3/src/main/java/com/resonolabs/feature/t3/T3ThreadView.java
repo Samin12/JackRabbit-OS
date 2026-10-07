@@ -110,6 +110,8 @@ final class T3ThreadView extends View {
     private final Set<String> expanded = new HashSet<>();
     private final Map<String, Long> handled = new HashMap<>();
     private final List<T3Model.Message> localMessages = new ArrayList<>();
+    /** For each optimistic bubble: how many identical user messages the thread had when sent. */
+    private final Map<String, Integer> localBaselines = new HashMap<>();
     private final Map<String, Object> answers = new HashMap<>();
     private final Set<String> selections = new LinkedHashSet<>();
 
@@ -152,6 +154,7 @@ final class T3ThreadView extends View {
     private float downY;
     private float lastY;
     private boolean dragging;
+    private boolean caughtMotion;
     private long layoutAt;
 
     T3ThreadView(Activity activity, T3Toast toast, Actions actions) {
@@ -175,6 +178,7 @@ final class T3ThreadView extends View {
         loadFailed = false;
         expanded.clear();
         localMessages.clear();
+        localBaselines.clear();
         answers.clear();
         selections.clear();
         cardInputId = "";
@@ -239,12 +243,13 @@ final class T3ThreadView extends View {
 
     /** Optimistic user bubble + "working" header right after a send. */
     void addLocalMessage(String text) {
-        localMessages.add(new T3Model.Message("local:" + SystemClock.uptimeMillis(), true, text,
-                System.currentTimeMillis(), false, true));
-        markWorking("Sending…");
+        T3Model.Message local = new T3Model.Message("local:" + SystemClock.uptimeMillis(), true, text,
+                System.currentTimeMillis(), false, true);
+        localMessages.add(local);
+        localBaselines.put(local.id, sameUserText(detail, text));
         follow = true;
         fingerprint = "";
-        relayout();
+        markWorking("Sending…");
         scrollTarget = maxScroll();
         invalidate();
     }
@@ -252,6 +257,7 @@ final class T3ThreadView extends View {
     /** A send failed: forget optimistic bubbles and status. */
     void dropLocalMessages() {
         localMessages.clear();
+        localBaselines.clear();
         optimistic = null;
         fingerprint = "";
         relayout();
@@ -263,8 +269,7 @@ final class T3ThreadView extends View {
         if (base == null) return;
         optimistic = base.withStatus(T3Status.WORKING, "Working", phase);
         optimisticUntil = SystemClock.uptimeMillis() + OPTIMISTIC_MS;
-        relayoutHeader();
-        relayoutControls();
+        relayout();
         invalidate();
     }
 
@@ -296,18 +301,24 @@ final class T3ThreadView extends View {
         if (localMessages.isEmpty()) return;
         List<T3Model.Message> keep = new ArrayList<>();
         for (T3Model.Message local : localMessages) {
-            boolean echoed = false;
-            for (T3Model.Message message : next.messages) {
-                if (message.user && message.text.trim().equals(local.text.trim())) {
-                    echoed = true;
-                    break;
-                }
-            }
+            Integer baseline = localBaselines.get(local.id);
+            boolean echoed = sameUserText(next, local.text) > (baseline == null ? 0 : baseline);
             boolean stale = System.currentTimeMillis() - local.createdAt > 60_000L;
             if (!echoed && !stale) keep.add(local);
+            else localBaselines.remove(local.id);
         }
         localMessages.clear();
         localMessages.addAll(keep);
+    }
+
+    private static int sameUserText(T3Model.Detail from, String text) {
+        if (from == null) return 0;
+        String wanted = text.trim();
+        int count = 0;
+        for (T3Model.Message message : from.messages) {
+            if (message.user && message.text.trim().equals(wanted)) count++;
+        }
+        return count;
     }
 
     // ---- layout ----------------------------------------------------------------------------
@@ -375,23 +386,22 @@ final class T3ThreadView extends View {
             bottom = layoutApproval(approvals.get(0), approvals.size(), bottom);
         } else if (!inputs.isEmpty()) {
             bottom = layoutQuestion(inputs.get(0), inputs.size(), bottom);
-        } else if (!working && detail != null) {
+        } else if (working) {
+            // Stop lives above the composer so Type / Talk never move under the thumb.
+            float top = bottom - 44f;
+            float width = surface.measure("Stop run", 15f, T3Surface.MEDIUM) + 58f;
+            controls.add(new Control(16f, top, 16f + width, top + 44f, "Stop run", STYLE_DANGER,
+                    () -> actions.stop(current())));
+            bottom = top - 2f;
+        } else if (detail != null) {
             bottom = layoutQuickReplies(thread, bottom);
         }
         viewBottom = bottom - 6f;
 
-        // Composer row.
-        if (working) {
-            controls.add(new Control(16f, COMPOSER_TOP, 156f, COMPOSER_BOTTOM, "Type", STYLE_GLASS, this::type));
-            controls.add(new Control(164f, COMPOSER_TOP, 316f, COMPOSER_BOTTOM, "Talk", STYLE_PRIMARY,
-                    () -> actions.talk(current())));
-            controls.add(new Control(324f, COMPOSER_TOP, 464f, COMPOSER_BOTTOM, "Stop", STYLE_DANGER,
-                    () -> actions.stop(current())));
-        } else {
-            controls.add(new Control(16f, COMPOSER_TOP, 236f, COMPOSER_BOTTOM, "Type", STYLE_GLASS, this::type));
-            controls.add(new Control(244f, COMPOSER_TOP, 464f, COMPOSER_BOTTOM, "Talk", STYLE_PRIMARY,
-                    () -> actions.talk(current())));
-        }
+        // Composer row: always the same two buttons in the same place.
+        controls.add(new Control(16f, COMPOSER_TOP, 236f, COMPOSER_BOTTOM, "Type", STYLE_GLASS, this::type));
+        controls.add(new Control(244f, COMPOSER_TOP, 464f, COMPOSER_BOTTOM, "Talk", STYLE_PRIMARY,
+                () -> actions.talk(current())));
         if (focusedLabel != null) {
             focus = -1;
             for (int i = 0; i < controls.size(); i++) if (controls.get(i).label.equals(focusedLabel)) focus = i;
@@ -404,7 +414,7 @@ final class T3ThreadView extends View {
         cardApproval = approval;
         cardMono = true;
         cardHeader = "APPROVAL" + (total > 1 ? "  ·  1 OF " + total : "") + "  ·  " + approval.title().toUpperCase(java.util.Locale.ROOT);
-        cardHeader = surface.ellipsize(cardHeader, 400f, 12.5f, T3Surface.MEDIUM);
+        cardHeader = surface.ellipsize(cardHeader, 350f, 12.5f, T3Surface.MEDIUM);
         String body = approval.detail.isEmpty() ? "No details provided." : approval.detail;
         cardFull = body;
         List<String> lines = surface.wrap(body, 408f, CODE_SIZE, T3Surface.MONO, true);
@@ -424,8 +434,7 @@ final class T3ThreadView extends View {
         float width = (card.width() - 28f - gap * (buttons.size() - 1)) / Math.max(1, buttons.size());
         float x = card.left + 14f;
         for (T3Model.Option option : buttons) {
-            int style = option.decision.equals("accept") ? STYLE_APPROVE
-                    : option.decision.equals("decline") || option.decision.equals("cancel") ? STYLE_GLASS : STYLE_GLASS;
+            int style = option.decision.equals("accept") ? STYLE_APPROVE : STYLE_GLASS;
             final String decision = option.decision;
             controls.add(new Control(x, buttonTop, x + width, buttonTop + 48f, option.label, style,
                     () -> actions.approve(current(), approval, decision)));
@@ -451,7 +460,7 @@ final class T3ThreadView extends View {
         if (!question.header.isEmpty() && !"question".equalsIgnoreCase(question.header)) {
             header.append("  ·  ").append(question.header.toUpperCase(java.util.Locale.ROOT));
         }
-        cardHeader = surface.ellipsize(header.toString(), 400f, 12.5f, T3Surface.MEDIUM);
+        cardHeader = surface.ellipsize(header.toString(), 350f, 12.5f, T3Surface.MEDIUM);
         String body = question.question.isEmpty() ? "The agent is waiting for your answer." : question.question;
         cardFull = body;
         List<String> lines = surface.wrap(body, 412f, 15.5f, T3Surface.MEDIUM, false);
@@ -751,8 +760,8 @@ final class T3ThreadView extends View {
     private void type() {
         T3Model.Summary thread = current();
         if (thread == null) return;
-        T3Composer.open(activity, "Message · " + thread.title, "Reply to the agent", "Send",
-                value -> actions.send(current(), value));
+        String name = thread.title.length() > 22 ? thread.title.substring(0, 21).trim() + "…" : thread.title;
+        T3Composer.open(activity, "Reply to “" + name + "”", "Send", value -> actions.send(current(), value));
     }
 
     private void choose(T3Model.Question question, String option) {
@@ -766,8 +775,7 @@ final class T3ThreadView extends View {
     }
 
     private void other(T3Model.Question question) {
-        String prompt = question.question.isEmpty() ? "Your answer" : question.question;
-        T3Composer.open(activity, prompt, "Type your answer", "Answer", value -> {
+        T3Composer.open(activity, "Your answer", "Answer", value -> {
             if (question.multiSelect) {
                 List<String> values = new ArrayList<>(selections);
                 values.add(value);
@@ -852,7 +860,10 @@ final class T3ThreadView extends View {
         velocity.addMovement(event);
         switch (event.getActionMasked()) {
             case MotionEvent.ACTION_DOWN -> {
+                // A touch that stops a fling (or the wheel's glide) is not also a tap.
+                caughtMotion = !scroller.isFinished() || Math.abs(scrollTarget - scroll) > 2f;
                 scroller.forceFinished(true);
+                scrollTarget = scroll;
                 downX = x;
                 downY = y;
                 lastY = y;
@@ -875,7 +886,8 @@ final class T3ThreadView extends View {
                     float vy = velocity.getYVelocity() * H / Math.max(1f, getHeight());
                     scroller.fling(0, Math.round(scroll), 0, Math.round(-vy), 0, 0, 0, Math.round(maxScroll()));
                     invalidate();
-                } else if (Math.abs(x - downX) < 16f && Math.abs(y - downY) < 16f) {
+                } else if ((!caughtMotion || y < VIEW_TOP || y > viewBottom)
+                        && Math.abs(x - downX) < 16f && Math.abs(y - downY) < 16f) {
                     tap(x, y);
                 }
                 recycleVelocity();
@@ -946,15 +958,16 @@ final class T3ThreadView extends View {
             optimistic = null;
             relayout();
         }
+        boolean moving = false;
         boolean animating = false;
         if (scroller.computeScrollOffset()) {
             scroll = Math.max(0f, Math.min(maxScroll(), scroller.getCurrY()));
             scrollTarget = scroll;
             follow = scroll >= maxScroll() - 4f;
-            animating = true;
+            moving = true;
         } else if (Math.abs(scrollTarget - scroll) > 0.5f) {
             scroll += (scrollTarget - scroll) * 0.3f;
-            animating = true;
+            moving = true;
         } else {
             scroll = scrollTarget;
         }
@@ -968,7 +981,9 @@ final class T3ThreadView extends View {
         drawControls(canvas);
         animating |= toast.draw(canvas, surface, Math.max(VIEW_TOP + 40f, viewBottom - 30f));
         canvas.restore();
-        if (animating && isShown()) postInvalidateOnAnimation();
+        // Scrolling runs at vsync; ambient motion (orbs, spinners, toasts) at ~30 fps.
+        if (moving && isShown()) postInvalidateOnAnimation();
+        else if (animating && isShown()) postInvalidateDelayed(33L);
         else if (isShown()) postInvalidateDelayed(1_000L);
     }
 
@@ -1054,7 +1069,7 @@ final class T3ThreadView extends View {
             }
         }
         canvas.restore();
-        surface.fadeEdges(canvas, 0f, W, VIEW_TOP, viewBottom, 14f);
+        surface.fadeEdges(canvas, 0f, W, VIEW_TOP, viewBottom, 14f, scroll > 1f, scroll < maxScroll() - 1f);
         if (maxScroll() > 0f && !follow && scrollTarget < maxScroll() - 40f) drawJumpHint(canvas);
         return animating;
     }
@@ -1062,15 +1077,15 @@ final class T3ThreadView extends View {
     /** Small "newer below" hint when the reader scrolled up. */
     private void drawJumpHint(Canvas canvas) {
         float cy = viewBottom - 20f;
-        rect.set(222f, cy - 14f, 258f, cy + 14f);
+        rect.set(424f, cy - 14f, 460f, cy + 14f);
         surface.solid(canvas, rect, 14f, SamTheme.withAlpha(SamTheme.PANEL_RAISED, 235));
         surface.stroke(canvas, rect, 14f, 1.2f, SamTheme.LINE);
         surface.paint.setStyle(Paint.Style.STROKE);
         surface.paint.setStrokeWidth(2.2f);
         surface.paint.setStrokeCap(Paint.Cap.ROUND);
         surface.paint.setColor(SamTheme.ORB_PALE);
-        canvas.drawLine(233f, cy - 3f, 240f, cy + 4f, surface.paint);
-        canvas.drawLine(240f, cy + 4f, 247f, cy - 3f, surface.paint);
+        canvas.drawLine(435f, cy - 3f, 442f, cy + 4f, surface.paint);
+        canvas.drawLine(442f, cy + 4f, 449f, cy - 3f, surface.paint);
         surface.paint.setStrokeCap(Paint.Cap.BUTT);
         surface.paint.setStyle(Paint.Style.FILL);
     }
@@ -1117,17 +1132,17 @@ final class T3ThreadView extends View {
                 float textWidth = surface.measure(control.label, 18f, T3Surface.MEDIUM);
                 float glyphX = r.centerX() - textWidth / 2f - 14f;
                 float textX = glyphX + 16f;
-                switch (control.label) {
-                    case "Type" -> surface.pencil(canvas, glyphX, r.centerY(), ink);
-                    case "Talk" -> surface.mic(canvas, glyphX, r.centerY(), ink);
-                    case "Stop" -> surface.stopSquare(canvas, glyphX, r.centerY(), T3Status.RED);
-                    default -> { }
-                }
+                if ("Type".equals(control.label)) surface.pencil(canvas, glyphX, r.centerY(), ink);
+                else surface.mic(canvas, glyphX, r.centerY(), ink);
                 surface.text(canvas, control.label, textX, r.centerY() + 6.5f, 18f, ink, Paint.Align.LEFT,
                         T3Surface.MEDIUM);
             } else {
-                float size = control.style >= STYLE_CHIP ? 15f : 17f;
-                if (control.style == STYLE_CHIP_ON) {
+                float size = control.style >= STYLE_CHIP || control.style == STYLE_DANGER ? 15f : 17f;
+                if (control.style == STYLE_DANGER) {
+                    surface.stopSquare(canvas, r.left + 24f, r.centerY(), T3Status.RED);
+                    surface.text(canvas, control.label, r.left + 40f, r.centerY() + 5.5f, size, ink,
+                            Paint.Align.LEFT, T3Surface.MEDIUM);
+                } else if (control.style == STYLE_CHIP_ON) {
                     surface.check(canvas, r.left + 16f, r.centerY(), SamTheme.INK);
                     surface.text(canvas, control.label, r.centerX() + 8f, r.centerY() + 5.5f, size, ink,
                             Paint.Align.CENTER, T3Surface.MEDIUM);

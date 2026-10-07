@@ -113,9 +113,11 @@ final class T3Surface {
         stroke(canvas, scratch, radius + 3f, 2.4f, SamTheme.withAlpha(SamTheme.ORB_PALE, 230));
     }
 
-    void fadeEdges(Canvas canvas, float left, float right, float top, float bottom, float size) {
-        fillVertical(canvas, fadeTop, left, top, right, top + size, 0f);
-        fillVertical(canvas, fadeBottom, left, bottom - size, right, bottom, 0f);
+    /** Soft fades where scrolled content is clipped (only on edges that actually hide content). */
+    void fadeEdges(Canvas canvas, float left, float right, float top, float bottom, float size,
+                   boolean topClipped, boolean bottomClipped) {
+        if (topClipped) fillVertical(canvas, fadeTop, left, top, right, top + size, 0f);
+        if (bottomClipped) fillVertical(canvas, fadeBottom, left, bottom - size, right, bottom, 0f);
     }
 
     /** Status orb: soft glow, solid core with a white crown; working adds a spinning arc. */
