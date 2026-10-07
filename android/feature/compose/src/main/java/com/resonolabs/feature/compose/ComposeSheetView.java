@@ -62,6 +62,8 @@ final class ComposeSheetView extends FrameLayout implements DictationSession.Lis
     private static final float W = 480f;
     private static final float H = 640f;
     private static final float SHEET_TOP = 44f;
+    /** Secret fields have one line and no mic: a shorter bottom sheet. */
+    private static final float SECRET_SHEET_TOP = 300f;
     private static final float DEFAULT_IME = 400f;
 
     private static final int NONE = -1;
@@ -124,6 +126,9 @@ final class ComposeSheetView extends FrameLayout implements DictationSession.Lis
     private boolean applyingText;
     private String message = "";
     private String status = "";
+    /** {@link #status} fitted to the full sheet width / the compact title row (computed off the draw path). */
+    private String statusShown = "";
+    private String compactLine = "";
     private int statusColor = SamTheme.MUTED;
     private long countdownSecond = -1L;
     private int counterLength = -1;
@@ -187,6 +192,8 @@ final class ComposeSheetView extends FrameLayout implements DictationSession.Lis
             field.setImeOptions(EditorInfo.IME_ACTION_SEND | EditorInfo.IME_FLAG_NO_EXTRACT_UI
                     | EditorInfo.IME_FLAG_NO_FULLSCREEN);
         }
+        // AOSP LatinIME: hide its voice key ("nm" = legacy name); there is no recognizer behind it.
+        field.setPrivateImeOptions("nm,com.android.inputmethod.latin.noMicrophoneKey");
         field.setImeActionLabel(options.action, options.secret ? EditorInfo.IME_ACTION_DONE : EditorInfo.IME_ACTION_SEND);
         field.setHint(!options.hint.isEmpty() ? options.hint
                 : options.secret ? "" : "Type, or tap the mic and talk");
@@ -418,7 +425,7 @@ final class ComposeSheetView extends FrameLayout implements DictationSession.Lis
         field.setShowSoftInputOnFocus(true);
         message = switch (reason) {
             case FAILED -> failure.isEmpty() ? "Dictation stopped." : failure;
-            case NO_SPEECH -> "Didn't catch anything. Tap the mic to try again.";
+            case NO_SPEECH -> "Didn't catch that. Tap the mic to try again.";
             case MAX_DURATION -> "That's the 1-minute limit. Tap the mic to go on.";
             case VOICE_SESSION -> "Voice chat started, so dictation stopped.";
             default -> clipped ? "That's the " + options.maxLength + "-character limit." : "";
@@ -482,6 +489,8 @@ final class ComposeSheetView extends FrameLayout implements DictationSession.Lis
             }
         }
         countdownSecond = -1L;
+        statusShown = TextUtils.ellipsize(status, textPaint(16f), 440f, TextUtils.TruncateAt.END).toString();
+        compactLine = TextUtils.ellipsize(status, textPaint(15f), 288f, TextUtils.TruncateAt.END).toString();
     }
 
     // ---- layout ---------------------------------------------------------------------------------
@@ -514,13 +523,17 @@ final class ComposeSheetView extends FrameLayout implements DictationSession.Lis
                 micBox.setEmpty();
             }
             float fieldBottom = Math.max(options.secret ? 104f : 54f + 52f, bottom - 10f);
-            if (options.secret) fieldBottom = Math.min(fieldBottom, 112f);
+            if (options.secret) {
+                // One masked line: the sheet hugs it instead of reaching down to the keyboard.
+                fieldBottom = Math.min(fieldBottom, 112f);
+                sheet.bottom = Math.max(sendBox.bottom, fieldBottom) + 14f;
+            }
             fieldBox.set(10f, 52f, 356f, fieldBottom);
             typeBox.setEmpty();
             titleWidth = 356f - 62f;
         } else {
-            sheet.set(0f, SHEET_TOP, W, H + 40f);
-            float fieldTop = 112f;
+            sheet.set(0f, options.secret ? SECRET_SHEET_TOP : SHEET_TOP, W, H + 40f);
+            float fieldTop = sheet.top + 68f;
             float fieldBottom = options.secret ? fieldTop + 64f : 300f;
             fieldBox.set(20f, fieldTop, 460f, fieldBottom);
             micCx = 240f;
@@ -615,14 +628,26 @@ final class ComposeSheetView extends FrameLayout implements DictationSession.Lis
         }
         drawCross(canvas, cancelBox.centerX(), cancelBox.centerY(), 8f, cancelPressed ? SamTheme.INK : SamTheme.MUTED);
         // context line (or the latest message)
-        String line = !message.isEmpty() ? message : title;
-        int color = !message.isEmpty() ? SamTheme.AMBER : SamTheme.MUTED;
-        if (!message.isEmpty() && line.length() > 40) line = line.substring(0, 39) + "…";
-        SamTheme.text(canvas, paint, line, 60f, 32f, 15f, color, Paint.Align.LEFT, false);
+        boolean showMessage = !message.isEmpty();
+        SamTheme.text(canvas, paint, showMessage ? compactLine : title, 60f, 32f, 15f,
+                showMessage ? SamTheme.AMBER : SamTheme.MUTED, Paint.Align.LEFT, false);
         drawCounter(canvas, 352f, 32f);
         glass.draw(canvas, paint, fieldBox, 16f, field.hasFocus());
         if (!micBox.isEmpty()) {
-            drawPill(canvas, micBox, null, false, focusVisible && focus == MIC, pressed == MIC, true);
+            // The mic reads as the voice way in: blue-tinted glass with a pale edge.
+            float radius = micBox.height() / 2f;
+            glass.fillVertical(canvas, paint, micBox.left, micBox.top, micBox.right, micBox.bottom, radius,
+                    SamTheme.withAlpha(SamTheme.ORB_BLUE, 120), SamTheme.withAlpha(SamTheme.ORB_BLUE, 60),
+                    micBox.height());
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(1.5f);
+            paint.setColor(SamTheme.withAlpha(SamTheme.ORB_PALE, 150));
+            canvas.drawRoundRect(micBox, radius, radius, paint);
+            paint.setStyle(Paint.Style.FILL);
+            if (pressed == MIC) {
+                paint.setColor(SamTheme.withAlpha(SamTheme.INK, 34));
+                canvas.drawRoundRect(micBox, radius, radius, paint);
+            }
             drawMicGlyph(canvas, micBox.centerX(), micBox.centerY(), Math.min(30f, micBox.height() * 0.5f), SamTheme.INK);
         }
         drawPill(canvas, sendBox, options.action, true, focusVisible && focus == SEND, pressed == SEND, canSend());
@@ -631,9 +656,11 @@ final class ComposeSheetView extends FrameLayout implements DictationSession.Lis
     private void drawFull(Canvas canvas) {
         drawSheet(canvas, 28f);
         paint.setColor(SamTheme.withAlpha(SamTheme.MUTED, 110));
-        canvas.drawRoundRect(222f, SHEET_TOP + 9f, 258f, SHEET_TOP + 13f, 2f, 2f, paint);
-        if (!title.isEmpty()) SamTheme.text(canvas, paint, title, 26f, 94f, 17f, SamTheme.MUTED, Paint.Align.LEFT, false);
-        drawCounter(canvas, 454f, 94f);
+        canvas.drawRoundRect(222f, sheet.top + 9f, 258f, sheet.top + 13f, 2f, 2f, paint);
+        if (!title.isEmpty()) {
+            SamTheme.text(canvas, paint, title, 26f, sheet.top + 50f, 17f, SamTheme.MUTED, Paint.Align.LEFT, false);
+        }
+        drawCounter(canvas, 454f, sheet.top + 50f);
         boolean listening = dictation != null && dictation.active();
         glass.draw(canvas, paint, fieldBox, 18f, listening || field.hasFocus());
         if (!options.secret) {
@@ -649,19 +676,18 @@ final class ComposeSheetView extends FrameLayout implements DictationSession.Lis
                     line = countdown;
                 }
             }
-            SamTheme.text(canvas, paint, fitStatus(line), W / 2f, 336f, 16f, statusColor, Paint.Align.CENTER, false);
+            SamTheme.text(canvas, paint, line == countdown ? line : statusShown, W / 2f, 336f, 16f, statusColor,
+                    Paint.Align.CENTER, false);
             drawMic(canvas);
-        } else if (!message.isEmpty()) {
-            SamTheme.text(canvas, paint, message, W / 2f, fieldBox.bottom + 34f, 16f, SamTheme.AMBER, Paint.Align.CENTER, false);
+        } else {
+            SamTheme.text(canvas, paint, message.isEmpty() ? "Typed only. Never dictated." : statusShown,
+                    W / 2f, fieldBox.bottom + 40f, 15f, message.isEmpty() ? SamTheme.MUTED : SamTheme.AMBER,
+                    Paint.Align.CENTER, false);
         }
         drawPill(canvas, cancelBox, "Cancel", false, focusVisible && focus == CANCEL, pressed == CANCEL, true);
         drawPill(canvas, typeBox, "Type", false, focusVisible && focus == TYPE, pressed == TYPE, true);
         drawKeyboardGlyph(canvas, typeBox.left + 34f, typeBox.centerY());
         drawPill(canvas, sendBox, options.action, true, focusVisible && focus == SEND, pressed == SEND, canSend());
-    }
-
-    private String fitStatus(String line) {
-        return line.length() > 46 ? line.substring(0, 45) + "…" : line;
     }
 
     private void drawCounter(Canvas canvas, float right, float baseline) {
