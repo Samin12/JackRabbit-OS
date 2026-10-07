@@ -22,16 +22,11 @@ import android.net.NetworkCapabilities;
 import android.net.wifi.WifiManager;
 import android.net.wifi.WifiConfiguration;
 import android.provider.Settings;
-import android.text.InputType;
-import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
-import android.view.inputmethod.InputMethodManager;
-import android.widget.EditText;
-import android.widget.LinearLayout;
-import android.widget.TextView;
 
+import com.resonolabs.feature.compose.ComposeSheet;
 import com.resonolabs.ui.design.FluidOrb;
 import com.resonolabs.ui.design.SamTheme;
 import com.resonolabs.ui.input.UiInputIntent;
@@ -830,55 +825,25 @@ public final class SettingsPanelView extends View implements UiInputTarget {
     }
 
     private void connectOpenAiFromSettings() {
-        EditText key = new EditText(activity);
-        key.setSingleLine(true);
-        key.setHint("Platform API key");
-        key.setTextColor(SamTheme.INK);
-        key.setHintTextColor(SamTheme.MUTED);
-        key.setTextSize(20f);
-        key.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        key.setPadding(24, 18, 24, 18);
-        LinearLayout sheet = new LinearLayout(activity);
-        sheet.setOrientation(LinearLayout.VERTICAL);
-        sheet.setPadding(28, 24, 28, 12);
-        TextView title = new TextView(activity);
-        title.setText("Connect OpenAI Platform");
-        title.setTextColor(SamTheme.INK);
-        title.setTextSize(24f);
-        title.setGravity(Gravity.START);
-        sheet.addView(title);
-        sheet.addView(key, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, 76));
-        AlertDialog dialog = new AlertDialog.Builder(activity)
-                .setTitle("OpenAI Platform Key")
-                .setView(sheet)
-                .setNegativeButton("Cancel", null)
-                .setPositiveButton("Save", (ignored, which) -> {
-                    String value = key.getText().toString();
-                    if (value == null || value.isBlank()) {
-                        openAiMessage = "Key cannot be empty.";
-                        invalidate();
-                        return;
-                    }
-                    openAiMessage = "Saving key…";
-                    invalidate();
-                    openAiSource.connect(activity, value.trim(), state -> {
-                        openAiState = state;
-                        openAiMessage = "OpenAI key connected.";
-                        invalidate();
-                    });
-                })
-                .create();
-        dialog.setOnShowListener(ignored -> {
-            if (dialog.getWindow() != null) dialog.getWindow().setSoftInputMode(
-                    WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE);
-            key.requestFocus();
-            key.postDelayed(() -> {
-                InputMethodManager keyboard = activity.getSystemService(InputMethodManager.class);
-                if (keyboard != null) keyboard.showSoftInput(key, InputMethodManager.SHOW_IMPLICIT);
-            }, 160L);
+        // A secret: keyboard only, never dictated (the transcriber would hear the key).
+        ComposeSheet.open(activity, new ComposeSheet.Options()
+                .title("OpenAI Platform API key")
+                .hint("sk-…")
+                .action("Save")
+                .secret(true), value -> {
+            if (value.isBlank()) {
+                openAiMessage = "Key cannot be empty.";
+                invalidate();
+                return;
+            }
+            openAiMessage = "Saving key…";
+            invalidate();
+            openAiSource.connect(activity, value.trim(), state -> {
+                openAiState = state;
+                openAiMessage = "OpenAI key connected.";
+                invalidate();
+            });
         });
-        dialog.show();
     }
 
     @FunctionalInterface
@@ -1098,42 +1063,12 @@ public final class SettingsPanelView extends View implements UiInputTarget {
             connect(network.ssid(), null);
             return;
         }
-        EditText password = new EditText(activity);
-        password.setSingleLine(true);
-        password.setHint("Network password");
-        password.setTextColor(SamTheme.INK);
-        password.setHintTextColor(SamTheme.MUTED);
-        password.setTextSize(20f);
-        password.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        password.setPadding(24, 18, 24, 18);
-        LinearLayout sheet = new LinearLayout(activity);
-        sheet.setOrientation(LinearLayout.VERTICAL);
-        sheet.setPadding(28, 24, 28, 12);
-        TextView title = new TextView(activity);
-        title.setText(network.ssid());
-        title.setTextColor(SamTheme.INK);
-        title.setTextSize(28f);
-        title.setGravity(Gravity.START);
-        sheet.addView(title);
-        sheet.addView(password, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, 76));
-        AlertDialog dialog = new AlertDialog.Builder(activity)
-                .setTitle("Connect to Wi-Fi")
-                .setView(sheet)
-                .setNegativeButton("Cancel", null)
-                .setPositiveButton("Connect", (ignored, which) ->
-                        connect(network.ssid(), password.getText().toString()))
-                .create();
-        dialog.setOnShowListener(ignored -> {
-            if (dialog.getWindow() != null) dialog.getWindow().setSoftInputMode(
-                    WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE);
-            password.requestFocus();
-            password.postDelayed(() -> {
-                InputMethodManager keyboard = activity.getSystemService(InputMethodManager.class);
-                if (keyboard != null) keyboard.showSoftInput(password, InputMethodManager.SHOW_IMPLICIT);
-            }, 160L);
-        });
-        dialog.show();
+        // A secret: keyboard only, never dictated.
+        ComposeSheet.open(activity, new ComposeSheet.Options()
+                .title("Wi-Fi password for " + network.ssid())
+                .hint("Network password")
+                .action("Connect")
+                .secret(true), value -> connect(network.ssid(), value));
     }
 
     @SuppressWarnings("deprecation")

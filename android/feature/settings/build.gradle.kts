@@ -15,5 +15,6 @@ dependencies {
     implementation(project(":core:input"))
     implementation(project(":core:power"))
     implementation(project(":runtime-host"))
+    implementation(project(":feature:compose"))
     testImplementation("junit:junit:4.13.2")
 }

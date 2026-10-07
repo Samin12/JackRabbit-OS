@@ -31,6 +31,7 @@ import com.resonolabs.feature.genui.T3AnnouncementCards;
 import com.resonolabs.runtime.host.RuntimeAnnouncementClient;
 import com.resonolabs.runtime.host.T3Client;
 import com.resonolabs.ui.power.AlwaysOnVoice;
+import com.resonolabs.feature.compose.ComposeSheet;
 
 final class ProductRootView extends FrameLayout {
     private static final String ANNOUNCE_TAG = "SamAnnounce";
@@ -99,6 +100,8 @@ final class ProductRootView extends FrameLayout {
             }
         });
         voice.setHostActions(this::onCardHostAction);
+        // Text fields dictate through their own mic; never while a voice session holds it.
+        ComposeSheet.setVoiceSessionProbe(voice::isInSession);
         camera = new CameraHandoffPage(activity, motor, voice, this::returnFromCamera);
         camera.setVisibility(GONE);
         cards = new CardsPageView(activity, this::openVoiceFromCards, this::showCreation);

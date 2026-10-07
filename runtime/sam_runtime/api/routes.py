@@ -328,6 +328,29 @@ class RuntimeRoutes:
             except OpenAIProviderError as error:
                 req.provider_error(error)
             return
+        if path == "/v1/voice/dictation/calls" and providers is not None:
+            # Device-only (bearer, never proxied for browsers): speech-to-text for typed fields.
+            if req.headers.get("X-SAM-Forwarded-Origin"):
+                req.respond_json(403, {"error": {"code": "device_only", "message": "Dictation is only available on the device."}})
+                return
+            payload = req.request_json(max_bytes=300_000)
+            if payload is None:
+                return
+            try:
+                dictation = providers.create_dictation_call(str(payload.get("sdp", "")))
+            except OpenAIProviderError as error:
+                req.provider_error(error)
+                return
+            req.respond_json(
+                200,
+                {
+                    "sdp": dictation.sdp,
+                    "sessionId": dictation.session_id,
+                    "mode": dictation.variant,
+                    "transcriptionModel": dictation.transcription_model,
+                },
+            )
+            return
         if path == "/v1/voice/sessions/finalize" and sessions is not None and memory is not None:
             payload = req.request_json(max_bytes=300_000)
             if payload is None:
