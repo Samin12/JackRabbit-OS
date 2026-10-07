@@ -105,6 +105,18 @@ class T3VoiceToolsTest(unittest.TestCase):
         ok, value = self._call("t3_read_thread", {"thread": "quantum toaster"})
         self.assertFalse(ok)
 
+    def test_latest_means_most_recently_active_not_highest_priority(self) -> None:
+        self._connect([
+            thread("waiting", "Approve the old deploy", approvals=True, completed_at="2026-10-05T09:00:00.000Z"),
+            thread("fresh", "Polish the settings page", completed_at="2026-10-07T12:30:00.000Z"),
+            thread("older", "Write the changelog", completed_at="2026-10-07T08:00:00.000Z"),
+        ])
+        self.assertEqual("waiting", self.service.summaries()[0]["id"])
+        for spoken in ("latest", "the last one", "most recent thread", "Newest."):
+            ok, value = self._call("t3_read_thread", {"thread": spoken})
+            self.assertTrue(ok, value)
+            self.assertEqual("fresh", value["thread"]["id"], spoken)
+
     def test_new_send_respond_and_stop(self) -> None:
         asking = thread("ask", "Pick storage", user_input=True)
         self._connect([asking, thread("busy", "Refactor the parser", session_status="running", turn_state="running", active_turn="turn-x")])

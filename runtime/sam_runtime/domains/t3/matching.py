@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from difflib import SequenceMatcher
 import re
+
+from .status import parse_time
 
 
 _WORD = re.compile(r"[a-z0-9]+")
 _STOP = frozenset({"the", "a", "an", "thread", "chat", "task", "one", "my", "that", "about", "on", "for", "in", "of", "to", "project"})
 _LATEST = frozenset({"latest", "last", "newest", "recent", "most recent", "current", "that one", "it", "this one", "this"})
+_RECENT = frozenset({"latest", "last", "newest", "recent", "most recent", "most recently"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,7 +73,13 @@ def match_item(
         return MatchResult(exact[0])
     if len(exact) > 1:
         return MatchResult(exact[0], tuple(exact[:3]))
-    if lowered.strip(" .!?") in _LATEST:
+    bare = lowered.strip(" .!?")
+    core = " ".join(_words(text))
+    if bare in _RECENT or core in _RECENT:
+        # Items are ordered by priority (needs-you first), so "latest" means
+        # the most recently active one, not items[0].
+        return MatchResult(_most_recent(items))
+    if bare in _LATEST:
         return MatchResult(items[0])
     scored = sorted(
         ((score, index, item) for index, item in enumerate(items) if (score := _score(text, str(item.get(title_key, "")))) > 0),
@@ -81,3 +91,15 @@ def match_item(
     if len(scored) > 1 and scored[1][0] >= best[0] - 0.08 and scored[1][0] >= 0.45:
         return MatchResult(None, tuple(entry[2] for entry in scored[:3]))
     return MatchResult(best[2])
+
+
+def _most_recent(items: list[dict[str, object]]) -> dict[str, object]:
+    """The item with the newest ``updatedAt``; the first item when none has one."""
+    floor = datetime.min.replace(tzinfo=UTC)
+    best = items[0]
+    best_time = parse_time(best.get("updatedAt")) or floor
+    for item in items[1:]:
+        stamp = parse_time(item.get("updatedAt")) or floor
+        if stamp > best_time:
+            best, best_time = item, stamp
+    return best
