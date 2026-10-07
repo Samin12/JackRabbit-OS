@@ -232,6 +232,7 @@ public final class GenCardParser {
             liveIgnored = true;
             notes.add("body edits ignored: live card updates itself");
         } else if (bodyEdit) {
+            GenBlock runningTimer = card.isTimer() ? card.timerBlock() : null;
             if (json.has("body")) {
                 ArrayList<GenBlock> blocks = new ArrayList<>();
                 parseBody(blocks, value(json, "body"), "body", notes, now, false);
@@ -285,6 +286,7 @@ public final class GenCardParser {
                 }
                 changed.add("append:" + Math.min(extra.size(), Math.max(0, room)));
             }
+            if (runningTimer != null) keepTimerClock(card, runningTimer, notes);
             visible = true;
             normalizeLive(card, notes, now);
         }
@@ -667,6 +669,27 @@ public final class GenCardParser {
         }
     }
 
+    /**
+     * Body edits on a live timer card (body replace, remove, a timer block without a new
+     * durationSec) keep the running countdown instead of restarting it from the full duration.
+     */
+    private static void keepTimerClock(GenCard card, GenBlock previous, Notes notes) {
+        GenBlock timer = card.timerBlock();
+        if (timer == null) {
+            if (card.body.size() >= GenSchema.BODY) card.body.remove(card.body.size() - 1);
+            card.body.add(0, previous);
+            notes.add("timer kept (live timer card)");
+            return;
+        }
+        if (timer != previous && timer.totalMs <= 0L && timer.endsAt == 0L) {
+            timer.endsAt = previous.endsAt;
+            timer.totalMs = previous.totalMs;
+            timer.paused = previous.paused;
+            timer.pausedRemainingMs = previous.pausedRemainingMs;
+            timer.done = previous.done;
+        }
+    }
+
     private static GenBlock merge(GenBlock block, JSONObject patch, String path, Notes notes, long now) {
         // Smart row merge: ticking a few checklist rows must not delete the others.
         if ((block.type == GenBlock.Type.CHECKLIST || block.type == GenBlock.Type.LIST)
@@ -696,6 +719,12 @@ public final class GenCardParser {
         }
         // A new durationSec restarts the timer; otherwise keep its running clock.
         if (block.type == GenBlock.Type.TIMER && patch.has("durationSec")) base.remove("endsAt");
+        // A numeric progress patch ends an indeterminate bar (the base still says indeterminate).
+        if (block.type == GenBlock.Type.PROGRESS && !patch.has("indeterminate")
+                && (patch.has("progress") || patch.has("value"))) {
+            base.remove("indeterminate");
+            if (!patch.has("progress")) base.remove("progress");
+        }
         return parseBlock(base, path, notes, now, true);
     }
 

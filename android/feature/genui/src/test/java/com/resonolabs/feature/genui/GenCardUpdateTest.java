@@ -114,4 +114,37 @@ public class GenCardUpdateTest {
         assertEquals(NOW + 90_000L, card.timerBlock().endsAt);
         assertEquals(60_000L, card.timerBlock().totalMs);
     }
+
+    /** A bar shown as indeterminate must take a later numeric progress patch (and vice versa). */
+    @Test public void progressPatchClearsIndeterminate() {
+        GenCard card = GenCardParser.parseShow("{\"id\":\"p\",\"title\":\"Upload\",\"body\":[{\"type\":\"progress\","
+                + "\"id\":\"bar\",\"indeterminate\":true,\"label\":\"Starting\"}]}", NOW).card;
+        assertTrue(card.findBlock("bar").indeterminate());
+        GenCardParser.applyUpdate(card, "{\"id\":\"p\",\"patch\":[{\"id\":\"bar\",\"progress\":0.4}]}", NOW);
+        assertEquals(0.4f, card.findBlock("bar").progress, 0.0001f);
+        assertEquals("Starting", card.findBlock("bar").label);
+        GenCardParser.applyUpdate(card, "{\"id\":\"p\",\"patch\":[{\"id\":\"bar\",\"indeterminate\":true}]}", NOW);
+        assertTrue(card.findBlock("bar").indeterminate());
+    }
+
+    /** Replacing or trimming a timer card's body must not restart the running countdown. */
+    @Test public void timerBodyEditsKeepTheRunningClock() throws Exception {
+        GenCard card = GenCardParser.parseShow(
+                GenTestSupport.examples().getJSONArray("show_card").getJSONObject(1).toString(), NOW).card;
+        long endsAt = card.timerBlock().endsAt;
+        GenCardParser.applyUpdate(card, "{\"id\":\"timer-pasta\",\"body\":[{\"type\":\"text\",\"text\":\"Stir\"}]}",
+                NOW + 30_000L);
+        assertEquals(endsAt, card.timerBlock().endsAt);
+        assertEquals(2, card.body.size());
+        GenCardParser.applyUpdate(card, "{\"id\":\"timer-pasta\",\"remove\":[\"timer\"]}", NOW + 40_000L);
+        assertEquals(endsAt, card.timerBlock().endsAt);
+        GenCardParser.applyUpdate(card, "{\"id\":\"timer-pasta\",\"body\":[{\"type\":\"timer\",\"label\":\"Boil\"}]}",
+                NOW + 50_000L);
+        assertEquals(endsAt, card.timerBlock().endsAt);
+        assertEquals("Boil", card.timerBlock().label);
+        // An explicit new duration still restarts it.
+        GenCardParser.applyUpdate(card, "{\"id\":\"timer-pasta\",\"body\":[{\"type\":\"timer\",\"durationSec\":60}]}",
+                NOW + 60_000L);
+        assertEquals(NOW + 120_000L, card.timerBlock().endsAt);
+    }
 }
