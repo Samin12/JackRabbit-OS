@@ -36,7 +36,9 @@ public final class CalendarPageView extends View implements AutoCloseable {
     public void start(){handler.removeCallbacks(refresh);handler.post(refresh);}
     public void stop(){handler.removeCallbacks(refresh);}
     private final Runnable refresh=new Runnable(){@Override public void run(){if(fixture!=null)apply(fixture);else client.loadUpcoming(getContext(),new CalendarEventClient.Callback(){public void onEvents(JSONObject value){apply(value);}public void onFailure(){}});handler.postDelayed(this,5000);}};
-    private void apply(JSONObject value){JSONArray next=value.optJSONArray("events");if(next==null)next=new JSONArray();if(pinnedEventId!=null){int found=indexOf(next,pinnedEventId);if(found<0)return;selected=found;}events=next;selected=Math.min(selected,Math.max(0,events.length()-1));invalidate();}
+    private void apply(JSONObject value){JSONArray next=notOver(value.optJSONArray("events"));if(pinnedEventId!=null){int found=indexOf(next,pinnedEventId);if(found<0)return;selected=found;}events=next;selected=Math.min(selected,Math.max(0,events.length()-1));invalidate();}
+    /** The runtime keeps all-day events up to 14 h past their stored UTC end (for zones behind UTC); drop the ones whose date is over here. */
+    private static JSONArray notOver(JSONArray list){JSONArray out=new JSONArray();if(list==null)return out;java.time.LocalDate today=java.time.LocalDate.now();for(int i=0;i<list.length();i++){JSONObject item=list.optJSONObject(i);if(item==null)continue;if(item.optBoolean("allDay")&&CalendarDates.allDayOver(item.optString("startsAt"),item.optString("endsAt"),today))continue;out.put(item);}return out;}
     private static int indexOf(JSONArray list,String eventId){for(int i=0;i<list.length();i++){JSONObject item=list.optJSONObject(i);if(item!=null&&eventId.equals(item.optString("eventId")))return i;}return -1;}
     /** Use a fixed upcoming projection ({@code {"events":[...]}}) instead of polling the runtime. */
     public void useFixture(JSONObject upcoming){fixture=upcoming;if(upcoming!=null)apply(upcoming);}

@@ -70,6 +70,15 @@ public class AgendaTest {
         assertEquals(List.of("UPCOMING:flight"), ids(agenda.sections.get(1)));
     }
 
+    @Test public void yesterdaysAllDayEventKeptByTheRuntimeGraceIsDropped() {
+        // The upcoming projection keeps all-day events up to 14 h past their stored UTC end.
+        AgendaEvent yesterday = allDay("yesterday", "2026-10-06T00:00:00+00:00", "2026-10-07T00:00:00+00:00");
+        Agenda agenda = Agenda.build(List.of(yesterday), NOW, 4);
+        assertTrue(agenda.sections.isEmpty());
+        assertEquals(0, agenda.todayCount);
+        assertNull(agenda.later);
+    }
+
     @Test public void groupsAndSortsInTheDeviceZoneAndDropsWhatIsOver() {
         Agenda agenda = Agenda.build(List.of(
                 timed("dinner", "2026-10-07T23:00:00Z", "2026-10-08T00:30:00Z"),     // 7 PM today
