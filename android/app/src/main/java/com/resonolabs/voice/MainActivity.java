@@ -124,6 +124,9 @@ public final class MainActivity extends Activity {
             Log.i(SideButtonGesture.LOG_TAG, "double press ignored (duplicate delivery)");
             return;
         }
+        // A newer gesture supersedes a cold-start "start" still waiting for the runtime health
+        // check; otherwise start+stop presses in that window would be followed by a late start.
+        sideButtonStartPending = false;
         // Posted so it runs after the resume that accompanies this intent: the microphone is
         // then opened from a TOP process (the press may have just woken the screen).
         root.post(() -> {
