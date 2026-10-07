@@ -1,5 +1,6 @@
 package com.resonolabs.ui.design;
 
+import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.LinearGradient;
@@ -13,6 +14,13 @@ import android.os.SystemClock;
 /**
  * Floating fluid orb: white crown, pale middle band, saturated base, with drifting wavy
  * boundaries. Visual language after the Rare UI Fluid Orb (rareui.com, MIT + attribution).
+ *
+ * <p>Hero orbs ({@link #hero}) follow the user's orb style: with {@link OrbStyle#PIXEL_HEAD}
+ * they draw the voxel {@link PixelHead} instead, same centre, energy and speed. Small orbs that
+ * signal a status through their colour stay fluid. Hero call sites: Voice page (all sizes),
+ * Settings (About, Display preview), Control Center, background run, camera hand-off, creation
+ * import, the T3 "Starting thread" overlay and the GenUI debug preview. Fluid on purpose: the
+ * chrome runner orb, T3 list status/state orbs and the T3 New button.
  */
 public final class FluidOrb {
     private static final String SHADER = """
@@ -56,6 +64,10 @@ public final class FluidOrb {
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint glowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final RuntimeShader shader;
+    private RadialGradient glowShader;
+    private LinearGradient fallbackShader;
+    private int shaderColor;
+    private PixelHead head;
     private final long start = SystemClock.uptimeMillis();
     private int color = SamTheme.ORB_BLUE;
     private float energy;
@@ -105,17 +117,42 @@ public final class FluidOrb {
         return color;
     }
 
+    /**
+     * Marks this as a hero orb: it follows the orb style chosen in Settings > Display and draws
+     * the Pixel head while that style is on. Status orbs whose colour carries meaning stay plain.
+     */
+    public FluidOrb hero(Context context) {
+        if (head == null) head = new PixelHead(context);
+        return this;
+    }
+
     /** Draws the orb with a soft halo; call every frame while animating. */
     public void draw(Canvas canvas, float cx, float cy, float radius) {
         long now = SystemClock.uptimeMillis();
         phase += (now - lastFrame) / 1000f * speed;
         lastFrame = now;
+        if (head != null && OrbStyleSetting.current() == OrbStyle.PIXEL_HEAD
+                && head.draw(canvas, cx, cy, radius, energy, speed, now)) {
+            return;
+        }
+        if (glowShader == null || shaderColor != color) {
+            // Unit-radius shaders at the origin, placed with the canvas matrix: no per-frame allocation.
+            shaderColor = color;
+            glowShader = new RadialGradient(0f, 0f, 1f,
+                    new int[]{SamTheme.withAlpha(color, 110), SamTheme.withAlpha(color, 34),
+                            SamTheme.withAlpha(color, 0)},
+                    new float[]{0.35f, 0.7f, 1f}, Shader.TileMode.CLAMP);
+            fallbackShader = new LinearGradient(0f, -1f, 0f, 1f,
+                    new int[]{Color.WHITE, paleTint(color), color}, new float[]{0.2f, 0.5f, 0.8f},
+                    Shader.TileMode.CLAMP);
+            glowPaint.setShader(glowShader);
+        }
         float glow = radius * (1.55f + energy * 0.25f);
-        glowPaint.setShader(new RadialGradient(cx, cy + radius * 0.25f, glow,
-                new int[]{SamTheme.withAlpha(color, 110), SamTheme.withAlpha(color, 34),
-                        SamTheme.withAlpha(color, 0)},
-                new float[]{0.35f, 0.7f, 1f}, Shader.TileMode.CLAMP));
-        canvas.drawCircle(cx, cy + radius * 0.25f, glow, glowPaint);
+        canvas.save();
+        canvas.translate(cx, cy + radius * 0.25f);
+        canvas.scale(glow, glow);
+        canvas.drawCircle(0f, 0f, 1f, glowPaint);
+        canvas.restore();
         if (shader != null) {
             shader.setFloatUniform("center", cx, cy);
             shader.setFloatUniform("radius", radius);
@@ -123,10 +160,12 @@ public final class FluidOrb {
             shader.setFloatUniform("energy", energy);
             canvas.drawCircle(cx, cy, radius, paint);
         } else {
-            paint.setShader(new LinearGradient(cx, cy - radius, cx, cy + radius,
-                    new int[]{Color.WHITE, paleTint(color), color}, new float[]{0.2f, 0.5f, 0.8f},
-                    Shader.TileMode.CLAMP));
-            canvas.drawCircle(cx, cy, radius, paint);
+            paint.setShader(fallbackShader);
+            canvas.save();
+            canvas.translate(cx, cy);
+            canvas.scale(radius, radius);
+            canvas.drawCircle(0f, 0f, 1f, paint);
+            canvas.restore();
         }
     }
 
