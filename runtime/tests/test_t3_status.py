@@ -1,18 +1,23 @@
 from __future__ import annotations
 
+import time
 import unittest
+from unittest import mock
 
+from sam_runtime.domains.t3.service import T3Service
 from sam_runtime.domains.t3.status import (
     DEFAULT_APPROVAL_OPTIONS,
     pending_requests,
     status_label,
     thread_status,
 )
+from sam_runtime.security.credentials import ConnectionCredentialEnvelopes
 
 from t3_fixtures import (
     PAIRING_CODE,
     PROJECT_SIDE,
     FakeT3Server,
+    StubBridge,
     approval_requested,
     approval_resolved,
     input_requested,
@@ -151,6 +156,17 @@ class T3SummariesTest(unittest.TestCase):
         after = self.service.threads_view()
         self.assertFalse(any(item["unread"] for item in after["threads"]))
         self.assertGreater(after["revision"], before["revision"])
+
+    def test_revision_never_repeats_after_a_runtime_restart(self) -> None:
+        # The app skips re-rendering when the revision equals the one it holds.
+        self.fake.set_threads(self._threads())
+        self.service.connect(self.fake.url, PAIRING_CODE)
+        held = self.service.threads_view()["revision"]
+        later = time.time() + 30
+        with mock.patch("sam_runtime.domains.t3.service.time.time", return_value=later):
+            restarted = T3Service(self.repository, ConnectionCredentialEnvelopes(StubBridge()))
+            restarted.sync_once()
+            self.assertGreater(restarted.threads_view()["revision"], held)
 
     def test_not_connected_view_and_status(self) -> None:
         view = self.service.threads_view()

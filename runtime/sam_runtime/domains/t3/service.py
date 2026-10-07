@@ -488,7 +488,9 @@ class T3Service:
         )
         if fingerprint != self._fingerprint:
             self._fingerprint = fingerprint
-            self._revision += 1
+            # Never below wall-clock seconds, so a restarted runtime cannot repeat a
+            # revision the app already holds (it skips re-rendering on an equal one).
+            self._revision = max(self._revision + 1, int(time.time()))
             self._revision_at = _iso(now)
 
     # --------------------------------------------------------- announcements
