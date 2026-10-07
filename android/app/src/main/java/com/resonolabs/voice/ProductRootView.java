@@ -217,24 +217,30 @@ final class ProductRootView extends FrameLayout {
         String name = title == null || title.isBlank() ? "Untitled thread" : title.trim();
         openVoice();
         voice.startSessionWithNote("Host note (from the R1's T3 tab, not the user's words): the user is looking at "
-                + "T3 Code thread \u201c" + name + "\u201d (threadId " + threadId + ") and tapped Talk. Treat what "
-                + "they say next as a message for that thread and send it with t3_send_message using that "
-                + "threadId, unless they clearly ask for something else; use t3_respond for its pending approvals "
-                + "or questions. Confirm in a few words once it is sent. Right now, briefly ask what they want to "
-                + "tell that thread, then wait.");
+                + "T3 Code thread \u201c" + name + "\u201d (id " + threadId + ") and tapped Talk. Treat what "
+                + "they say next as a message for that thread and send it with t3_send_message, passing thread=\""
+                + threadId + "\", unless they clearly ask for something else; use t3_respond with the same thread "
+                + "for its pending approvals or questions. Confirm in a few words once it is sent. Right now, "
+                + "briefly ask what they want to tell that thread, then wait.");
     }
 
     /** T3 "Talk" on the new-thread screen: what the user says next becomes the first prompt. */
     void talkToNewThread(String projectId, String projectTitle) {
-        boolean known = projectId != null && !projectId.isBlank();
+        // t3_new_thread takes the project by name ("project"), not by id.
+        boolean known = projectId != null && !projectId.isBlank()
+                && projectTitle != null && !projectTitle.isBlank();
         String where = known
-                ? "project \u201c" + projectTitle + "\u201d (projectId " + projectId + ")"
+                ? "project \u201c" + projectTitle.trim() + "\u201d"
                 : "their most recently active project";
+        String how = known
+                ? "create it with t3_new_thread, passing the prompt and project=\"" + projectTitle.trim()
+                        + "\" unless they name another project"
+                : "create it with t3_new_thread, passing the prompt and no project unless they name one";
         openVoice();
         voice.startSessionWithNote("Host note (from the R1's T3 tab, not the user's words): the user wants to start "
-                + "a new T3 Code thread in " + where + ". Treat what they say next as the prompt and create it "
-                + "with t3_new_thread in that project unless they name another, then confirm in one short "
-                + "sentence. Right now, briefly ask what the new thread should do, then wait.");
+                + "a new T3 Code thread in " + where + ". Treat what they say next as the prompt and " + how
+                + ", then confirm in one short sentence. Right now, briefly ask what the new thread should do, "
+                + "then wait.");
     }
 
     private void openCards() {
