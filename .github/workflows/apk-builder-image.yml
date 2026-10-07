@@ -10,7 +10,9 @@ name: Publish APK builder image
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    # sam-project is listed so the image can be published before this workflow
+    # exists on the default branch (workflow_dispatch only works from there).
+    branches: [main, sam-project]
     paths:
       - android/Dockerfile
       - .dockerignore
