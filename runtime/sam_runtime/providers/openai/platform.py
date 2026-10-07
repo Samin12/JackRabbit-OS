@@ -98,6 +98,46 @@ class OpenAIPlatform:
             raise OpenAIProviderError("invalid_answer", "OpenAI returned an invalid WebRTC answer.")
         return answer
 
+    def create_dictation_call(
+        self,
+        *,
+        offer_sdp: str,
+        variant: str,
+        model: str,
+        transcription_model: str,
+    ) -> str:
+        """WebRTC call that only transcribes the microphone (no model response, no audio out).
+
+        ``variant`` is ``"transcription"`` (a Realtime transcription session) or
+        ``"realtime"`` (a Realtime session whose server VAD never creates a response).
+        """
+        if not offer_sdp.startswith("v=0") or len(offer_sdp) > 262_144:
+            raise OpenAIProviderError("invalid_sdp", "The WebRTC offer is invalid.", status=400)
+        if variant == "realtime" and (
+            not (model.startswith("gpt-realtime") or model == "gpt-live-1") or len(model) > 128
+        ):
+            raise OpenAIProviderError("unsupported_model", "Select an available Realtime model.", status=400)
+        _LOG.info(
+            "openai.dictation.create.begin",
+            extra={"variant": variant, "transcriptionModel": transcription_model, "sdpLen": len(offer_sdp)},
+        )
+        boundary = f"sam-{secrets.token_hex(16)}"
+        session = json.dumps(
+            _dictation_session(variant, model=model, transcription_model=transcription_model),
+            separators=(",", ":"),
+        )
+        body = _multipart(boundary, (("sdp", offer_sdp), ("session", session)))
+        answer = self._request(
+            "POST",
+            "/realtime/calls",
+            body=body,
+            content_type=f"multipart/form-data; boundary={boundary}",
+        ).decode()
+        if not answer.startswith("v=0"):
+            raise OpenAIProviderError("invalid_answer", "OpenAI returned an invalid WebRTC answer.")
+        _LOG.info("openai.dictation.create.success", extra={"variant": variant})
+        return answer
+
     def _request(
         self,
         method: str,
@@ -242,6 +282,57 @@ def _realtime_session(
         },
         "tools": tools,
         "tool_choice": "auto",
+    }
+
+
+DICTATION_INSTRUCTION = (
+    "Dictation relay. The user's speech is transcribed by the input transcription model. "
+    "Never respond, never call tools, never speak."
+)
+
+# Tried in order until OpenAI accepts one (the ChatGPT subscription credential may not allow a
+# transcription-only session); the controller remembers the first accepted variant.
+DICTATION_VARIANTS: tuple[tuple[str, str], ...] = (
+    ("transcription", "gpt-4o-transcribe"),
+    ("realtime", "gpt-4o-transcribe"),
+    ("realtime", "gpt-4o-mini-transcribe"),
+)
+
+
+def _dictation_session(variant: str, *, model: str, transcription_model: str) -> dict[str, object]:
+    """Speech-to-text only: server VAD segments the speech, nothing ever answers.
+
+    ``transcription`` sessions cannot create responses at all. The ``realtime`` fallback
+    keeps the Voice audio contract but turns off response creation, has no tools, text-only
+    output capped at one token, and no output voice.
+    """
+    turn_detection: dict[str, object] = {
+        "type": "server_vad",
+        "threshold": 0.6,
+        "prefix_padding_ms": 300,
+        "silence_duration_ms": 700,
+    }
+    audio_input: dict[str, object] = {
+        "format": {"type": "audio/pcm", "rate": 24_000},
+        "noise_reduction": {"type": "near_field"},
+        "transcription": {"model": transcription_model},
+        "turn_detection": turn_detection,
+    }
+    if variant == "transcription":
+        return {"type": "transcription", "audio": {"input": audio_input}}
+    if variant != "realtime":
+        raise ValueError(f"unknown dictation variant {variant!r}")
+    turn_detection["create_response"] = False
+    turn_detection["interrupt_response"] = False
+    return {
+        "type": "realtime",
+        "model": model,
+        "instructions": DICTATION_INSTRUCTION,
+        "output_modalities": ["text"],
+        "max_output_tokens": 1,
+        "audio": {"input": audio_input},
+        "tools": [],
+        "tool_choice": "none",
     }
 
 
