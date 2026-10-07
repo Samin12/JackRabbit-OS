@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug builds only (src/debug): GenUI preview and ad-hoc card injection. Never in release. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <activity
+            android:name="com.resonolabs.feature.genui.GenUiPreviewActivity"
+            android:configChanges="density|fontScale|keyboard|keyboardHidden|orientation|screenLayout|screenSize|smallestScreenSize|uiMode"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:screenOrientation="portrait"
+            android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen" />
+
+        <receiver
+            android:name="com.resonolabs.feature.genui.GenUiDebugReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.resonolabs.genui.DEBUG_SHOW" />
+                <action android:name="com.resonolabs.genui.DEBUG_UPDATE" />
+                <action android:name="com.resonolabs.genui.DEBUG_DISMISS" />
+                <action android:name="com.resonolabs.genui.DEBUG_SCENE" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>
