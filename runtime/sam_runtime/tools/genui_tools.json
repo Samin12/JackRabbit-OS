@@ -1,0 +1,524 @@
+[
+  {
+    "type": "function",
+    "name": "show_card",
+    "description": "Show a small glanceable card on the R1's 480x640 screen next to your spoken reply. Use it sometimes, not every turn: only when seeing beats hearing - 3+ items (options, steps, a checklist), numbers to glance at (prices, totals, scores, times), a status or progress that changes (timer, background job, coding thread, next meeting), a short comparison, or weather. Never for small talk, a one-sentence answer, or to repeat what you say. Call it before you speak, then say one short sentence that points at it and do not read the card aloud. Reusing an id replaces that card; to change a card prefer update_card. Text must be terse: title up to 5 words, rows up to 6 words, no markdown or emoji. Limits: 6 blocks, 8 rows, 2 buttons. size compact = one-line pill under the orb (good for a timer or a single status).",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Short stable id you choose, e.g. \"groceries\", \"timer-pasta\"."
+        },
+        "title": {
+          "type": "string"
+        },
+        "subtitle": {
+          "type": "string"
+        },
+        "eyebrow": {
+          "type": "string",
+          "description": "Tiny uppercase context label, e.g. \"Weather\", \"T3 Code\"."
+        },
+        "size": {
+          "type": "string",
+          "enum": [
+            "card",
+            "compact"
+          ]
+        },
+        "icon": {
+          "type": "string",
+          "enum": [
+            "calendar",
+            "clock",
+            "timer",
+            "check",
+            "task",
+            "code",
+            "mail",
+            "bolt",
+            "pin",
+            "cart",
+            "plane",
+            "car",
+            "music",
+            "weather",
+            "chart",
+            "warning",
+            "star",
+            "home"
+          ]
+        },
+        "accent": {
+          "type": "string",
+          "enum": [
+            "blue",
+            "violet",
+            "cyan",
+            "mint",
+            "pink",
+            "amber",
+            "red",
+            "green"
+          ]
+        },
+        "body": {
+          "type": "array",
+          "maxItems": 6,
+          "items": {
+            "type": "object",
+            "description": "One block. Fields used per type: text{text,style}; stat{value,label,delta,trend}; kv{pairs,columns}; list{items[title,detail,trailing,status,icon]}; checklist{items[text,checked]}; progress{progress 0..1 or indeterminate,label,steps,step}; timer{durationSec,label}; bars{values,labels,unit,highlight}; weather{temp,condition,hi,lo,place,hours}; divider{}.",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "text",
+                  "stat",
+                  "kv",
+                  "list",
+                  "checklist",
+                  "progress",
+                  "timer",
+                  "bars",
+                  "weather",
+                  "divider"
+                ]
+              },
+              "id": {
+                "type": "string",
+                "description": "Optional short id so update_card can patch this block."
+              },
+              "text": {
+                "type": "string"
+              },
+              "style": {
+                "type": "string",
+                "enum": [
+                  "body",
+                  "muted",
+                  "lead"
+                ]
+              },
+              "value": {
+                "type": "string",
+                "description": "stat: the big value, e.g. \"$412\" or \"72°\"."
+              },
+              "label": {
+                "type": "string"
+              },
+              "delta": {
+                "type": "string"
+              },
+              "trend": {
+                "type": "string",
+                "enum": [
+                  "up",
+                  "down",
+                  "flat"
+                ]
+              },
+              "pairs": {
+                "type": "array",
+                "maxItems": 6,
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "k": {
+                      "type": "string"
+                    },
+                    "v": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "k",
+                    "v"
+                  ]
+                }
+              },
+              "columns": {
+                "type": "integer",
+                "enum": [
+                  1,
+                  2
+                ]
+              },
+              "items": {
+                "type": "array",
+                "maxItems": 8,
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "title": {
+                      "type": "string"
+                    },
+                    "detail": {
+                      "type": "string"
+                    },
+                    "trailing": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "ok",
+                        "warn",
+                        "error",
+                        "active",
+                        "idle"
+                      ]
+                    },
+                    "icon": {
+                      "type": "string",
+                      "enum": [
+                        "calendar",
+                        "clock",
+                        "timer",
+                        "check",
+                        "task",
+                        "code",
+                        "mail",
+                        "bolt",
+                        "pin",
+                        "cart",
+                        "plane",
+                        "car",
+                        "music",
+                        "weather",
+                        "chart",
+                        "warning",
+                        "star",
+                        "home"
+                      ]
+                    },
+                    "text": {
+                      "type": "string"
+                    },
+                    "checked": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              },
+              "progress": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "indeterminate": {
+                "type": "boolean"
+              },
+              "steps": {
+                "type": "array",
+                "maxItems": 4,
+                "items": {
+                  "type": "string"
+                }
+              },
+              "step": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 3
+              },
+              "durationSec": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 86400
+              },
+              "values": {
+                "type": "array",
+                "maxItems": 12,
+                "items": {
+                  "type": "number"
+                }
+              },
+              "labels": {
+                "type": "array",
+                "maxItems": 12,
+                "items": {
+                  "type": "string"
+                }
+              },
+              "unit": {
+                "type": "string"
+              },
+              "highlight": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 11
+              },
+              "temp": {
+                "type": "string"
+              },
+              "condition": {
+                "type": "string",
+                "enum": [
+                  "sunny",
+                  "clear-night",
+                  "partly-cloudy",
+                  "cloudy",
+                  "rain",
+                  "storm",
+                  "snow",
+                  "fog",
+                  "wind"
+                ]
+              },
+              "hi": {
+                "type": "string"
+              },
+              "lo": {
+                "type": "string"
+              },
+              "place": {
+                "type": "string"
+              },
+              "hours": {
+                "type": "array",
+                "maxItems": 5,
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "t": {
+                      "type": "string"
+                    },
+                    "temp": {
+                      "type": "string"
+                    },
+                    "condition": {
+                      "type": "string",
+                      "enum": [
+                        "sunny",
+                        "clear-night",
+                        "partly-cloudy",
+                        "cloudy",
+                        "rain",
+                        "storm",
+                        "snow",
+                        "fog",
+                        "wind"
+                      ]
+                    }
+                  }
+                }
+              }
+            },
+            "required": [
+              "type"
+            ]
+          }
+        },
+        "actions": {
+          "type": "array",
+          "maxItems": 2,
+          "items": {
+            "type": "object",
+            "description": "A button. Set exactly one of say, open, timer, dismiss.",
+            "properties": {
+              "label": {
+                "type": "string",
+                "description": "1-2 words, verb first, e.g. \"Add item\", \"Check in\"."
+              },
+              "style": {
+                "type": "string",
+                "enum": [
+                  "primary",
+                  "secondary",
+                  "danger"
+                ]
+              },
+              "say": {
+                "type": "string",
+                "description": "Tapping sends this text to you as the user's next message."
+              },
+              "open": {
+                "type": "string",
+                "enum": [
+                  "calendar",
+                  "tasks",
+                  "cards",
+                  "runs",
+                  "transcript"
+                ]
+              },
+              "timer": {
+                "type": "string",
+                "enum": [
+                  "add1m",
+                  "add5m",
+                  "pause",
+                  "resume"
+                ]
+              },
+              "dismiss": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "label"
+            ]
+          }
+        },
+        "live": {
+          "type": "object",
+          "description": "Bind the card to data the R1 keeps current by itself (no further calls needed). timer needs durationSec; background-run needs runId (from goal_start); t3-thread needs threadId; calendar-next and tasks need nothing.",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "timer",
+                "calendar-next",
+                "tasks",
+                "background-run",
+                "t3-thread"
+              ]
+            },
+            "durationSec": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 86400
+            },
+            "runId": {
+              "type": "string"
+            },
+            "threadId": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        "ttlSec": {
+          "type": "integer",
+          "minimum": 10,
+          "maximum": 86400,
+          "description": "Auto-dismiss after this many seconds without updates (default 600)."
+        },
+        "pinned": {
+          "type": "boolean",
+          "description": "Keep in Cards > Live after the conversation. Only if the user asks to keep it."
+        }
+      },
+      "required": [
+        "id",
+        "title"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "update_card",
+    "description": "Change a card you already showed (same id): tick checklist items, refresh numbers, advance a step, rename. Send only what changes. patch edits blocks by their id; body replaces all blocks. Live cards update themselves - do not poll them with this.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "subtitle": {
+          "type": "string"
+        },
+        "eyebrow": {
+          "type": "string"
+        },
+        "accent": {
+          "type": "string",
+          "enum": [
+            "blue",
+            "violet",
+            "cyan",
+            "mint",
+            "pink",
+            "amber",
+            "red",
+            "green"
+          ]
+        },
+        "body": {
+          "type": "array",
+          "maxItems": 6,
+          "items": {
+            "type": "object"
+          },
+          "description": "Replaces all blocks (same block shape as show_card)."
+        },
+        "patch": {
+          "type": "array",
+          "maxItems": 6,
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id"
+            ]
+          },
+          "description": "Each entry: the block id plus the fields to overwrite, e.g. {\"id\":\"items\",\"items\":[...]}."
+        },
+        "append": {
+          "type": "array",
+          "maxItems": 6,
+          "items": {
+            "type": "object"
+          }
+        },
+        "remove": {
+          "type": "array",
+          "maxItems": 6,
+          "items": {
+            "type": "string"
+          },
+          "description": "Block ids to remove."
+        },
+        "actions": {
+          "type": "array",
+          "maxItems": 2,
+          "items": {
+            "type": "object"
+          }
+        },
+        "ttlSec": {
+          "type": "integer",
+          "minimum": 10,
+          "maximum": 86400
+        },
+        "pinned": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "dismiss_card",
+    "description": "Remove a card when it is finished or no longer relevant, or when the user asks to clear the screen. all=true clears every card except running timers unless the user asked for those too.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "all": {
+          "type": "boolean"
+        },
+        "includeTimers": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+]
