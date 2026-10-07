@@ -10,8 +10,10 @@ at most once.
 from __future__ import annotations
 
 from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
+import time
 
 from .status import DONE, ERROR, NEEDS_APPROVAL, NEEDS_INPUT, NEEDS_YOU, WORKING, parse_time, thread_status
 
@@ -21,6 +23,7 @@ NEEDS_APPROVAL_EVENT = "needs_approval"
 NEEDS_INPUT_EVENT = "needs_input"
 ERROR_EVENT = "error"
 _MAX_KEYS = 2000
+_RECHECK_SECONDS = 10.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,10 +61,12 @@ def _completed_after(thread: dict[str, object], baseline: datetime | None) -> bo
 
 
 class T3TransitionTracker:
-    def __init__(self) -> None:
+    def __init__(self, *, clock: Callable[[], float] = time.monotonic) -> None:
         self._previous: dict[str, _Observed] | None = None
         self._baseline: datetime | None = None
         self._announced: OrderedDict[tuple[str, ...], None] = OrderedDict()
+        self._clock = clock
+        self._rechecked: dict[str, float] = {}
 
     @property
     def has_baseline(self) -> bool:
@@ -72,6 +77,7 @@ class T3TransitionTracker:
         self._previous = None
         self._baseline = None
         self._announced.clear()
+        self._rechecked.clear()
 
     def claim(self, key: tuple[str, ...]) -> bool:
         """Return True the first time ``key`` is claimed (dedupe for announcements)."""
@@ -105,8 +111,13 @@ class T3TransitionTracker:
                 elif _completed_after(thread, self._baseline):
                     events.append(Transition(FINISHED, thread_id, now.turn_id, thread))
             elif now.status in NEEDS_YOU:
-                changed = before is None or before.status != now.status or before.updated_at != now.updated_at
-                if changed:
+                # A new status always triggers; a mere update while still waiting re-checks
+                # for additional requests at most every _RECHECK_SECONDS.
+                entered = before is None or before.status != now.status
+                updated = before is not None and before.updated_at != now.updated_at
+                moment = self._clock()
+                if entered or (updated and moment - self._rechecked.get(thread_id, 0.0) >= _RECHECK_SECONDS):
+                    self._rechecked[thread_id] = moment
                     event = NEEDS_APPROVAL_EVENT if now.status == NEEDS_APPROVAL else NEEDS_INPUT_EVENT
                     events.append(Transition(event, thread_id, now.turn_id, thread))
             elif now.status == ERROR:

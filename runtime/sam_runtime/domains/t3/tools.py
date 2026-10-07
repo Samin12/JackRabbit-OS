@@ -73,7 +73,8 @@ T3_TOOL_SPECS: tuple[tuple[str, str, str, dict[str, object]], ...] = (
     (
         "t3_new_thread",
         "Start a new T3 Code coding thread on the user's Mac and send its first message immediately. Call it "
-        "right away when the user asks to start, build, fix, or investigate something in T3 or Code. prompt is "
+        "right away when the user asks for new coding work in T3 (for example 'have T3 fix the login bug' or "
+        "'start a T3 thread to add dark mode'). prompt is "
         "the user's request in their own words (fix only obvious transcription slips). title is optional, 3 to "
         "6 words. project is optional: pass it only when the user names a project; otherwise the most recently "
         "active project is used. Then confirm in one short sentence that names the project.",

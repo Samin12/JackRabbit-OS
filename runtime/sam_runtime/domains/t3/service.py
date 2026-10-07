@@ -72,6 +72,7 @@ MAX_MESSAGES = 40
 LAST_MESSAGE_CHARS = 400
 _DETAIL_TTL = 1.5
 _PERSIST_SYNC_EVERY = 60.0
+_FAIL_FAST_SECONDS = 5.0
 _APPROVAL_PHRASES = {
     "command": "wants approval to run a command",
     "file-change": "wants approval to edit files",
@@ -168,6 +169,7 @@ class T3Service:
         self._last_sync_persisted = 0.0
         self._tracker = T3TransitionTracker()
         self._detail_cache: dict[tuple[str, int], tuple[float, dict[str, object]]] = {}
+        self._down_until = 0.0
 
     # ------------------------------------------------------------------ state
     def set_wake(self, wake: Callable[[], None]) -> None:
@@ -342,7 +344,9 @@ class T3Service:
         self._recompute()
 
     # ------------------------------------------------------------- transport
-    def _client(self) -> tuple[T3ConnectionRecord, T3HttpClient]:
+    def _client(self, *, probe: bool = False) -> tuple[T3ConnectionRecord, T3HttpClient]:
+        """Client for the paired server. Fails fast for a few seconds after a network
+        failure (unless ``probe``), so screens polling an asleep Mac never pile up."""
         with self._lock:
             self._load()
             record = self._record
@@ -351,6 +355,8 @@ class T3Service:
             health, _ = self._effective_health(record)
             if health == "reauth":
                 raise T3ReauthRequired(EXPIRED_DETAIL if record.health_state != "reauth" else REAUTH_DETAIL)
+            if not probe and time.monotonic() < self._down_until:
+                raise T3Unavailable("T3 Code was unreachable moments ago.")
             if self._token is None:
                 envelope = self._repository.envelope(record.connection_id)
                 try:
@@ -363,10 +369,17 @@ class T3Service:
 
     def _guard(self, record: T3ConnectionRecord, call: Callable[[], object]) -> object:
         try:
-            return call()
+            value = call()
         except T3Unauthorized:
             self._set_health(record, "reauth", REAUTH_DETAIL)
             raise T3ReauthRequired(REAUTH_DETAIL) from None
+        except T3Unavailable:
+            with self._lock:
+                self._down_until = time.monotonic() + _FAIL_FAST_SECONDS
+            raise
+        with self._lock:
+            self._down_until = 0.0
+        return value
 
     def _set_health(self, record: T3ConnectionRecord, state: str, detail: str | None) -> None:
         with self._lock:
@@ -382,10 +395,10 @@ class T3Service:
             self._log.warning("t3.health.persist_failed")
 
     # ------------------------------------------------------------------ sync
-    def sync_once(self) -> bool:
+    def sync_once(self, *, probe: bool = True) -> bool:
         """Fetch the shell once, update the snapshot, announce transitions. Returns has_active."""
         with self._sync_lock:
-            record, client = self._client()
+            record, client = self._client(probe=probe)
             try:
                 shell = self._guard(record, client.shell)
             except T3ReauthRequired:
@@ -399,11 +412,12 @@ class T3Service:
         return self.has_active()
 
     def ensure_snapshot(self) -> None:
+        """Load the first snapshot on demand (route/tool called before the poller ran)."""
         with self._lock:
             ready = self._has_snapshot
         if not ready:
             try:
-                self.sync_once()
+                self.sync_once(probe=False)
             except T3Error:
                 pass
 
@@ -417,8 +431,6 @@ class T3Service:
         with self._lock:
             record = self._record
             if record is None:
-                return []
-            if isinstance(sequence, int) and sequence < self._snapshot_sequence:
                 return []
             if isinstance(sequence, int):
                 self._snapshot_sequence = sequence

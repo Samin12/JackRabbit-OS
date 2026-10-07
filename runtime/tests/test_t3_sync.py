@@ -3,6 +3,7 @@ from __future__ import annotations
 import socket
 import unittest
 
+from sam_runtime.domains.t3.client import T3Unavailable
 from sam_runtime.domains.t3.sync import T3SyncWorker
 from sam_runtime.domains.t3.transitions import T3TransitionTracker
 
@@ -109,6 +110,8 @@ class T3AnnouncementFlowTest(unittest.TestCase):
         self.assertLessEqual(len(item.payload["lastMessage"]), 400)
 
     def test_approvals_are_announced_once_per_request(self) -> None:
+        moment = [100.0]
+        self.service._tracker._clock = lambda: moment[0]
         self.fake.set_threads([_working()])
         self.service.connect(self.fake.url, PAIRING_CODE)
         waiting = thread("t-1", "Fix login redirect", approvals=True, session_status="running", turn_state="running",
@@ -120,6 +123,11 @@ class T3AnnouncementFlowTest(unittest.TestCase):
         more = dict(waiting, updatedAt="2026-10-07T12:08:00.000Z")
         self.fake.set_threads([more])
         self.fake.set_detail("t-1", detail(more, activities=[approval_requested("req-1"), approval_requested("req-2", at="2026-10-07T12:07:30.000Z")]))
+        requests_before = len(self.fake.requests)
+        self.service.sync_once()
+        self.assertEqual(1, len(self.fake.requests) - requests_before, "updates while waiting are re-checked at most every 10 s")
+        moment[0] += 11
+        self.fake.set_threads([dict(more, updatedAt="2026-10-07T12:09:00.000Z")])
         self.service.sync_once()
         items = self._items()
         self.assertEqual(["req-1", "req-2"], [item.payload["requestId"] for item in items])
@@ -186,6 +194,9 @@ class T3SyncWorkerTest(unittest.TestCase):
         self.assertEqual("failed", status["healthState"])
         self.assertTrue(status["connected"])
         self.assertIn("Cannot reach T3 Code", status["detail"])
+        with self.assertRaisesRegex(T3Unavailable, "moments ago"):
+            self.service.thread_detail("t-1")
+        self.service._client(probe=True)
 
 
 if __name__ == "__main__":
