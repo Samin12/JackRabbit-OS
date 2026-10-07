@@ -66,6 +66,7 @@ from .connections.records import ConnectionRepository
 from .providers.openai.web_search import OpenAIWebSearch
 from .tools.web_search import WEB_SEARCH_TOOL_SET, register_web_search
 from .tools.delegation import GOAL_TOOL_SET, register_goal_tools
+from .tools.genui import register_genui_tools
 from .realtime import VoiceModeService, register_voice_mode_tool
 from .api.connection_routes import ConnectionRoutes
 from .plugins.bundled_install import BundledPluginInstaller
@@ -229,6 +230,7 @@ class RuntimeApplication:
         )
         register_goal_tools(self._tools, self._background_agent, self._voice_modes)
         register_voice_mode_tool(self._tools, self._voice_modes)
+        register_genui_tools(self._tools)
         self._outbound_mcp = McpLifecycle(
             McpConnectionRepository(self._database),
             self._connections,
