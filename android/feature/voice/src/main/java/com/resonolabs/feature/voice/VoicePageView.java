@@ -25,7 +25,7 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
     private static final float HEIGHT = 640f;
     private final Activity activity;
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final FluidOrb orb = new FluidOrb();
+    private final FluidOrb orb = new FluidOrb().hero(getContext());
     private float orbRadius = 92f;
     private float orbY;
     private static final float BAR_Y = 588f;

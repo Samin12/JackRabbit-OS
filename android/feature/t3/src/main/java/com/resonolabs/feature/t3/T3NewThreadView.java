@@ -37,7 +37,7 @@ final class T3NewThreadView extends View {
 
     private final Activity activity;
     private final T3Surface surface = new T3Surface();
-    private final FluidOrb orb = new FluidOrb().setColor(SamTheme.ORB_BLUE).setEnergy(0.8f).setSpeed(1.6f);
+    private final FluidOrb orb = new FluidOrb().hero(getContext()).setColor(SamTheme.ORB_BLUE).setEnergy(0.8f).setSpeed(1.6f);
     private final T3Toast toast;
     private final Actions actions;
     private final RectF rect = new RectF();

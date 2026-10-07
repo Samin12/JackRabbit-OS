@@ -6,6 +6,9 @@ import android.graphics.RectF;
 import android.os.BatteryManager;
 import android.text.format.DateFormat;
 
+import com.resonolabs.ui.design.OrbStyle;
+import com.resonolabs.ui.design.OrbStyleSetting;
+import com.resonolabs.ui.design.PixelHead;
 import com.resonolabs.ui.design.SamTheme;
 
 import java.time.Instant;
@@ -14,10 +17,18 @@ import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Locale;
 
-/** Big time, date and battery at the top of the board. No glass: it is the board's headline. */
+/**
+ * Big time, date and battery at the top of the board. No glass: it is the board's headline.
+ * The corner mark is the orb, or a still Pixel head looking toward the clock when that orb style
+ * is chosen (still, like the rest of the board).
+ */
 public final class ClockWidget implements BoardWidget {
     private static final float HEIGHT = 112f;
+    /** Pixel head pose turned toward the clock on its left (yaw about -20 degrees). */
+    private static final int HEAD_POSE = 6;
     private final BoardHost host;
+    private final PixelHead head;
+    private final OrbStyleSetting.Listener styleListener;
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint clockPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final OrbGlyph orb = new OrbGlyph();
@@ -34,6 +45,8 @@ public final class ClockWidget implements BoardWidget {
 
     public ClockWidget(BoardHost host) {
         this.host = host;
+        this.head = new PixelHead(host.context());
+        this.styleListener = style -> host.widgetChanged(this);
         clockPaint.setTypeface(BoardPaint.LIGHT);
         clockPaint.setFontFeatureSettings("tnum");
         clockPaint.setTextAlign(Paint.Align.LEFT);
@@ -66,7 +79,10 @@ public final class ClockWidget implements BoardWidget {
                     SamTheme.withAlpha(SamTheme.INK, 170), Paint.Align.LEFT, BoardPaint.MEDIUM);
         }
         BoardPaint.text(canvas, paint, date, 9f, 104f, 18f, SamTheme.MUTED, Paint.Align.LEFT, BoardPaint.REGULAR);
-        orb.draw(canvas, paint);
+        if (OrbStyleSetting.current() != OrbStyle.PIXEL_HEAD
+                || !head.drawStill(canvas, width - 34f, 50f, 19f, HEAD_POSE)) {
+            orb.draw(canvas, paint);
+        }
         if (batteryLevel >= 0) drawBattery(canvas);
     }
 
@@ -99,6 +115,12 @@ public final class ClockWidget implements BoardWidget {
     @Override public boolean onTap(float x, float y) { return false; }
     @Override public boolean activate(int index) { return false; }
     @Override public long refreshIntervalMs() { return 60_000L; }
+
+    @Override public void onShow() { OrbStyleSetting.addListener(styleListener); }
+
+    @Override public void onHide() { OrbStyleSetting.removeListener(styleListener); }
+
+    @Override public void close() { OrbStyleSetting.removeListener(styleListener); }
 
     @Override public void refresh() {
         int before = batteryLevel;
