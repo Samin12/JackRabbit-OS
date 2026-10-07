@@ -32,6 +32,9 @@ public final class T3PageView extends FrameLayout implements UiInputTarget, Auto
 
         /** Count of threads waiting on the user, for a badge outside the tab. */
         void needsYou(int count);
+
+        /** Needs-you and working counts (e.g. the idle Voice page's glance chip); 0/0 when unknown. */
+        default void counts(int needsYou, int working) { }
     }
 
     private enum Screen { LIST, THREAD, NEW }
@@ -60,6 +63,8 @@ public final class T3PageView extends FrameLayout implements UiInputTarget, Auto
     private String connectionLabel = "";
     private long labelFetchedAt;
     private int lastNeedsYou = -1;
+    private int lastWorking = -1;
+    private int lastNeedsYouCount = -1;
     /** Last /v1/t3/status said healthState=failed (T3 Code unreachable). */
     private boolean serverDown;
     private String serverDownDetail = "";
@@ -249,6 +254,7 @@ public final class T3PageView extends FrameLayout implements UiInputTarget, Auto
                 lastNeedsYou = 0;
                 host.needsYou(0);
             }
+            reportCounts(0, 0);
             refreshConnection(true);
             return;
         }
@@ -262,9 +268,17 @@ public final class T3PageView extends FrameLayout implements UiInputTarget, Auto
             lastNeedsYou = next.counts.needsYou;
             host.needsYou(lastNeedsYou);
         }
+        reportCounts(next.counts.needsYou, next.counts.working);
         if (next.threads.isEmpty() || System.currentTimeMillis() - labelFetchedAt > 60_000L) {
             refreshConnection(false);
         }
+    }
+
+    private void reportCounts(int needsYou, int working) {
+        if (needsYou == lastNeedsYouCount && working == lastWorking) return;
+        lastNeedsYouCount = needsYou;
+        lastWorking = working;
+        host.counts(needsYou, working);
     }
 
     private void handleListFailure(T3Client.Failure failure) {
@@ -277,6 +291,7 @@ public final class T3PageView extends FrameLayout implements UiInputTarget, Auto
                 lastNeedsYou = 0;
                 host.needsYou(0);
             }
+            reportCounts(0, 0);
             return;
         }
         if (failure.runtimeUnavailable()) {

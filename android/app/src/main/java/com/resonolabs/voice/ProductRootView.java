@@ -1,9 +1,15 @@
 package com.resonolabs.voice;
 
 import android.app.Activity;
+import android.util.Log;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.widget.FrameLayout;
+import android.widget.Toast;
+
+import org.json.JSONObject;
+
+import java.util.ArrayList;
 
 import com.resonolabs.feature.voice.VoicePageView;
 import com.resonolabs.feature.settings.SettingsPanelView;
@@ -19,8 +25,15 @@ import com.resonolabs.runtime.host.RuntimeBackgroundRunClient;
 import com.resonolabs.runtime.host.RuntimeCreationImportClient;
 import com.resonolabs.feature.creationimport.CreationImportView;
 import com.resonolabs.feature.t3.T3PageView;
+import com.resonolabs.feature.genui.GenCard;
+import com.resonolabs.feature.genui.LiveBinding;
+import com.resonolabs.feature.genui.T3AnnouncementCards;
+import com.resonolabs.runtime.host.RuntimeAnnouncementClient;
+import com.resonolabs.runtime.host.T3Client;
+import com.resonolabs.ui.power.AlwaysOnVoice;
 
 final class ProductRootView extends FrameLayout {
+    private static final String ANNOUNCE_TAG = "SamAnnounce";
     private final VoicePageView voice;
     private final SettingsPanelView settings;
     private final CardsPageView cards;
@@ -45,6 +58,16 @@ final class ProductRootView extends FrameLayout {
     private boolean pullGesture;
     /** Swipe right from the left edge = Back (Android's own gestures and nav bar are switched off). */
     private boolean edgeBackGesture;
+    /** The Voice page has a card expanded to full height (chrome hidden). */
+    private boolean voiceImmersive;
+    private int t3NeedsYou;
+    /** Runtime announcement long-poll (T3 thread updates); owned here, closed with the root. */
+    private final RuntimeAnnouncementClient announcements;
+    /** Direct T3 calls for app-built card buttons (Approve / Deny). */
+    private final T3Client t3Actions = new T3Client();
+    /** Updates that arrived while a voice session was connecting: spoken once it is live. */
+    private final ArrayList<Object[]> deferredUpdates = new ArrayList<>();
+    private final Runnable flushDeferred = this::flushDeferredToVoice;
 
     ProductRootView(
             Activity activity,
@@ -56,7 +79,24 @@ final class ProductRootView extends FrameLayout {
     ) {
         super(activity);
         motor = new R1MotorServiceClient(activity);
-        voice = new VoicePageView(activity, this::openCameraHandoff);
+        voice = new VoicePageView(activity, this::openCameraHandoff, this::setVoiceImmersive,
+                this::openPageFromCard);
+        voice.setSessionListener(new VoicePageView.SessionListener() {
+            @Override public void onSessionActive(boolean active) {
+                // Microphone foreground service: keeps listening with the screen off.
+                if (active) VoiceSessionService.start(getContext());
+                else {
+                    VoiceSessionService.stop(getContext());
+                    flushDeferredAsNotifications();
+                }
+            }
+
+            @Override public void onSessionLive() {
+                removeCallbacks(flushDeferred);
+                if (!deferredUpdates.isEmpty()) postDelayed(flushDeferred, 600L);
+            }
+        });
+        voice.setHostActions(this::onCardHostAction);
         camera = new CameraHandoffPage(activity, motor, voice, this::returnFromCamera);
         camera.setVisibility(GONE);
         cards = new CardsPageView(activity, this::openVoice, this::showCreation);
@@ -81,7 +121,12 @@ final class ProductRootView extends FrameLayout {
             }
 
             @Override public void needsYou(int count) {
+                t3NeedsYou = count;
                 chrome.showT3Badge(count);
+            }
+
+            @Override public void counts(int needsYou, int working) {
+                voice.setT3Glance(needsYou, working);
             }
         });
         t3.setVisibility(GONE);
@@ -111,6 +156,7 @@ final class ProductRootView extends FrameLayout {
         setContentDescription("SamRabbit HOME");
         runner.start();
         t3.stop(); // Hidden: only the slow badge poll runs until the T3 tab opens.
+        announcements = new RuntimeAnnouncementClient(activity, this::onAnnouncement);
     }
 
     private LayoutParams match() {
@@ -171,6 +217,7 @@ final class ProductRootView extends FrameLayout {
         }
         t3Open = true;
         chrome.showTab(ProductChromeView.TAB_T3);
+        chrome.showT3Done(false);
         voice.setVisibility(GONE);
         showT3();
     }
@@ -209,6 +256,7 @@ final class ProductRootView extends FrameLayout {
         } else {
             voice.setVisibility(VISIBLE);
             voice.requestFocus();
+            if (voiceImmersive) chrome.setVisibility(GONE);
         }
     }
 
@@ -264,6 +312,169 @@ final class ProductRootView extends FrameLayout {
         cards.setVisibility(GONE);
         voice.setVisibility(VISIBLE);
         voice.requestFocus();
+        if (voiceImmersive) chrome.setVisibility(GONE);
+    }
+
+    /** GenUI: a card expanded to full height hides the chrome (posted by the Voice page). */
+    private void setVoiceImmersive(boolean value) {
+        voiceImmersive = value;
+        boolean voiceShowing = !cardsOpen && !t3Open && !settingsOpen && !runnerOpen && !cameraOpen
+                && !creationImportOpen;
+        if (voiceShowing) chrome.setVisibility(value ? GONE : VISIBLE);
+    }
+
+    /** A card button or glance chip asked for a page (GenSchema.OPEN_PAGES, t3, t3:<id>). */
+    private void openPageFromCard(String page) {
+        if (page == null) return;
+        String thread = T3AnnouncementCards.threadFromOpenTarget(page);
+        if (thread != null) {
+            openT3ThreadById(thread);
+            return;
+        }
+        switch (page) {
+            case "cards", "calendar", "tasks" -> openCards();
+            case "runs" -> openRunner();
+            case "t3" -> openT3();
+            default -> { }
+        }
+    }
+
+    /** Opens one T3 thread in the T3 tab from anywhere (card Open, notification tap). */
+    void openT3ThreadById(String threadId) {
+        if (threadId == null || threadId.isBlank()) return;
+        if (controlCenter.isOpen()) controlCenter.hide();
+        if (creationImportOpen) closeCreationImport();
+        if (runnerOpen) closeRunner();
+        if (cameraOpen) { camera.stop(); returnFromCamera(); }
+        if (settingsOpen) closeSettings();
+        if (cardsOpen) {
+            for (int depth = 0; depth < 4 && cardContentOpen; depth++) cards.onInput(UiInputIntent.BACK);
+        }
+        openT3();
+        t3.openThread(threadId);
+        chrome.setVisibility(t3.detailOpen() ? GONE : VISIBLE);
+        T3UpdateNotifier.cancel(getContext(), threadId);
+    }
+
+    // ---- announcements (T3 thread updates) -------------------------------------------------
+
+    private void onAnnouncement(JSONObject item) {
+        String kind = text(item, "kind");
+        AnnouncementRouting.Route route = AnnouncementRouting.route(kind, voice.isLive(), voice.isStarting());
+        Log.i(ANNOUNCE_TAG, "announcement " + item.optLong("id", 0L) + " " + kind + " -> " + route);
+        switch (route) {
+            case VOICE -> deliverToVoice(item);
+            case DEFER -> deferredUpdates.add(new Object[]{item, android.os.SystemClock.uptimeMillis()});
+            case NOTIFY -> deliverAsNotification(item);
+            case IGNORE -> { }
+        }
+    }
+
+    private void deliverToVoice(JSONObject item) {
+        JSONObject payload = item.optJSONObject("payload");
+        String kind = text(item, "kind");
+        String envelope = AnnouncementRouting.voiceEnvelope(kind, text(item, "text"), text(payload, "lastMessage"));
+        if (!voice.deliverHostUpdate(envelope)) {
+            deliverAsNotification(item);
+            return;
+        }
+        showT3Card(item);
+        announcements.ack(item.optLong("id", 0L), AnnouncementRouting.CHANNEL_VOICE);
+    }
+
+    private void deliverAsNotification(JSONObject item) {
+        JSONObject payload = item.optJSONObject("payload");
+        String kind = text(item, "kind");
+        String threadId = T3AnnouncementCards.threadId(item);
+        String title = text(payload, "title");
+        if (title.isEmpty()) title = text(item, "title");
+        if (title.isEmpty()) title = "T3 Code";
+        T3UpdateNotifier.post(getContext(), threadId, title,
+                AnnouncementRouting.notificationText(text(item, "text"), text(payload, "lastMessage")));
+        if (AnnouncementRouting.needsYou(kind)) chrome.showT3Badge(Math.max(1, t3NeedsYou));
+        else if (!t3Open) chrome.showT3Done(true);
+        showT3Card(item); // a pill on the idle Voice page
+        announcements.ack(item.optLong("id", 0L), AnnouncementRouting.CHANNEL_NOTIFICATION);
+    }
+
+    /** Shows or refreshes the live card following this thread (never two cards per thread). */
+    private void showT3Card(JSONObject item) {
+        String threadId = T3AnnouncementCards.threadId(item);
+        if (threadId == null) return;
+        GenCard existing = voice.genUi().findLiveCard(LiveBinding.Type.T3_THREAD, threadId);
+        JSONObject card = T3AnnouncementCards.cardJson(item, existing == null ? null : existing.id);
+        if (card != null) voice.genUi().showHostCard(card);
+    }
+
+    private void flushDeferredToVoice() {
+        long now = android.os.SystemClock.uptimeMillis();
+        ArrayList<Object[]> pending = new ArrayList<>(deferredUpdates);
+        deferredUpdates.clear();
+        for (Object[] entry : pending) {
+            JSONObject item = (JSONObject) entry[0];
+            boolean fresh = now - (Long) entry[1] <= AnnouncementRouting.DEFER_MAX_MS;
+            if (fresh && voice.isLive()) deliverToVoice(item);
+            else deliverAsNotification(item);
+        }
+    }
+
+    private void flushDeferredAsNotifications() {
+        removeCallbacks(flushDeferred);
+        ArrayList<Object[]> pending = new ArrayList<>(deferredUpdates);
+        deferredUpdates.clear();
+        for (Object[] entry : pending) deliverAsNotification((JSONObject) entry[0]);
+    }
+
+    /** Approve / Deny on a T3 announcement card: answered directly with the exact requestId. */
+    private void onCardHostAction(GenCard card, String action) {
+        T3AnnouncementCards.Approval approval = T3AnnouncementCards.parseApproval(action);
+        if (approval == null) return;
+        String title = card.displayTitle();
+        String cardId = card.id;
+        t3Actions.respondApproval(getContext(), approval.threadId, approval.requestId, approval.decision,
+                new T3Client.Callback() {
+                    @Override public void onResult(JSONObject value) {
+                        Log.i(ANNOUNCE_TAG, "card " + approval.decision + " sent for " + approval.threadId);
+                        JSONObject next = T3AnnouncementCards.afterDecision(cardId, approval.threadId, title,
+                                approval.accept());
+                        if (next != null) voice.genUi().showHostCard(next);
+                        voice.sendUiEvent("[UI event] The user tapped " + (approval.accept() ? "Approve" : "Deny")
+                                + " on the card for the T3 thread \u201c" + title + "\u201d; the request was "
+                                + (approval.accept() ? "approved" : "declined") + ". Do not ask about it again.");
+                    }
+
+                    @Override public void onFailure(T3Client.Failure failure) {
+                        Log.w(ANNOUNCE_TAG, "card " + approval.decision + " failed: " + failure);
+                        Toast.makeText(getContext(), failure.httpStatus == 409
+                                ? "That request was already answered" : "Couldn't reach T3 Code",
+                                Toast.LENGTH_SHORT).show();
+                    }
+                });
+    }
+
+    private static String text(JSONObject json, String key) {
+        if (json == null || json.isNull(key)) return "";
+        Object value = json.opt(key);
+        return value instanceof String string ? string.trim() : "";
+    }
+
+    // ---- debug hooks (VoiceDebugReceiver, debug builds only) -------------------------------
+
+    /** DEBUG_SAY: show Voice and send {@code text} as the user's turn (starting a session). */
+    void debugSay(String text) {
+        showVoicePage();
+        voice.debugSay(text);
+    }
+
+    /** DEBUG_ANNOUNCE: route a synthetic announcement exactly like a runtime one. */
+    void debugAnnounce(JSONObject item) {
+        onAnnouncement(item);
+    }
+
+    /** One-line state for debug broadcasts. */
+    String debugState() {
+        return "inSession=" + voice.isInSession() + " live=" + voice.isLive() + " starting=" + voice.isStarting()
+                + " alwaysOn=" + AlwaysOnVoice.isEnabled(getContext());
     }
 
     private void showCreation(boolean visible) {
@@ -460,6 +671,11 @@ final class ProductRootView extends FrameLayout {
      */
     boolean stopVoiceForScreenOff() {
         if (!voice.isInSession()) return false;
+        if (AlwaysOnVoice.isEnabled(getContext())) {
+            // Always-on voice: the microphone foreground service keeps the session listening.
+            Log.i(SideButtonGesture.LOG_TAG, "screen off -> always-on, session kept");
+            return false;
+        }
         stopVoiceSession();
         return true;
     }
@@ -497,6 +713,9 @@ final class ProductRootView extends FrameLayout {
     }
 
     void close() {
+        removeCallbacks(flushDeferred);
+        announcements.close();
+        t3Actions.close();
         voice.close();
         cards.close();
         t3.close();

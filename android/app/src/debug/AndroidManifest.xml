@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug builds only (src/debug): voice test hooks. Never in release. The R1 runs the debug APK,
+     so the receiver requires DUMP: adb shell holds it, installed third-party apps cannot. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <receiver
+            android:name="com.resonolabs.voice.VoiceDebugReceiver"
+            android:exported="true"
+            android:permission="android.permission.DUMP">
+            <intent-filter>
+                <action android:name="com.resonolabs.voice.DEBUG_SAY" />
+                <action android:name="com.resonolabs.voice.DEBUG_ANNOUNCE" />
+                <action android:name="com.resonolabs.voice.DEBUG_STATE" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

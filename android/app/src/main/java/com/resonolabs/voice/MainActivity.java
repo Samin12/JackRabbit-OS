@@ -28,6 +28,8 @@ import com.resonolabs.runtime.host.RuntimeBackgroundRunClient;
 import com.resonolabs.runtime.host.RuntimeCreationImportClient;
 
 public final class MainActivity extends Activity {
+    /** The live HOME instance, for debug-only entry points (VoiceDebugReceiver). */
+    private static java.lang.ref.WeakReference<MainActivity> current = new java.lang.ref.WeakReference<>(null);
     private ProductRootView root;
     private RuntimeHealthClient runtimeHealth;
     private RuntimeManagementClient runtimeManagement;
@@ -90,6 +92,8 @@ public final class MainActivity extends Activity {
                 backgroundRuns,
                 creationImports);
         setContentView(root);
+        current = new java.lang.ref.WeakReference<>(this);
+        openT3ThreadFrom(getIntent(), state == null);
         // A fresh launch whose intent is the alias = double press while HOME was not running.
         // (A recreated activity keeps the old intent; it must not toggle again.)
         if (state == null && SideButtonGesture.isToggle(getIntent())) sideButtonStartPending = true;
@@ -97,9 +101,15 @@ public final class MainActivity extends Activity {
         registerReceiver(screenOff, new IntentFilter(Intent.ACTION_SCREEN_OFF),
                 Context.RECEIVER_NOT_EXPORTED);
         screenOffRegistered = true;
+        java.util.ArrayList<String> missing = new java.util.ArrayList<>();
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, 41);
+            missing.add(Manifest.permission.RECORD_AUDIO);
         }
+        // "T3 updates" notifications (announcements that arrive while Voice is not live).
+        if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            missing.add(Manifest.permission.POST_NOTIFICATIONS);
+        }
+        if (!missing.isEmpty()) requestPermissions(missing.toArray(new String[0]), 41);
         // Android 16 routes Back through OnBackInvokedDispatcher; without this the HOME
         // activity is finished and recreated, dropping the user back on Voice.
         getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
@@ -116,6 +126,23 @@ public final class MainActivity extends Activity {
         super.onNewIntent(intent);
         setIntent(intent);
         if (SideButtonGesture.isToggle(intent)) onSideButtonDoublePress();
+        else openT3ThreadFrom(intent, true);
+    }
+
+    /** A tapped "T3 updates" notification: open that thread in the T3 tab. */
+    private void openT3ThreadFrom(Intent intent, boolean fresh) {
+        if (!fresh || intent == null || root == null) return;
+        String threadId = intent.getStringExtra(T3UpdateNotifier.EXTRA_THREAD);
+        if (threadId == null || threadId.isBlank()) return;
+        intent.removeExtra(T3UpdateNotifier.EXTRA_THREAD); // a recreated activity must not reopen it
+        Log.i("SamAnnounce", "notification tap -> open T3 thread");
+        root.post(() -> root.openT3ThreadById(threadId));
+    }
+
+    /** Debug entry points only (src/debug); null when HOME is not running. */
+    static ProductRootView activeRoot() {
+        MainActivity activity = current.get();
+        return activity == null || activity.isDestroyed() ? null : activity.root;
     }
 
     private void onSideButtonDoublePress() {
@@ -136,6 +163,7 @@ public final class MainActivity extends Activity {
     }
 
     @Override protected void onDestroy() {
+        if (current.get() == this) current = new java.lang.ref.WeakReference<>(null);
         if (screenOffRegistered) {
             unregisterReceiver(screenOff);
             screenOffRegistered = false;
