@@ -7,7 +7,10 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.LinearGradient;
 import android.graphics.Paint;
+import android.graphics.RectF;
+import android.graphics.Shader;
 import android.view.MotionEvent;
 import android.view.TextureView;
 import android.view.View;
@@ -15,6 +18,7 @@ import android.widget.FrameLayout;
 
 import com.resonolabs.feature.voice.VoiceSessionHandoff;
 import com.resonolabs.hardware.motor.MotorController;
+import com.resonolabs.ui.design.FluidOrb;
 import com.resonolabs.ui.design.ReSonoTheme;
 
 /** Full-screen capture/review/send composition. Voice and provider transport remain external owners. */
@@ -149,24 +153,60 @@ public final class CameraHandoffPage extends FrameLayout implements AutoCloseabl
 
     private final class Controls extends View {
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final FluidOrb orb = new FluidOrb();
         Controls(android.content.Context context) { super(context); }
         @Override protected void onDraw(Canvas canvas) {
             canvas.save(); canvas.scale(getWidth()/480f, getHeight()/640f);
-            if (state == State.REVIEW && reviewBitmap != null) canvas.drawBitmap(reviewBitmap, null, new android.graphics.RectF(0,0,480,640), paint);
-            paint.setColor(0xb0051120); canvas.drawRect(0,0,480,82,paint); canvas.drawRect(0,520,480,640,paint);
-            ReSonoTheme.text(canvas,paint,handoffMode ? "HAND TO VOICE" : "CAMERA",24,50,17,ReSonoTheme.MINT,Paint.Align.LEFT,true);
-            ReSonoTheme.text(canvas,paint,handoffMode ? "Cancel" : "Back",444,50,17,ReSonoTheme.INK,Paint.Align.RIGHT,false);
-            if (state == State.LIVE && handoffMode) drawButton(canvas,240,574,"SNAP",ReSonoTheme.INK);
+            if (state == State.REVIEW && reviewBitmap != null) canvas.drawBitmap(reviewBitmap, null, new RectF(0,0,480,640), paint);
+            boolean busy = state == State.POSITIONING || state == State.OPENING || state == State.SENDING;
+            paint.setShader(new LinearGradient(0,0,0,104,ReSonoTheme.withAlpha(ReSonoTheme.BACKGROUND,220),
+                    ReSonoTheme.withAlpha(ReSonoTheme.BACKGROUND,0),Shader.TileMode.CLAMP));
+            canvas.drawRect(0,0,480,104,paint);
+            paint.setShader(new LinearGradient(0,480,0,640,ReSonoTheme.withAlpha(ReSonoTheme.BACKGROUND,0),
+                    ReSonoTheme.withAlpha(ReSonoTheme.BACKGROUND,230),Shader.TileMode.CLAMP));
+            canvas.drawRect(0,480,480,640,paint); paint.setShader(null);
+            ReSonoTheme.text(canvas,paint,handoffMode ? "Send a photo" : "Camera",24,54,24,ReSonoTheme.INK,Paint.Align.LEFT,true);
+            pill(canvas,new RectF(352,28,456,72),handoffMode ? "Cancel" : "Back",false);
+            if (state == State.LIVE && handoffMode) drawShutter(canvas,240,580);
             else if (state == State.LIVE) {
-                drawFacingButton(canvas,125,"Toward you",activePosition==MotorController.Position.INWARD);
-                drawFacingButton(canvas,355,"Outward",activePosition==MotorController.Position.OUTWARD);
+                RectF track=new RectF(30,546,450,608);
+                paint.setColor(ReSonoTheme.withAlpha(ReSonoTheme.BACKGROUND,150)); canvas.drawRoundRect(track,31,31,paint);
+                ReSonoTheme.glass(canvas,paint,track,31,false);
+                drawFacingButton(canvas,new RectF(36,552,238,602),"Toward you",activePosition==MotorController.Position.INWARD);
+                drawFacingButton(canvas,new RectF(242,552,444,602),"Outward",activePosition==MotorController.Position.OUTWARD);
             }
-            else if (state == State.REVIEW) { drawButton(canvas,326,574,"SEND",ReSonoTheme.MINT); ReSonoTheme.text(canvas,paint,"Retake",92,582,18,ReSonoTheme.INK,Paint.Align.CENTER,true); }
-            else if (!message.isEmpty()) ReSonoTheme.text(canvas,paint,message,240,580,18,state==State.ERROR?ReSonoTheme.RED:ReSonoTheme.INK,Paint.Align.CENTER,true);
+            else if (state == State.REVIEW) {
+                pill(canvas,new RectF(30,546,176,608),"Retake",false);
+                RectF send=new RectF(192,546,450,608);
+                paint.setShader(new LinearGradient(0,send.top,0,send.bottom,ReSonoTheme.withAlpha(ReSonoTheme.ORB_BLUE,240),
+                        ReSonoTheme.withAlpha(ReSonoTheme.ORB_BLUE,195),Shader.TileMode.CLAMP));
+                canvas.drawRoundRect(send,31,31,paint); paint.setShader(null);
+                ReSonoTheme.text(canvas,paint,"Send to Voice",send.centerX(),send.centerY()+7,20,ReSonoTheme.INK,Paint.Align.CENTER,true);
+            }
+            else if (!message.isEmpty()) {
+                if (busy) { orb.setEnergy(0.5f).setSpeed(1.4f); orb.draw(canvas,240,536,18); }
+                ReSonoTheme.text(canvas,paint,message,240,594,19,state==State.ERROR?ReSonoTheme.RED:ReSonoTheme.INK,Paint.Align.CENTER,true);
+            }
             canvas.restore();
+            if (busy && isShown()) postInvalidateDelayed(33L);
         }
-        private void drawButton(Canvas canvas,float x,float y,String label,int color){ paint.setStyle(Paint.Style.STROKE);paint.setStrokeWidth(3);paint.setColor(color);canvas.drawCircle(x,y,42,paint);ReSonoTheme.text(canvas,paint,label,x,y+6,14,color,Paint.Align.CENTER,true); }
-        private void drawFacingButton(Canvas canvas,float x,String label,boolean selected){paint.setStyle(Paint.Style.STROKE);paint.setStrokeWidth(selected?3:1);paint.setColor(selected?ReSonoTheme.MINT:ReSonoTheme.MUTED);canvas.drawRoundRect(x-92,548,x+92,606,18,18,paint);paint.setStyle(Paint.Style.FILL);ReSonoTheme.text(canvas,paint,label,x,584,15,selected?ReSonoTheme.MINT:ReSonoTheme.INK,Paint.Align.CENTER,true);}
+        private void pill(Canvas canvas,RectF rect,String label,boolean selected){
+            paint.setColor(ReSonoTheme.withAlpha(ReSonoTheme.BACKGROUND,150)); canvas.drawRoundRect(rect,rect.height()/2,rect.height()/2,paint);
+            ReSonoTheme.glass(canvas,paint,rect,rect.height()/2,selected);
+            ReSonoTheme.text(canvas,paint,label,rect.centerX(),rect.centerY()+6,17,ReSonoTheme.INK,Paint.Align.CENTER,true);
+        }
+        private void drawShutter(Canvas canvas,float x,float y){
+            paint.setStyle(Paint.Style.STROKE); paint.setStrokeWidth(3.5f); paint.setColor(ReSonoTheme.INK);
+            canvas.drawCircle(x,y,36,paint); paint.setStyle(Paint.Style.FILL);
+            paint.setColor(ReSonoTheme.withAlpha(ReSonoTheme.INK,235)); canvas.drawCircle(x,y,29,paint);
+        }
+        private void drawFacingButton(Canvas canvas,RectF rect,String label,boolean selected){
+            if (selected) {
+                paint.setColor(ReSonoTheme.withAlpha(ReSonoTheme.ORB_BLUE,200));
+                canvas.drawRoundRect(rect,rect.height()/2,rect.height()/2,paint);
+            }
+            ReSonoTheme.text(canvas,paint,label,rect.centerX(),rect.centerY()+6,17,selected?ReSonoTheme.INK:ReSonoTheme.MUTED,Paint.Align.CENTER,true);
+        }
         @Override public boolean onTouchEvent(MotionEvent event){ if(event.getActionMasked()!=MotionEvent.ACTION_UP)return true;float x=event.getX()*480f/Math.max(1,getWidth()),y=event.getY()*640f/Math.max(1,getHeight());if(y<90&&x>350)cancel();else if(!handoffMode&&state==State.LIVE&&y>525){switchFacing(x<240?MotorController.Position.INWARD:MotorController.Position.OUTWARD);}else if(handoffMode&&state==State.LIVE&&y>515)capture();else if(handoffMode&&state==State.REVIEW&&y>515){if(x<180)retake();else send();}return true; }
     }
 }

@@ -60,6 +60,11 @@ public final class MainActivity extends Activity {
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, 41);
         }
+        // Android 16 routes Back through OnBackInvokedDispatcher; without this the HOME
+        // activity is finished and recreated, dropping the user back on Voice.
+        getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+                android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT,
+                () -> { if (root != null) root.navigateBack(); });
         NotificationFeed.ensureEnabled(this);
         disableSystemShade();
         DisplayPolicy.apply(getWindow());
@@ -142,7 +147,7 @@ public final class MainActivity extends Activity {
             int disableExpand = 0x00010000;
             statusBar.getClass().getMethod("disable", int.class).invoke(statusBar, disableExpand);
         } catch (ReflectiveOperationException | RuntimeException error) {
-            android.util.Log.w("ReSonoChrome", "system shade stays enabled: " + error);
+            android.util.Log.w("ReSonoChrome", "system shade stays enabled: " + (error.getCause() != null ? error.getCause() : error));
         }
     }
 

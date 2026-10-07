@@ -9,7 +9,12 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.graphics.Canvas;
+import android.graphics.LinearGradient;
 import android.graphics.Paint;
+import android.graphics.Path;
+import android.graphics.RadialGradient;
+import android.graphics.RectF;
+import android.graphics.Shader;
 import android.media.AudioManager;
 import android.net.ConnectivityManager;
 import android.net.Network;
@@ -27,6 +32,7 @@ import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
+import com.resonolabs.ui.design.FluidOrb;
 import com.resonolabs.ui.design.ReSonoTheme;
 import com.resonolabs.ui.input.UiInputIntent;
 import com.resonolabs.ui.input.UiInputTarget;
@@ -62,6 +68,7 @@ public final class SettingsPanelView extends View implements UiInputTarget {
     private final ManagementPairingSource managementPairing;
     private final ManagementOpenAiSource openAiSource;
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final FluidOrb aboutOrb = new FluidOrb();
     private final WifiNetworkScanner wifiScanner;
     private int selected;
     private String openPage;
@@ -110,208 +117,429 @@ public final class SettingsPanelView extends View implements UiInputTarget {
     }
 
     @Override protected void onDraw(Canvas canvas) {
-        canvas.drawColor(ReSonoTheme.BACKGROUND);
         canvas.save();
         canvas.scale(getWidth() / DESIGN_WIDTH, getHeight() / DESIGN_HEIGHT);
+        boolean about = "About".equals(openPage);
+        if (about) ReSonoTheme.background(canvas, paint, DESIGN_WIDTH, DESIGN_HEIGHT,
+                240f, 168f, 230f, ReSonoTheme.ORB_BLUE);
+        else ReSonoTheme.background(canvas, paint, DESIGN_WIDTH, DESIGN_HEIGHT,
+                90f, 20f, 300f, ReSonoTheme.ORB_BLUE);
         if (openPage == null) drawIndex(canvas); else drawPage(canvas);
         canvas.restore();
+        // Only the About hero orb animates; every other settings page is static.
+        if (about && isShown()) postInvalidateDelayed(33L);
     }
 
     private void drawIndex(Canvas canvas) {
-        ReSonoTheme.text(canvas, paint, "Settings", 24f, 56f, 40f,
+        ReSonoTheme.text(canvas, paint, "Settings", 24f, 56f, 34f,
                 ReSonoTheme.INK, Paint.Align.LEFT, true);
         drawClose(canvas);
         for (int i = 0; i < ROWS.size(); i++) {
             float top = ROW_TOP + i * ROW_STEP;
-            paint.setStyle(Paint.Style.FILL);
-            paint.setColor(ReSonoTheme.PANEL);
-            canvas.drawRoundRect(20f, top, 460f, top + 58f, 17f, 17f, paint);
-            if (i == selected) {
-                paint.setColor(ReSonoTheme.VIOLET);
-                // Fixed-size cursor only: changing the entire row luminance can
-                // drive Rabbit's MediaTek AAL/PQ backlight compensation.
-                canvas.drawRoundRect(20f, top + 7f, 25f, top + 51f, 3f, 3f, paint);
+            boolean focused = i == selected;
+            RectF row = new RectF(20f, top, 460f, top + 58f);
+            ReSonoTheme.glass(canvas, paint, row, 20f, focused);
+            if (focused) {
+                // Fixed-size accent only, so the focus cue never changes overall
+                // row luminance enough to drive the panel's backlight compensation.
+                paint.setStyle(Paint.Style.FILL);
+                paint.setColor(ReSonoTheme.ORB_BLUE);
+                canvas.drawRoundRect(20f, top + 16f, 24f, top + 42f, 2f, 2f, paint);
             }
-            ReSonoTheme.text(canvas, paint, ROWS.get(i), 46f, top + 39f, 26f,
-                ReSonoTheme.INK, Paint.Align.LEFT, true);
-            ReSonoTheme.text(canvas, paint, "›", 430f, top + 40f, 34f,
-                    ReSonoTheme.MUTED,
-                    Paint.Align.CENTER, false);
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(ReSonoTheme.withAlpha(ReSonoTheme.ORB_BLUE, focused ? 70 : 42));
+            canvas.drawCircle(56f, top + 29f, 18f, paint);
+            drawRowIcon(canvas, ROWS.get(i), 56f, top + 29f);
+            ReSonoTheme.text(canvas, paint, ROWS.get(i), 88f, top + 37f, 22f,
+                    ReSonoTheme.INK, Paint.Align.LEFT, true);
+            chevron(canvas, 436f, top + 29f, focused ? ReSonoTheme.ORB_PALE : ReSonoTheme.MUTED);
         }
     }
 
     private void drawPage(Canvas canvas) {
-        ReSonoTheme.text(canvas, paint, "‹", 28f, 53f, 42f,
-                ReSonoTheme.CYAN, Paint.Align.CENTER, false);
-        ReSonoTheme.text(canvas, paint, openPage, 58f, 54f, 37f,
+        drawBack(canvas);
+        ReSonoTheme.text(canvas, paint, openPage, 66f, 54f, 30f,
                 ReSonoTheme.INK, Paint.Align.LEFT, true);
         drawClose(canvas);
 
-        if ("Wi-Fi".equals(openPage)) {
-            drawWifiPage(canvas);
-            return;
+        switch (openPage) {
+            case "Wi-Fi" -> drawWifiPage(canvas);
+            case "Management" -> drawManagementPage(canvas);
+            case "AI" -> drawAiPage(canvas);
+            case "Sound" -> drawSoundPage(canvas);
+            case "Display" -> drawDisplayPage(canvas);
+            case "Bluetooth" -> drawBluetoothPage(canvas);
+            case "About" -> drawAboutPage(canvas);
+            default -> {
+                drawInfoGroup(canvas, statusValues(openPage), 108f);
+                button(canvas, "Refresh", 20f, 494f, 460f);
+            }
         }
-        if ("Management".equals(openPage)) {
-            drawManagementPage(canvas);
-            return;
-        }
-        if ("AI".equals(openPage)) {
-            drawAiPage(canvas);
-            return;
-        }
-        SettingValue[] values = statusValues(openPage);
-        float top = 102f;
-        for (SettingValue value : values) {
-            paint.setColor(ReSonoTheme.PANEL_RAISED);
-            paint.setStyle(Paint.Style.FILL);
-            canvas.drawRoundRect(20f, top, 460f, top + 112f, 22f, 22f, paint);
-            ReSonoTheme.text(canvas, paint, value.label, 44f, top + 39f, 21f,
-                ReSonoTheme.MUTED, Paint.Align.LEFT, true);
-            ReSonoTheme.text(canvas, paint, value.value, 44f, top + 86f, 34f,
-                    ReSonoTheme.INK, Paint.Align.LEFT, true);
-            top += 126f;
-        }
+    }
 
-        if ("Sound".equals(openPage)) {
-            button(canvas, "−", 20f, 494f, 230f);
-            button(canvas, "+", 250f, 494f, 460f);
-        } else if ("Display".equals(openPage)) {
-            button(canvas, "−", 20f, 494f, 230f);
-            button(canvas, "+", 250f, 494f, 460f);
-        } else if ("Bluetooth".equals(openPage)) {
-            button(canvas, isBluetoothEnabled() ? "TURN OFF" : "TURN ON", 20f, 494f, 460f);
-        } else if ("About".equals(openPage)) {
-            button(canvas, "RESTART DEVICE", 20f, 494f, 460f);
-        } else if ("AI".equals(openPage)) {
-            button(canvas, "REFRESH", 20f, 494f, 460f);
+    private void drawSoundPage(Canvas canvas) {
+        AudioManager audio = activity.getSystemService(AudioManager.class);
+        int current = audio == null ? 0 : audio.getStreamVolume(AudioManager.STREAM_MUSIC);
+        int max = audio == null ? 0 : audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
+        float level = max == 0 ? 0f : current / (float) max;
+        drawLevelHero(canvas, "Volume", sound()[0].value, level);
+        stepButtons(canvas);
+    }
+
+    private void drawDisplayPage(Canvas canvas) {
+        SettingValue[] values = display();
+        int brightness = Settings.System.getInt(activity.getContentResolver(),
+                Settings.System.SCREEN_BRIGHTNESS, 0);
+        drawLevelHero(canvas, "Brightness", values[0].value, brightness / 255f);
+        ReSonoTheme.text(canvas, paint, "Screen sleep · " + values[1].value, 240f, 424f, 16f,
+                ReSonoTheme.MUTED, Paint.Align.CENTER, false);
+        stepButtons(canvas);
+    }
+
+    private void drawLevelHero(Canvas canvas, String label, String value, float level) {
+        RectF panel = new RectF(20f, 108f, 460f, 380f);
+        ReSonoTheme.glass(canvas, paint, panel, 24f, false);
+        ReSonoTheme.text(canvas, paint, label, 240f, 160f, 18f,
+                ReSonoTheme.MUTED, Paint.Align.CENTER, false);
+        ReSonoTheme.text(canvas, paint, value, 240f, 262f, 80f,
+                ReSonoTheme.INK, Paint.Align.CENTER, true);
+        float clamped = Math.max(0f, Math.min(1f, level));
+        paint.setStyle(Paint.Style.FILL);
+        paint.setColor(ReSonoTheme.withAlpha(ReSonoTheme.INK, 26));
+        canvas.drawRoundRect(64f, 316f, 416f, 326f, 5f, 5f, paint);
+        if (clamped > 0f) {
+            paint.setShader(new LinearGradient(64f, 0f, 416f, 0f, ReSonoTheme.ORB_PALE,
+                    ReSonoTheme.ORB_BLUE, Shader.TileMode.CLAMP));
+            canvas.drawRoundRect(64f, 316f, 64f + 352f * clamped, 326f, 5f, 5f, paint);
+            paint.setShader(null);
+            paint.setColor(ReSonoTheme.INK);
+            canvas.drawCircle(64f + 352f * clamped, 321f, 9f, paint);
+        }
+    }
+
+    private void stepButtons(Canvas canvas) {
+        button(canvas, "−", 20f, 494f, 230f);
+        button(canvas, "+", 250f, 494f, 460f);
+    }
+
+    private void drawBluetoothPage(Canvas canvas) {
+        boolean on = isBluetoothEnabled();
+        RectF panel = new RectF(20f, 108f, 460f, 420f);
+        ReSonoTheme.glass(canvas, paint, panel, 24f, false);
+        if (on) {
+            orbDot(canvas, 240f, 210f, 42f);
         } else {
-            button(canvas, "REFRESH", 20f, 494f, 460f);
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(2f);
+            paint.setColor(ReSonoTheme.withAlpha(ReSonoTheme.MUTED, 140));
+            canvas.drawCircle(240f, 210f, 42f, paint);
+            paint.setStyle(Paint.Style.FILL);
+        }
+        drawBluetoothGlyph(canvas, 240f, 210f, on ? 2.0f : 1.6f,
+                on ? ReSonoTheme.withAlpha(ReSonoTheme.BACKGROUND, 200) : ReSonoTheme.MUTED);
+        ReSonoTheme.text(canvas, paint, on ? "On" : "Off", 240f, 330f, 40f,
+                ReSonoTheme.INK, Paint.Align.CENTER, true);
+        ReSonoTheme.text(canvas, paint, bluetoothStatus, 240f, 368f, 18f,
+                ReSonoTheme.MUTED, Paint.Align.CENTER, false);
+        if (on) button(canvas, "Turn off", 20f, 494f, 460f);
+        else primaryButton(canvas, "Turn on", 20f, 494f, 460f);
+    }
+
+    private void drawAboutPage(Canvas canvas) {
+        float orbY = 168f + aboutOrb.bob(4f);
+        aboutOrb.setColor(ReSonoTheme.ORB_BLUE).setEnergy(0.15f).setSpeed(0.6f);
+        aboutOrb.draw(canvas, 240f, orbY, 50f);
+        drawInfoGroup(canvas, statusValues("About"), 258f);
+        button(canvas, "Restart device", 20f, 494f, 460f);
+        ReSonoTheme.text(canvas, paint, "Orb design inspired by Rare UI · rareui.com", 240f, 606f,
+                14f, ReSonoTheme.MUTED, Paint.Align.CENTER, false);
+    }
+
+    /** Grouped glass panel of label/value rows separated by hairlines. */
+    private void drawInfoGroup(Canvas canvas, SettingValue[] values, float top) {
+        float rowHeight = 64f;
+        RectF panel = new RectF(20f, top, 460f, top + values.length * rowHeight);
+        ReSonoTheme.glass(canvas, paint, panel, 22f, false);
+        for (int i = 0; i < values.length; i++) {
+            float y = top + i * rowHeight;
+            if (i > 0) {
+                paint.setStyle(Paint.Style.FILL);
+                paint.setColor(ReSonoTheme.LINE);
+                canvas.drawRect(40f, y, 440f, y + 1f, paint);
+            }
+            ReSonoTheme.text(canvas, paint, sentence(values[i].label), 42f, y + 40f, 18f,
+                    ReSonoTheme.MUTED, Paint.Align.LEFT, false);
+            paint.setTextSize(20f);
+            paint.setTypeface(android.graphics.Typeface.create("sans-serif-medium",
+                    android.graphics.Typeface.NORMAL));
+            ReSonoTheme.text(canvas, paint, ellipsize(values[i].value, 250f), 438f, y + 40f, 20f,
+                    ReSonoTheme.INK, Paint.Align.RIGHT, true);
         }
     }
 
     private void drawWifiPage(Canvas canvas) {
         SettingValue[] values = network();
-        ReSonoTheme.text(canvas, paint, values[0].value + "  •  " + values[1].value,
-                24f, 91f, 20f, ReSonoTheme.MUTED, Paint.Align.LEFT, true);
-        String wifiHint = wifiNetworks.isEmpty() ? wifiScanState : "TAP A NETWORK TO CONNECT";
-        ReSonoTheme.text(canvas, paint, wifiHint.toUpperCase(), 24f, 127f, 17f,
-                ReSonoTheme.CYAN, Paint.Align.LEFT, true);
+        String summary = "Wi-Fi " + values[0].value.toLowerCase()
+                + " · " + ("Connected".equals(values[1].value) ? "Online" : "Offline");
+        ReSonoTheme.text(canvas, paint, summary, 67f, 80f, 15f,
+                ReSonoTheme.MUTED, Paint.Align.LEFT, false);
+        String wifiHint = wifiNetworks.isEmpty() ? wifiScanState : "Tap a network to connect";
+        ReSonoTheme.text(canvas, paint, wifiHint, 24f, 130f, 16f,
+                ReSonoTheme.ORB_PALE, Paint.Align.LEFT, true);
         float top = 148f;
         int count = Math.min(6, wifiNetworks.size());
         for (int i = 0; i < count; i++) {
             WifiNetworkScanner.Network network = wifiNetworks.get(i);
-            paint.setColor(network.connected() ? 0xff18342e : ReSonoTheme.PANEL_RAISED);
-            paint.setStyle(Paint.Style.FILL);
-            canvas.drawRoundRect(20f, top, 460f, top + 52f, 17f, 17f, paint);
-            String name = network.ssid().length() > 24 ? network.ssid().substring(0, 23) + "…" : network.ssid();
-            ReSonoTheme.text(canvas, paint, name, 38f, top + 34f, 22f,
+            ReSonoTheme.glass(canvas, paint, new RectF(20f, top, 460f, top + 52f), 18f,
+                    network.connected());
+            if (network.connected()) {
+                paint.setColor(ReSonoTheme.ORB_BLUE);
+                canvas.drawCircle(40f, top + 26f, 5f, paint);
+            }
+            paint.setTextSize(20f);
+            paint.setTypeface(android.graphics.Typeface.create("sans-serif-medium",
+                    android.graphics.Typeface.NORMAL));
+            ReSonoTheme.text(canvas, paint, ellipsize(network.ssid(), 260f), 56f, top + 33f, 20f,
                     ReSonoTheme.INK, Paint.Align.LEFT, true);
-            String detail = network.connected() ? "CONNECTED" : (network.secured() ? "SECURE" : "OPEN");
-            ReSonoTheme.text(canvas, paint, detail, 425f, top + 32f, 14f,
-                    network.connected() ? 0xff57d6a7 : ReSonoTheme.MUTED, Paint.Align.RIGHT, true);
+            String detail = network.connected() ? "Connected" : (network.secured() ? "Secured" : "Open");
+            ReSonoTheme.text(canvas, paint, detail, 414f, top + 32f, 14f,
+                    network.connected() ? ReSonoTheme.ORB_PALE : ReSonoTheme.MUTED,
+                    Paint.Align.RIGHT, false);
             for (int bar = 0; bar < 4; bar++) {
-                paint.setColor(bar < network.signalLevel() ? ReSonoTheme.CYAN : 0xff3d3a4d);
-                canvas.drawRoundRect(432f + bar * 6f, top + 39f - bar * 4f,
-                        436f + bar * 6f, top + 47f, 2f, 2f, paint);
+                paint.setColor(bar < network.signalLevel()
+                        ? ReSonoTheme.ORB_PALE : ReSonoTheme.withAlpha(ReSonoTheme.MUTED, 70));
+                canvas.drawRoundRect(424f + bar * 7f, top + 36f - bar * 5f,
+                        428f + bar * 7f, top + 40f, 2f, 2f, paint);
             }
             top += 59f;
         }
-        button(canvas, "SCAN AGAIN", 20f, 532f, 460f);
+        button(canvas, "Scan again", 20f, 532f, 460f);
     }
 
     private void drawManagementPage(Canvas canvas) {
-        paint.setColor(ReSonoTheme.PANEL_RAISED);
-        paint.setStyle(Paint.Style.FILL);
-        canvas.drawRoundRect(20f, 108f, 460f, 270f, 22f, 22f, paint);
-        ReSonoTheme.text(canvas, paint, "PAIRING CODE", 44f, 151f, 19f,
-                ReSonoTheme.MUTED, Paint.Align.LEFT, true);
-        ReSonoTheme.text(canvas, paint, managementState.code(), 44f, 226f, 54f,
-                ReSonoTheme.CYAN, Paint.Align.LEFT, true);
+        RectF codePanel = new RectF(20f, 108f, 460f, 290f);
+        ReSonoTheme.glass(canvas, paint, codePanel, 24f, true);
+        ReSonoTheme.text(canvas, paint, "Pairing code", 240f, 152f, 18f,
+                ReSonoTheme.MUTED, Paint.Align.CENTER, false);
+        paint.setLetterSpacing(0.12f);
+        String code = managementState.code();
+        float codeSize = 72f;
+        paint.setTextSize(codeSize);
+        while (codeSize > 36f && paint.measureText(code == null ? "" : code) > 400f) {
+            codeSize -= 4f;
+            paint.setTextSize(codeSize);
+        }
+        ReSonoTheme.text(canvas, paint, code, 240f, 246f, codeSize,
+                ReSonoTheme.INK, Paint.Align.CENTER, true);
+        paint.setLetterSpacing(0f);
 
-        paint.setColor(ReSonoTheme.PANEL_RAISED);
-        canvas.drawRoundRect(20f, 288f, 460f, 440f, 22f, 22f, paint);
-        ReSonoTheme.text(canvas, paint, "OPEN ON YOUR COMPUTER", 44f, 331f, 19f,
-                ReSonoTheme.MUTED, Paint.Align.LEFT, true);
-        String address = managementState.address();
-        if (address.length() > 34) address = address.substring(0, 33) + "…";
-        ReSonoTheme.text(canvas, paint, address, 44f, 383f, 24f,
-                ReSonoTheme.INK, Paint.Align.LEFT, true);
-        ReSonoTheme.text(canvas, paint, "HTTPS • SAME NETWORK", 44f, 417f, 16f,
-                ReSonoTheme.MUTED, Paint.Align.LEFT, true);
-        button(canvas, "REFRESH", 20f, 494f, 460f);
+        RectF addressPanel = new RectF(20f, 306f, 460f, 446f);
+        ReSonoTheme.glass(canvas, paint, addressPanel, 22f, false);
+        ReSonoTheme.text(canvas, paint, "Open on your computer", 42f, 344f, 16f,
+                ReSonoTheme.MUTED, Paint.Align.LEFT, false);
+        paint.setTextSize(22f);
+        paint.setTypeface(android.graphics.Typeface.create("sans-serif-medium",
+                android.graphics.Typeface.NORMAL));
+        ReSonoTheme.text(canvas, paint, ellipsize(managementState.address(), 396f), 42f, 386f, 22f,
+                ReSonoTheme.ORB_PALE, Paint.Align.LEFT, true);
+        ReSonoTheme.text(canvas, paint, "Secure link · same Wi-Fi network", 42f, 420f, 15f,
+                ReSonoTheme.MUTED, Paint.Align.LEFT, false);
+        button(canvas, "Refresh", 20f, 494f, 460f);
     }
 
     private void drawAiPage(Canvas canvas) {
-        paint.setColor(ReSonoTheme.PANEL_RAISED);
+        String status = openAiMessage == null || openAiMessage.isBlank()
+                ? (openAiState.fallbackMessage() == null ? "" : openAiState.fallbackMessage())
+                : openAiMessage;
+        boolean connected = openAiState.connected() || openAiState.platformConnected()
+                || openAiState.subscriptionConnected();
+        if (status.isBlank()) status = connected ? "Connected" : "Not connected";
+        int statusColor = openAiState.error() ? ReSonoTheme.AMBER
+                : aiDraftDirty ? ReSonoTheme.ORB_PALE : ReSonoTheme.MUTED;
+        paint.setTextSize(15f);
+        paint.setTypeface(android.graphics.Typeface.create("sans-serif",
+                android.graphics.Typeface.NORMAL));
+        ReSonoTheme.text(canvas, paint, ellipsize(status, 320f), 67f, 82f, 15f,
+                statusColor, Paint.Align.LEFT, false);
+
+        aiRow(canvas, AI_PROVIDER_TOP, AI_PROVIDER_BOTTOM, "Provider", providerLabel(draftProvider),
+                connected ? ReSonoTheme.INK : ReSonoTheme.MUTED);
+        aiRow(canvas, AI_ACCESS_TOP, AI_ACCESS_BOTTOM, "Access", accessLabel(draftAccessPath),
+                ReSonoTheme.INK);
+        aiRow(canvas, AI_VOICE_MODEL_TOP, AI_VOICE_MODEL_BOTTOM, "Voice model",
+                draftRealtimeModel == null || draftRealtimeModel.isBlank() ? "—" : draftRealtimeModel,
+                ReSonoTheme.INK);
+        aiRow(canvas, AI_TEXT_MODEL_TOP, AI_TEXT_MODEL_BOTTOM, "Text model",
+                draftTextModel == null || draftTextModel.isBlank() ? "—" : draftTextModel,
+                ReSonoTheme.INK);
+
+        // Reasoning row is shorter: label and value share one line.
+        RectF reasoning = new RectF(20f, AI_REASONING_TOP, 460f, AI_REASONING_BOTTOM);
+        ReSonoTheme.glass(canvas, paint, reasoning, 20f, false);
+        float mid = (AI_REASONING_TOP + AI_REASONING_BOTTOM) / 2f;
+        ReSonoTheme.text(canvas, paint, "Reasoning", 42f, mid + 7f, 18f,
+                ReSonoTheme.MUTED, Paint.Align.LEFT, false);
+        ReSonoTheme.text(canvas, paint, sentence(draftReasoning), 384f, mid + 8f, 21f,
+                openAiState.error() ? ReSonoTheme.AMBER : ReSonoTheme.INK, Paint.Align.RIGHT, true);
+        stepper(canvas, mid);
+
+        if (aiDraftDirty) primaryButton(canvas, "Save changes", 20f, AI_REFRESH_TOP, 460f, 64f);
+        else button(canvas, "Save", 20f, AI_REFRESH_TOP, 460f, 64f);
+    }
+
+    private void aiRow(Canvas canvas, float top, float bottom, String label, String value, int valueColor) {
+        ReSonoTheme.glass(canvas, paint, new RectF(20f, top, 460f, bottom), 20f, false);
+        float mid = (top + bottom) / 2f;
+        ReSonoTheme.text(canvas, paint, label, 42f, mid - 8f, 15f,
+                ReSonoTheme.MUTED, Paint.Align.LEFT, false);
+        paint.setTextSize(23f);
+        paint.setTypeface(android.graphics.Typeface.create("sans-serif-medium",
+                android.graphics.Typeface.NORMAL));
+        ReSonoTheme.text(canvas, paint, ellipsize(value, 340f), 42f, mid + 22f, 23f,
+                valueColor, Paint.Align.LEFT, true);
+        stepper(canvas, mid);
+    }
+
+    /** Small glass disc marking the tap-to-cycle zone (x 390..460) of an AI row. */
+    private void stepper(Canvas canvas, float centerY) {
+        RectF disc = new RectF(403f, centerY - 22f, 447f, centerY + 22f);
+        ReSonoTheme.glass(canvas, paint, disc, 22f, false);
+        chevron(canvas, 426f, centerY, ReSonoTheme.ORB_PALE);
+    }
+
+    private String accessLabel(String accessPath) {
+        if ("platform".equals(accessPath)) return "OpenAI Platform API";
+        if ("subscription".equals(accessPath)) return "ChatGPT / Codex";
+        return accessPath == null || accessPath.isBlank() ? "—" : accessPath;
+    }
+
+    private static String sentence(String value) {
+        if (value == null || value.isEmpty()) return "";
+        String lower = value.toLowerCase();
+        return Character.toUpperCase(lower.charAt(0)) + lower.substring(1);
+    }
+
+    /** Ellipsizes using the paint's current text size and typeface. */
+    private String ellipsize(String value, float width) {
+        if (value == null) return "";
+        if (paint.measureText(value) <= width) return value;
+        int count = paint.breakText(value, true, width - paint.measureText("…"), null);
+        return value.substring(0, Math.max(0, count)).trim() + "…";
+    }
+
+    private void chevron(Canvas canvas, float cx, float cy, int color) {
+        paint.setStyle(Paint.Style.STROKE);
+        paint.setStrokeWidth(2.4f);
+        paint.setStrokeCap(Paint.Cap.ROUND);
+        paint.setColor(color);
+        canvas.drawLine(cx - 3f, cy - 7f, cx + 4f, cy, paint);
+        canvas.drawLine(cx + 4f, cy, cx - 3f, cy + 7f, paint);
+        paint.setStrokeCap(Paint.Cap.BUTT);
         paint.setStyle(Paint.Style.FILL);
-        canvas.drawRoundRect(20f, 100f, 460f, 180f, 20f, 20f, paint);
-        ReSonoTheme.text(canvas, paint, "PROVIDER", 44f, 138f, 19f,
-                ReSonoTheme.MUTED, Paint.Align.LEFT, true);
-        ReSonoTheme.text(canvas, paint, providerLabel(draftProvider), 44f, 170f, 35f,
-                resonoAIColor(openAiState.connected() || openAiState.platformConnected() || openAiState.subscriptionConnected()),
-                Paint.Align.LEFT, true);
-        selectionArrow(canvas, 149f);
+    }
 
-        paint.setColor(ReSonoTheme.PANEL_RAISED);
-        canvas.drawRoundRect(20f, 196f, 460f, 275f, 20f, 20f, paint);
-        ReSonoTheme.text(canvas, paint, "ACCESS PATH", 44f, 233f, 19f,
-                resonoAIColor(openAiState.connected()), Paint.Align.LEFT, true);
-        ReSonoTheme.text(canvas, paint, draftAccessPath, 44f, 265f, 32f,
-                ReSonoTheme.INK, Paint.Align.LEFT, true);
-        selectionArrow(canvas, 245f);
+    /** Static, cheap orb glyph: white crown fading to orb blue. */
+    private void orbDot(Canvas canvas, float cx, float cy, float r) {
+        paint.setStyle(Paint.Style.FILL);
+        paint.setShader(new RadialGradient(cx, cy + r * 0.3f, r * 2.2f,
+                ReSonoTheme.withAlpha(ReSonoTheme.ORB_BLUE, 80),
+                ReSonoTheme.withAlpha(ReSonoTheme.ORB_BLUE, 0), Shader.TileMode.CLAMP));
+        canvas.drawCircle(cx, cy + r * 0.3f, r * 2.2f, paint);
+        paint.setShader(new LinearGradient(cx, cy - r, cx, cy + r,
+                new int[]{0xffffffff, ReSonoTheme.ORB_PALE, ReSonoTheme.ORB_BLUE},
+                new float[]{0.15f, 0.5f, 0.9f}, Shader.TileMode.CLAMP));
+        canvas.drawCircle(cx, cy, r, paint);
+        paint.setShader(null);
+    }
 
-        paint.setColor(ReSonoTheme.PANEL_RAISED);
-        canvas.drawRoundRect(20f, 292f, 460f, 370f, 20f, 20f, paint);
-        ReSonoTheme.text(canvas, paint, "VOICE MODEL", 44f, 329f, 19f,
-                ReSonoTheme.MUTED, Paint.Align.LEFT, true);
-        ReSonoTheme.text(canvas, paint,
-                draftRealtimeModel == null || draftRealtimeModel.isBlank()
-                        ? "—"
-                        : draftRealtimeModel,
-                44f, 361f, 32f, ReSonoTheme.INK, Paint.Align.LEFT, true);
-        selectionArrow(canvas, 341f);
+    private void drawBluetoothGlyph(Canvas canvas, float cx, float cy, float scale, int color) {
+        Path path = new Path();
+        path.moveTo(cx - 6f * scale, cy - 5f * scale);
+        path.lineTo(cx + 6f * scale, cy + 6f * scale);
+        path.lineTo(cx, cy + 11f * scale);
+        path.lineTo(cx, cy - 11f * scale);
+        path.lineTo(cx + 6f * scale, cy - 6f * scale);
+        path.lineTo(cx - 6f * scale, cy + 5f * scale);
+        paint.setStyle(Paint.Style.STROKE);
+        paint.setStrokeWidth(1.4f + scale);
+        paint.setStrokeJoin(Paint.Join.ROUND);
+        paint.setStrokeCap(Paint.Cap.ROUND);
+        paint.setColor(color);
+        canvas.drawPath(path, paint);
+        paint.setStrokeJoin(Paint.Join.MITER);
+        paint.setStrokeCap(Paint.Cap.BUTT);
+        paint.setStyle(Paint.Style.FILL);
+    }
 
-        paint.setColor(ReSonoTheme.PANEL_RAISED);
-        canvas.drawRoundRect(20f, 386f, 460f, 464f, 20f, 20f, paint);
-        ReSonoTheme.text(canvas, paint, "TEXT MODEL", 44f, 423f, 19f,
-                resonoAIColor(openAiState.selectedTextModel() != null),
-                Paint.Align.LEFT, true);
-        ReSonoTheme.text(canvas, paint,
-                draftTextModel == null || draftTextModel.isBlank()
-                        ? "—"
-                        : draftTextModel,
-                44f, 455f, 32f, ReSonoTheme.INK, Paint.Align.LEFT, true);
-        selectionArrow(canvas, 435f);
-
-        paint.setColor(ReSonoTheme.PANEL_RAISED);
-        canvas.drawRoundRect(20f, 480f, 460f, 540f, 20f, 20f, paint);
-        ReSonoTheme.text(canvas, paint, "REASONING", 44f, 517f, 19f,
-                ReSonoTheme.MUTED, Paint.Align.LEFT, true);
-        ReSonoTheme.text(canvas, paint, draftReasoning,
-                44f, 549f, 32f, resonoAIColor(), Paint.Align.LEFT, true);
-        selectionArrow(canvas, 515f);
-        if (openAiState.fallbackMessage() != null) {
-            paint.setColor(ReSonoTheme.PANEL);
-            canvas.drawRoundRect(20f, 560f, 460f, 602f, 18f, 18f, paint);
-            ReSonoTheme.text(canvas, paint, openAiState.fallbackMessage(), 44f, 594f, 16f,
-                    ReSonoTheme.MUTED, Paint.Align.LEFT, true);
+    /** Simple line icons for the index rows, drawn in the pale orb tint. */
+    private void drawRowIcon(Canvas canvas, String row, float cx, float cy) {
+        int color = ReSonoTheme.ORB_PALE;
+        if ("Bluetooth".equals(row)) { drawBluetoothGlyph(canvas, cx, cy, 0.85f, color); return; }
+        paint.setStyle(Paint.Style.STROKE);
+        paint.setStrokeWidth(2f);
+        paint.setStrokeCap(Paint.Cap.ROUND);
+        paint.setStrokeJoin(Paint.Join.ROUND);
+        paint.setColor(color);
+        switch (row) {
+            case "Wi-Fi" -> {
+                for (float radius : new float[]{6f, 11f}) {
+                    canvas.drawArc(new RectF(cx - radius, cy + 5f - radius, cx + radius, cy + 5f + radius),
+                            -135f, 90f, false, paint);
+                }
+                paint.setStyle(Paint.Style.FILL);
+                canvas.drawCircle(cx, cy + 4f, 2f, paint);
+            }
+            case "Management" -> {
+                canvas.drawRoundRect(cx - 9f, cy - 8f, cx + 9f, cy + 4f, 2f, 2f, paint);
+                canvas.drawLine(cx - 12f, cy + 8f, cx + 12f, cy + 8f, paint);
+            }
+            case "AI" -> {
+                Path spark = new Path();
+                spark.moveTo(cx, cy - 10f);
+                spark.quadTo(cx + 1f, cy - 1f, cx + 10f, cy);
+                spark.quadTo(cx + 1f, cy + 1f, cx, cy + 10f);
+                spark.quadTo(cx - 1f, cy + 1f, cx - 10f, cy);
+                spark.quadTo(cx - 1f, cy - 1f, cx, cy - 10f);
+                paint.setStyle(Paint.Style.FILL);
+                canvas.drawPath(spark, paint);
+            }
+            case "Creations" -> {
+                float s = 7f, g = 2f;
+                canvas.drawRoundRect(cx - g - s, cy - g - s, cx - g, cy - g, 2f, 2f, paint);
+                canvas.drawRoundRect(cx + g, cy - g - s, cx + g + s, cy - g, 2f, 2f, paint);
+                canvas.drawRoundRect(cx - g - s, cy + g, cx - g, cy + g + s, 2f, 2f, paint);
+                canvas.drawRoundRect(cx + g, cy + g, cx + g + s, cy + g + s, 2f, 2f, paint);
+            }
+            case "Sound" -> {
+                Path speaker = new Path();
+                speaker.moveTo(cx - 10f, cy - 4f);
+                speaker.lineTo(cx - 5f, cy - 4f);
+                speaker.lineTo(cx + 1f, cy - 9f);
+                speaker.lineTo(cx + 1f, cy + 9f);
+                speaker.lineTo(cx - 5f, cy + 4f);
+                speaker.lineTo(cx - 10f, cy + 4f);
+                speaker.close();
+                canvas.drawPath(speaker, paint);
+                canvas.drawArc(new RectF(cx - 3f, cy - 7f, cx + 9f, cy + 7f), -50f, 100f, false, paint);
+            }
+            case "Display" -> {
+                canvas.drawCircle(cx, cy, 4.5f, paint);
+                for (int i = 0; i < 8; i++) {
+                    double a = Math.PI / 4 * i;
+                    float cos = (float) Math.cos(a), sin = (float) Math.sin(a);
+                    canvas.drawLine(cx + cos * 8f, cy + sin * 8f, cx + cos * 11f, cy + sin * 11f, paint);
+                }
+            }
+            default -> {
+                canvas.drawCircle(cx, cy, 10f, paint);
+                canvas.drawLine(cx, cy - 1f, cx, cy + 5f, paint);
+                paint.setStyle(Paint.Style.FILL);
+                canvas.drawCircle(cx, cy - 5f, 1.5f, paint);
+            }
         }
-        ReSonoTheme.text(canvas, paint, openAiMessage, 44f, 621f, 16f,
-                ReSonoTheme.MUTED, Paint.Align.LEFT, true);
-        button(canvas, "SAVE", 20f, AI_REFRESH_TOP, 460f);
-    }
-
-    private void selectionArrow(Canvas canvas, float centerY) {
-        ReSonoTheme.text(canvas, paint, "›", 428f, centerY + 12f, 38f,
-                ReSonoTheme.CYAN, Paint.Align.CENTER, false);
-    }
-
-    private int resonoAIColor(boolean active) {
-        return active ? ReSonoTheme.CYAN : ReSonoTheme.MUTED;
-    }
-
-    private int resonoAIColor() {
-        return openAiState.error() ? 0xffe2a1a1 : ReSonoTheme.INK;
+        paint.setStrokeCap(Paint.Cap.BUTT);
+        paint.setStrokeJoin(Paint.Join.MITER);
+        paint.setStyle(Paint.Style.FILL);
     }
 
     private void refreshOpenAi() {
@@ -634,12 +862,29 @@ public final class SettingsPanelView extends View implements UiInputTarget {
         });
     }
 
-    private void drawClose(Canvas canvas) {
-        paint.setColor(ReSonoTheme.PANEL_RAISED);
+    private void drawBack(Canvas canvas) {
+        ReSonoTheme.glass(canvas, paint, new RectF(10f, 22f, 54f, 66f), 22f, false);
+        paint.setStyle(Paint.Style.STROKE);
+        paint.setStrokeWidth(2.6f);
+        paint.setStrokeCap(Paint.Cap.ROUND);
+        paint.setColor(ReSonoTheme.INK);
+        canvas.drawLine(36f, 34f, 27f, 44f, paint);
+        canvas.drawLine(27f, 44f, 36f, 54f, paint);
+        paint.setStrokeCap(Paint.Cap.BUTT);
         paint.setStyle(Paint.Style.FILL);
-        canvas.drawCircle(438f, 40f, 25f, paint);
-        ReSonoTheme.text(canvas, paint, "×", 438f, 50f, 36f,
-                ReSonoTheme.INK, Paint.Align.CENTER, false);
+    }
+
+    private void drawClose(Canvas canvas) {
+        RectF disc = new RectF(414f, 20f, 462f, 68f);
+        ReSonoTheme.glass(canvas, paint, disc, 24f, false);
+        paint.setStyle(Paint.Style.STROKE);
+        paint.setStrokeWidth(2.4f);
+        paint.setStrokeCap(Paint.Cap.ROUND);
+        paint.setColor(ReSonoTheme.INK);
+        canvas.drawLine(431f, 37f, 445f, 51f, paint);
+        canvas.drawLine(445f, 37f, 431f, 51f, paint);
+        paint.setStrokeCap(Paint.Cap.BUTT);
+        paint.setStyle(Paint.Style.FILL);
     }
 
     private SettingValue[] statusValues(String page) {
@@ -754,11 +999,31 @@ public final class SettingsPanelView extends View implements UiInputTarget {
     }
 
     private void button(Canvas canvas, String label, float left, float top, float right) {
-        paint.setColor(0xff1c2d37);
+        button(canvas, label, left, top, right, 72f);
+    }
+
+    private void button(Canvas canvas, String label, float left, float top, float right, float height) {
+        RectF rect = new RectF(left, top, right, top + height);
+        ReSonoTheme.glass(canvas, paint, rect, 24f, false);
+        boolean glyph = label.length() == 1;
+        ReSonoTheme.text(canvas, paint, label, rect.centerX(), rect.centerY() + (glyph ? 12f : 8f),
+                glyph ? 38f : 22f, ReSonoTheme.INK, Paint.Align.CENTER, true);
+    }
+
+    private void primaryButton(Canvas canvas, String label, float left, float top, float right) {
+        primaryButton(canvas, label, left, top, right, 72f);
+    }
+
+    private void primaryButton(Canvas canvas, String label, float left, float top, float right, float height) {
+        RectF rect = new RectF(left, top, right, top + height);
         paint.setStyle(Paint.Style.FILL);
-        canvas.drawRoundRect(left, top, right, top + 72f, 20f, 20f, paint);
-        ReSonoTheme.text(canvas, paint, label, (left + right) / 2f, top + 48f, 28f,
-                ReSonoTheme.CYAN, Paint.Align.CENTER, true);
+        paint.setShader(new LinearGradient(0f, rect.top, 0f, rect.bottom,
+                ReSonoTheme.withAlpha(ReSonoTheme.ORB_BLUE, 240),
+                ReSonoTheme.withAlpha(ReSonoTheme.ORB_BLUE, 195), Shader.TileMode.CLAMP));
+        canvas.drawRoundRect(rect, 24f, 24f, paint);
+        paint.setShader(null);
+        ReSonoTheme.text(canvas, paint, label, rect.centerX(), rect.centerY() + 8f, 22f,
+                ReSonoTheme.INK, Paint.Align.CENTER, true);
     }
 
     private void adjustVolume(boolean increase) {

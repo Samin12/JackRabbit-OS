@@ -142,10 +142,12 @@ final class CardsDeckView extends View {
         String kind = "builtin_calendar".equals(sourceType) ? "Calendar"
                 : "builtin_tasks".equals(sourceType) ? "Tasks"
                 : "plugin_card".equals(sourceType) ? "App" : "Creation";
-        ReSonoTheme.text(canvas, paint, kind.toUpperCase(java.util.Locale.ROOT), 240f, 362f + offset,
-                13f, ReSonoTheme.withAlpha(accent, 230), Paint.Align.CENTER, true);
         String title = item.optString("title", "Creation").trim();
         if (title.isEmpty()) title = "Creation";
+        if (!kind.equalsIgnoreCase(title)) {
+            ReSonoTheme.text(canvas, paint, kind.toUpperCase(java.util.Locale.ROOT), 240f, 362f + offset,
+                    13f, ReSonoTheme.withAlpha(accent, 230), Paint.Align.CENTER, true);
+        }
         if (title.length() > 22) title = title.substring(0, 21) + "…";
         ReSonoTheme.text(canvas, paint, title, 240f, 398f + offset, 30f,
                 ReSonoTheme.INK, Paint.Align.CENTER, true);
