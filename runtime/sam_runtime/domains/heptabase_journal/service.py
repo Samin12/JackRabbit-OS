@@ -19,7 +19,7 @@ from sam_runtime.tools.definitions import ToolInvocationContext
 from .activity import activity_lines
 from .client import HeptabaseMcpClient, HttpTransport
 from .errors import AuthorizationError, HeptabaseError, NotConnected, ReconnectRequired, ToolFailure
-from .format import (Rendered, SessionLine, clean_words, fingerprint, journal_contains, journal_plain_text,
+from .format import (SessionLine, clean_words, fingerprint, journal_contains, journal_plain_text,
                      match_key, render_note, render_session, scrub_secrets, session_header, unescape_markdown)
 from .localtime import (DEFAULT_TIMEZONE, UnknownTimezone, clock_label, iso_utc, journal_date, parse_iso_epoch,
                         resolve_zone, zone_source)
@@ -448,7 +448,9 @@ class HeptabaseJournalService:
         if not lines:
             self._worker.wake()
             return {"journaled": False, "reason": "nothing_new"}
-        timed = [line.sort_at for line in lines if line.sort_at is not None]
+        # Without per-utterance times (older app builds) the session is labelled with the finalize time.
+        speech_timed = all(item.at is not None for item in utterances)
+        timed = [line.sort_at for line in lines if line.sort_at is not None] if speech_timed else []
         start = min(timed) if timed else now
         end = max(timed) if timed else now
         header = session_header(clock_label(start, zone), clock_label(end, zone))

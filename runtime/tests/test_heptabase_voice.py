@@ -261,6 +261,24 @@ class JournalVoiceToolsTest(unittest.TestCase):
         label = clock_label(self.h.clock(), ZONE)
         self.assertEqual(f"**R1 voice · {label}**\n\n- first thing\n\n- second thing", content)
 
+    def test_untimed_speech_header_ignores_action_times(self) -> None:
+        self.h.connect()
+        self.catalog.invoke("tasks_add", {"text": "Water plants"}, context=self.ctx("Add a task", 1, call="t1",
+                                                                                   session="session-9"))
+        action = self.h.sessions.entries("session-9")[-1]
+        import json
+
+        prepared = json.loads(action.text_content)["result"]["result"]
+        self.catalog.invoke("tasks_confirm_action", {"actionId": prepared["actionId"],
+                                                     "contentHash": prepared["contentHash"]},
+                            context=self.ctx("yes", 2, call="t2", session="session-9"))
+        self.h.clock.advance(2 * 3600)  # the session is finalized two hours after the (real-clock) tool rows
+        self.h.service.finalize_session("session-9", [{"role": "user", "eventType": USER, "text": "add a task"}])
+        self.h.service.drain()
+        content = self.h.fake.appends()[0][1]
+        self.assertTrue(content.startswith(f"**R1 voice · {clock_label(self.h.clock(), ZONE)}**"), content)
+        self.assertIn('Task added: "Water plants"', content)
+
     def test_finalize_is_deduplicated_and_respects_settings(self) -> None:
         self.h.connect()
         entries = [{"role": "user", "eventType": USER, "text": "once only", "at": int(self.h.clock() * 1000)}]
