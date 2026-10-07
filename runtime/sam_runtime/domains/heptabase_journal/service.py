@@ -121,14 +121,24 @@ class HeptabaseJournalService:
 
     def device_status(self) -> dict[str, object]:
         state = self._settings.state()
+        settings = self._settings.settings()
         counts = self._outbox.counts()
+        today = journal_date(self._clock(), self._zone(settings))
+        day = self._outbox.counts_for_date(today)
         return {
             "connected": state.has_grant,
-            "autoSessions": self._settings.settings().auto_sessions,
+            "autoSessions": settings.auto_sessions,
             "pending": counts["pending"] + counts["sending"] + counts["uncertain"] + counts["held"],
             "failed": counts["failed"],
             "lastSentAt": state.last_sent_at,
             "needsReconnect": state.state == RECONNECT_REQUIRED,
+            # Additive (wave 2, Cards board): today's entries in the user's journal timezone.
+            "today": {
+                "date": today,
+                "sent": day["sent"],
+                "queued": day["pending"] + day["sending"] + day["uncertain"] + day["held"],
+                "failed": day["failed"],
+            },
         }
 
     def management_view(self) -> dict[str, object]:

@@ -81,7 +81,8 @@ class HeptabaseRoutesTest(unittest.TestCase):
     def test_device_routes_follow_the_contract(self) -> None:
         status, value = self.json_call("GET", "/v1/journal/status")
         self.assertEqual(200, status)
-        self.assertEqual({"connected", "autoSessions", "pending", "failed", "lastSentAt", "needsReconnect"}, set(value))
+        self.assertEqual({"connected", "autoSessions", "pending", "failed", "lastSentAt", "needsReconnect", "today"},
+                         set(value))
         self.assertFalse(value["connected"])
         status, value = self.json_call("POST", "/v1/journal/notes", {"text": "hello"})
         self.assertEqual((409, "heptabase_not_connected"), (status, value["error"]["code"]))

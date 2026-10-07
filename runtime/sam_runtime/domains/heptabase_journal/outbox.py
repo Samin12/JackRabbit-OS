@@ -247,6 +247,15 @@ class JournalOutboxRepository:
         values = {str(row[0]): int(row[1]) for row in rows}
         return {state: values.get(state, 0) for state in ("held", "pending", "sending", "uncertain", "sent", "failed")}
 
+    def counts_for_date(self, journal_date: str) -> dict[str, int]:
+        """Entries of one journal day by state (sent rows are kept 30 days, so today is exact)."""
+        with self._database.connect() as connection:
+            rows = connection.execute(
+                "SELECT state, COUNT(*) FROM journal_outbox WHERE journal_date = ? GROUP BY state", (journal_date,)
+            ).fetchall()
+        values = {str(row[0]): int(row[1]) for row in rows}
+        return {state: values.get(state, 0) for state in ("held", "pending", "sending", "uncertain", "sent", "failed")}
+
     def last_error(self) -> str | None:
         with self._database.connect() as connection:
             row = connection.execute(
