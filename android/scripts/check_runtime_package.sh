@@ -23,6 +23,7 @@ for required in \
     'assets/management/index.html' \
     'assets/management/app.js' \
     'assets/management/background-agent.js' \
+    'assets/management/heptabase.js' \
     'assets/management/management.css' \
     'assets/design/tokens.css' \
     'assets/design/base.css'; do
@@ -70,7 +71,8 @@ for required_extension in \
     'pydantic_core/_pydantic_core.cpython-313-aarch64-linux-android.so' \
     'rpds/rpds.cpython-313-aarch64-linux-android.so' \
     'yaml/_yaml.so' \
-    'chaquopy_libyaml-0.2.5.dist-info/License'; do
+    'chaquopy_libyaml-0.2.5.dist-info/License' \
+    'tzdata/zoneinfo/America/New_York'; do
     if ! rg -Fq "$required_extension" "$CHECK_DIR/requirements-common.txt"; then
         echo "required Android Python extension missing: $required_extension" >&2
         exit 1
