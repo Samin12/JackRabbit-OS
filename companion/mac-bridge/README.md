@@ -48,6 +48,9 @@ private-LAN peers are accepted (10/8, 172.16/12, 192.168/16, 169.254/16, fc00::/
 | `POST /v1/heptabase/journal/append` `{date:"YYYY-MM-DD", content:"<markdown>"}` | the CLI's `{date, title, contentMd5}` |
 | `GET /v1/heptabase/journal/read?date=YYYY-MM-DD` | `{date, title, text, contentMd5}`: the day as plain text lines (paragraphs, headings, `- ` bullets, `1. ` numbers, `[ ]`/`[x]` todos, `+ ` toggles, `> ` quotes; marks removed; nested items indented) |
 
+- `content` is Markdown as the desktop CLI parses it: CommonMark plus Heptabase's list (`+` toggles, `- [ ]` todos)
+  and `{{...}}` mention syntax. Hepta Markdown tags such as `<hepta-color>` are **not** parsed and would show as
+  literal text, so the R1 sends its gray action lines as italics on this path.
 - The body may be at most 64 KB. `content` is written to a private 0600 temp file, passed with
   `--content-file`, and deleted right after.
 - Appends run one at a time. Each CLI call has a 30 s limit.
