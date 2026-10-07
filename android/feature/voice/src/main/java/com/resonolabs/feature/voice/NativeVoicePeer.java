@@ -55,6 +55,8 @@ public final class NativeVoicePeer {
     private int previousAudioMode = AudioManager.MODE_NORMAL;
     private boolean previousSpeakerphoneOn;
     private boolean closed;
+    private boolean microphoneMuted;
+    private boolean speakerMuted;
 
     public NativeVoicePeer(Context context, Listener listener) {
         this.context = context.getApplicationContext();
@@ -91,6 +93,8 @@ public final class NativeVoicePeer {
             audioBuilder.setUseHardwareNoiseSuppressor(
                     JavaAudioDeviceModule.isBuiltInNoiseSuppressorSupported());
             audioDevice = audioBuilder.createAudioDeviceModule();
+            audioDevice.setMicrophoneMute(microphoneMuted);
+            audioDevice.setSpeakerMute(speakerMuted);
             factory = PeerConnectionFactory.builder()
                     .setAudioDeviceModule(audioDevice)
                     .createPeerConnectionFactory();
@@ -102,7 +106,7 @@ public final class NativeVoicePeer {
 
             audioSource = factory.createAudioSource(new MediaConstraints());
             audioTrack = factory.createAudioTrack("resono-microphone", audioSource);
-            audioTrack.setEnabled(true);
+            audioTrack.setEnabled(!microphoneMuted);
             peer.addTrack(audioTrack, Collections.singletonList("resono-audio"));
 
             DataChannel.Init init = new DataChannel.Init();
@@ -139,6 +143,19 @@ public final class NativeVoicePeer {
         if (closed || dataChannel == null || dataChannel.state() != DataChannel.State.OPEN) return false;
         byte[] bytes = event.toString().getBytes(StandardCharsets.UTF_8);
         return dataChannel.send(new DataChannel.Buffer(ByteBuffer.wrap(bytes), false));
+    }
+
+    /** Stops sending microphone audio without ending the session. */
+    public void setMicrophoneMuted(boolean muted) {
+        microphoneMuted = muted;
+        if (audioTrack != null && !closed) audioTrack.setEnabled(!muted);
+        if (audioDevice != null && !closed) audioDevice.setMicrophoneMute(muted);
+    }
+
+    /** Silences the assistant's audio locally; the conversation keeps running. */
+    public void setSpeakerMuted(boolean muted) {
+        speakerMuted = muted;
+        if (audioDevice != null && !closed) audioDevice.setSpeakerMute(muted);
     }
 
     public void close() {

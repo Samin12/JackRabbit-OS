@@ -27,6 +27,21 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final FluidOrb orb = new FluidOrb();
     private float orbRadius = 92f;
+    private float orbY;
+    private static final float BAR_Y = 588f;
+    private static final float[] BAR_X = {64f, 152f, 240f, 328f, 416f};
+    private final java.util.ArrayList<String[]> messages = new java.util.ArrayList<>();
+    private int assistantMessage = -1;
+    private boolean micMuted;
+    private boolean speakerMuted;
+    private boolean transcriptOpen;
+    private float transcriptScroll;
+    private float transcriptHeight;
+    private boolean followTranscript = true;
+    private float touchDownX;
+    private float touchDownY;
+    private float touchLastY;
+    private boolean touchDragging;
     private final StringBuilder assistantDraft = new StringBuilder();
     private final JSONArray recordedEntries = new JSONArray();
     private final VoiceSessionStateTracker sessionState = new VoiceSessionStateTracker();
@@ -86,18 +101,114 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
     }
 
     public boolean onInput(UiInputIntent intent) {
-        if (intent == UiInputIntent.ACTIVATE) toggle();
-        else if (intent == UiInputIntent.BACK
-                && sessionState.state() != VoiceSessionStateTracker.State.IDLE) stopSession();
+        if (transcriptOpen && (intent == UiInputIntent.NEXT || intent == UiInputIntent.PREVIOUS)) {
+            scrollTranscript(intent == UiInputIntent.NEXT ? 60f : -60f);
+        } else if (intent == UiInputIntent.ACTIVATE) {
+            if (sessionState.state() == VoiceSessionStateTracker.State.RESPONDING) interrupt();
+            else toggle();
+        } else if (intent == UiInputIntent.BACK) {
+            if (transcriptOpen) { transcriptOpen = false; invalidate(); }
+            else if (inSession()) stopSession();
+        }
         return true;
     }
 
     @Override public boolean onTouchEvent(MotionEvent event) {
-        if (event.getActionMasked() != MotionEvent.ACTION_UP) return true;
+        float x = event.getX() * WIDTH / Math.max(1f, getWidth());
         float y = event.getY() * HEIGHT / Math.max(1f, getHeight());
-        if (y >= 150f && y <= 480f) toggle();
-        else if (y >= 555f && isAvailable()) openHandoff.run();
+        switch (event.getActionMasked()) {
+            case MotionEvent.ACTION_DOWN -> {
+                touchDownX = x; touchDownY = y; touchLastY = y; touchDragging = false;
+            }
+            case MotionEvent.ACTION_MOVE -> {
+                if (transcriptOpen && (touchDragging || Math.abs(y - touchDownY) > 12f)) {
+                    touchDragging = true;
+                    scrollTranscript(touchLastY - y);
+                }
+                touchLastY = y;
+            }
+            case MotionEvent.ACTION_UP -> {
+                if (!touchDragging && Math.abs(x - touchDownX) < 24f && Math.abs(y - touchDownY) < 24f) {
+                    tap(x, y);
+                }
+                touchDragging = false;
+            }
+            default -> { }
+        }
         return true;
+    }
+
+    private void tap(float x, float y) {
+        if (y >= BAR_Y - 40f) {
+            int button = -1;
+            for (int index = 0; index < BAR_X.length; index++) {
+                if (Math.abs(x - BAR_X[index]) <= 40f) button = index;
+            }
+            if (button == 0) { transcriptOpen = !transcriptOpen; followTranscript = true; }
+            else if (inSession() && button == 1) setMicMuted(!micMuted);
+            else if (inSession() && button == 2) interrupt();
+            else if (inSession() && button == 3) setSpeakerMuted(!speakerMuted);
+            else if (inSession() && button == 4) stopSession();
+            else if (!inSession() && button >= 1) startSession();
+            invalidate();
+            return;
+        }
+        if (isAvailable() && x >= 396f && y >= 104f && y <= 160f) { openHandoff.run(); return; }
+        boolean onOrb = transcriptOpen ? y <= 196f : (y >= 150f && y <= 480f);
+        if (!onOrb) return;
+        VoiceSessionStateTracker.State state = sessionState.state();
+        if (state == VoiceSessionStateTracker.State.RESPONDING) interrupt();
+        else if (!inSession()) startSession();
+        else if (transcriptOpen) transcriptOpen = false;
+        invalidate();
+    }
+
+    private boolean inSession() {
+        VoiceSessionStateTracker.State state = sessionState.state();
+        return state == VoiceSessionStateTracker.State.CONNECTING
+                || state == VoiceSessionStateTracker.State.LIVE
+                || state == VoiceSessionStateTracker.State.RESPONDING;
+    }
+
+    private void setMicMuted(boolean muted) {
+        micMuted = muted;
+        if (peer != null) peer.setMicrophoneMuted(muted);
+    }
+
+    private void setSpeakerMuted(boolean muted) {
+        speakerMuted = muted;
+        if (peer != null) peer.setSpeakerMuted(muted);
+    }
+
+    /** Stops the assistant mid-sentence, like tapping ChatGPT Voice while it talks. */
+    private void interrupt() {
+        if (peer == null || sessionState.state() != VoiceSessionStateTracker.State.RESPONDING) return;
+        try {
+            peer.sendRealtimeEvent(new JSONObject().put("type", "response.cancel"));
+            peer.sendRealtimeEvent(new JSONObject().put("type", "output_audio_buffer.clear"));
+        } catch (Exception ignored) { }
+        if (assistantMessage >= 0 && assistantMessage < messages.size()) {
+            String[] message = messages.get(assistantMessage);
+            message[1] = message[1].trim() + " —";
+        }
+        assistantMessage = -1;
+        assistantDraft.setLength(0);
+        sessionState.live();
+        transcript = "Stopped. I'm listening";
+        invalidate();
+    }
+
+    private void scrollTranscript(float delta) {
+        float max = Math.max(0f, transcriptHeight - 330f);
+        transcriptScroll = Math.max(0f, Math.min(max, transcriptScroll + delta));
+        followTranscript = transcriptScroll >= max - 4f;
+        invalidate();
+    }
+
+    private void addMessage(String role, String text) {
+        if (text == null || text.isBlank()) return;
+        messages.add(new String[]{role, text.trim()});
+        while (messages.size() > 80) { messages.remove(0); if (assistantMessage >= 0) assistantMessage--; }
     }
 
     private void toggle() {
@@ -157,6 +268,8 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
                 activity.runOnUiThread(() -> fail(reason));
             }
         });
+        peer.setMicrophoneMuted(micMuted);
+        peer.setSpeakerMuted(speakerMuted);
         peer.createOffer();
     }
 
@@ -194,17 +307,38 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
                 lastUserUtterance = text;
                 if (!text.isEmpty()) userUtteranceId += 1;
                 recordTranscript("user", type, text);
-                if (!text.isEmpty()) transcript = text;
+                if (!text.isEmpty()) {
+                    transcript = text;
+                    if (assistantMessage >= 0) {
+                        messages.add(assistantMessage, new String[]{"user", text});
+                        assistantMessage++;
+                    } else {
+                        addMessage("user", text);
+                    }
+                }
             } else if ("response.audio_transcript.delta".equals(type)
                     || "response.output_audio_transcript.delta".equals(type)) {
                 assistantDraft.append(event.optString("delta", ""));
-                if (assistantDraft.length() > 0) transcript = assistantDraft.toString();
+                if (assistantDraft.length() > 0) {
+                    transcript = assistantDraft.toString();
+                    if (assistantMessage < 0) {
+                        addMessage("assistant", transcript);
+                        assistantMessage = messages.size() - 1;
+                    } else {
+                        messages.get(assistantMessage)[1] = transcript;
+                    }
+                }
             } else if ("response.audio_transcript.done".equals(type)
                     || "response.output_audio_transcript.done".equals(type)) {
                 String text = event.optString("transcript", assistantDraft.toString()).trim();
                 recordTranscript("assistant", type, text);
                 assistantDraft.setLength(0);
-                if (!text.isEmpty()) transcript = text;
+                if (!text.isEmpty()) {
+                    transcript = text;
+                    if (assistantMessage >= 0) messages.get(assistantMessage)[1] = text;
+                    else addMessage("assistant", text);
+                }
+                assistantMessage = -1;
             } else if ("response.function_call_arguments.done".equals(type)) {
                 callTool(event);
             } else if ("session.updated".equals(type)) {
@@ -214,6 +348,10 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
                 JSONObject error = event.optJSONObject("error");
                 String code = error == null ? "" : error.optString("code", "");
                 String message = error == null ? "" : error.optString("message", "");
+                if ("response_cancel_not_active".equals(code)) {
+                    invalidate();
+                    return;
+                }
                 if ("conversation_already_has_active_response".equals(code)
                         || message.contains("active response in progress")) {
                     responseCoordinator.onActiveResponseRejection();
@@ -243,6 +381,7 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
 
         // Update UI immediately
         sessionState.idle();
+        assistantMessage = -1;
         transcript = "Tap to start a conversation";
         failure = "";
         pendingConnectGreeting = null;
@@ -325,58 +464,218 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
         canvas.scale(getWidth() / WIDTH, getHeight() / HEIGHT);
         VoiceSessionStateTracker.State state = sessionState.state();
         boolean error = state == VoiceSessionStateTracker.State.ERROR;
-        float targetRadius = switch (state) {
-            case IDLE -> 92f;
-            case CONNECTING -> 84f + 6f * (float) Math.sin(android.os.SystemClock.uptimeMillis() / 220.0);
-            case LIVE -> 104f;
+        float targetRadius = transcriptOpen ? 30f : switch (state) {
+            case IDLE -> 96f;
+            case CONNECTING -> 88f + 6f * (float) Math.sin(android.os.SystemClock.uptimeMillis() / 220.0);
+            case LIVE -> micMuted ? 92f : 104f;
             case RESPONDING -> 112f;
             case ERROR -> 86f;
         };
-        orbRadius += (targetRadius - orbRadius) * 0.12f;
+        orbRadius += (targetRadius - orbRadius) * 0.14f;
         orb.setColor(error ? ReSonoTheme.RED : ReSonoTheme.ORB_BLUE)
                 .setEnergy(switch (state) {
                     case IDLE -> 0.15f;
                     case CONNECTING -> 0.4f;
-                    case LIVE -> 0.6f;
+                    case LIVE -> micMuted ? 0.1f : 0.6f;
                     case RESPONDING -> 1f;
                     case ERROR -> 0.05f;
                 })
                 .setSpeed(switch (state) {
                     case IDLE -> 0.6f;
                     case CONNECTING -> 1.5f;
-                    case LIVE -> 1.1f;
+                    case LIVE -> micMuted ? 0.4f : 1.1f;
                     case RESPONDING -> 1.9f;
                     case ERROR -> 0.3f;
                 });
-        float orbY = 292f + orb.bob(5f);
-        ReSonoTheme.background(canvas, paint, WIDTH, HEIGHT, 240f, orbY, 260f, orb.color());
-        orb.draw(canvas, 240f, orbY, orbRadius);
+        float orbCenter = transcriptOpen ? 148f : 290f;
+        orbY = orbY == 0f ? orbCenter : orbY + (orbCenter - orbY) * 0.14f;
+        float y = orbY + orb.bob(transcriptOpen ? 2f : 5f);
+        ReSonoTheme.background(canvas, paint, WIDTH, HEIGHT, 240f, y, transcriptOpen ? 120f : 250f,
+                orb.color());
+        orb.draw(canvas, 240f, y, orbRadius);
 
-        String headline = switch (state) {
+        String status = switch (state) {
             case IDLE -> "Tap to talk";
             case CONNECTING -> "Connecting…";
-            case LIVE -> "Listening";
-            case RESPONDING -> "Speaking";
+            case LIVE -> micMuted ? "Mic is off" : "Listening";
+            case RESPONDING -> speakerMuted ? "Speaking (muted)" : "Speaking";
             case ERROR -> "Voice unavailable";
         };
-        ReSonoTheme.text(canvas, paint, headline, 240f, 452f, 30f,
-                ReSonoTheme.INK, Paint.Align.CENTER, true);
-        String detail = switch (state) {
-            case IDLE -> "Tap the orb or press the side button";
-            case CONNECTING -> "Opening a voice session";
-            default -> transcript;
-        };
-        drawWrapped(canvas, detail, 240f, 488f, 400f, 18f,
-                error ? ReSonoTheme.RED : ReSonoTheme.MUTED, isAvailable() ? 2 : 3);
-        if (isAvailable()) {
-            RectF pill = new RectF(150f, 566f, 330f, 614f);
-            ReSonoTheme.glass(canvas, paint, pill, 24f, false);
-            drawCameraGlyph(canvas, 190f, 590f);
-            ReSonoTheme.text(canvas, paint, "Show camera", 258f, 596f, 17f,
-                    ReSonoTheme.INK, Paint.Align.CENTER, true);
+        if (transcriptOpen) {
+            drawTranscript(canvas);
+            ReSonoTheme.text(canvas, paint, status, 240f, 534f, 14f, ReSonoTheme.MUTED,
+                    Paint.Align.CENTER, false);
+        } else {
+            ReSonoTheme.text(canvas, paint, status, 240f, 440f, 28f, ReSonoTheme.INK,
+                    Paint.Align.CENTER, true);
+            String detail = switch (state) {
+                case IDLE -> "Tap the orb or press the side button";
+                case CONNECTING -> "Opening a voice session";
+                case RESPONDING -> "Tap the orb to stop it talking";
+                default -> transcript;
+            };
+            drawWrapped(canvas, detail, 240f, 474f, 410f, 17f,
+                    error ? ReSonoTheme.RED : ReSonoTheme.MUTED, 2);
         }
+        if (isAvailable()) {
+            ReSonoTheme.glass(canvas, paint, new RectF(400f, 108f, 452f, 160f), 26f, false);
+            drawCameraGlyph(canvas, 426f, 134f);
+        }
+        drawControls(canvas, state);
         canvas.restore();
         if (isShown()) postInvalidateDelayed(33L);
+    }
+
+    private void drawControls(Canvas canvas, VoiceSessionStateTracker.State state) {
+        boolean live = inSession();
+        drawRoundButton(canvas, 0, transcriptOpen ? Look.SELECTED : Look.GLASS, Glyph.TRANSCRIPT, true);
+        if (!live) {
+            RectF start = new RectF(112f, BAR_Y - 30f, 456f, BAR_Y + 30f);
+            ReSonoTheme.glass(canvas, paint, start, 30f, false);
+            paint.setColor(ReSonoTheme.ORB_PALE);
+            drawMicGlyph(canvas, 160f, BAR_Y, false, ReSonoTheme.ORB_PALE);
+            ReSonoTheme.text(canvas, paint, state == VoiceSessionStateTracker.State.ERROR
+                            ? "Try again" : "Start talking", 300f, BAR_Y + 6f, 18f,
+                    ReSonoTheme.INK, Paint.Align.CENTER, true);
+            return;
+        }
+        drawRoundButton(canvas, 1, micMuted ? Look.DANGER : Look.GLASS, Glyph.MIC, true);
+        drawRoundButton(canvas, 2, Look.GLASS, Glyph.STOP,
+                state == VoiceSessionStateTracker.State.RESPONDING);
+        drawRoundButton(canvas, 3, speakerMuted ? Look.DANGER : Look.GLASS, Glyph.SPEAKER, true);
+        drawRoundButton(canvas, 4, Look.WHITE, Glyph.CLOSE, true);
+    }
+
+    private enum Look { GLASS, SELECTED, DANGER, WHITE }
+    private enum Glyph { TRANSCRIPT, MIC, STOP, SPEAKER, CLOSE }
+
+    private void drawRoundButton(Canvas canvas, int slot, Look look, Glyph glyph, boolean enabled) {
+        float cx = BAR_X[slot];
+        RectF circle = new RectF(cx - 30f, BAR_Y - 30f, cx + 30f, BAR_Y + 30f);
+        int ink = ReSonoTheme.INK;
+        switch (look) {
+            case GLASS -> ReSonoTheme.glass(canvas, paint, circle, 30f, false);
+            case SELECTED -> ReSonoTheme.glass(canvas, paint, circle, 30f, true);
+            case DANGER -> { paint.setColor(android.graphics.Color.rgb(196, 54, 48)); canvas.drawOval(circle, paint); }
+            case WHITE -> { paint.setColor(ReSonoTheme.INK); canvas.drawOval(circle, paint); ink = ReSonoTheme.BACKGROUND; }
+        }
+        if (!enabled) ink = ReSonoTheme.withAlpha(ink, 80);
+        paint.setStyle(Paint.Style.STROKE);
+        paint.setStrokeWidth(2.6f);
+        paint.setStrokeCap(Paint.Cap.ROUND);
+        paint.setColor(ink);
+        switch (glyph) {
+            case TRANSCRIPT -> {
+                canvas.drawLine(cx - 11f, BAR_Y - 6f, cx + 11f, BAR_Y - 6f, paint);
+                canvas.drawLine(cx - 11f, BAR_Y + 1f, cx + 11f, BAR_Y + 1f, paint);
+                canvas.drawLine(cx - 11f, BAR_Y + 8f, cx + 3f, BAR_Y + 8f, paint);
+            }
+            case MIC -> drawMicGlyph(canvas, cx, BAR_Y, micMuted, ink);
+            case STOP -> {
+                paint.setStyle(Paint.Style.FILL);
+                canvas.drawRoundRect(cx - 8f, BAR_Y - 8f, cx + 8f, BAR_Y + 8f, 3f, 3f, paint);
+            }
+            case SPEAKER -> {
+                paint.setStyle(Paint.Style.FILL);
+                android.graphics.Path cone = new android.graphics.Path();
+                cone.moveTo(cx - 12f, BAR_Y - 5f); cone.lineTo(cx - 6f, BAR_Y - 5f);
+                cone.lineTo(cx + 1f, BAR_Y - 11f); cone.lineTo(cx + 1f, BAR_Y + 11f);
+                cone.lineTo(cx - 6f, BAR_Y + 5f); cone.lineTo(cx - 12f, BAR_Y + 5f); cone.close();
+                canvas.drawPath(cone, paint);
+                paint.setStyle(Paint.Style.STROKE);
+                if (speakerMuted) {
+                    canvas.drawLine(cx + 6f, BAR_Y - 5f, cx + 14f, BAR_Y + 5f, paint);
+                    canvas.drawLine(cx + 14f, BAR_Y - 5f, cx + 6f, BAR_Y + 5f, paint);
+                } else {
+                    canvas.drawArc(cx - 4f, BAR_Y - 8f, cx + 10f, BAR_Y + 8f, -50f, 100f, false, paint);
+                    canvas.drawArc(cx - 4f, BAR_Y - 14f, cx + 16f, BAR_Y + 14f, -50f, 100f, false, paint);
+                }
+            }
+            case CLOSE -> {
+                canvas.drawLine(cx - 9f, BAR_Y - 9f, cx + 9f, BAR_Y + 9f, paint);
+                canvas.drawLine(cx + 9f, BAR_Y - 9f, cx - 9f, BAR_Y + 9f, paint);
+            }
+        }
+        paint.setStrokeCap(Paint.Cap.BUTT);
+        paint.setStyle(Paint.Style.FILL);
+    }
+
+    private void drawMicGlyph(Canvas canvas, float cx, float cy, boolean muted, int color) {
+        paint.setStyle(Paint.Style.STROKE);
+        paint.setStrokeWidth(2.6f);
+        paint.setStrokeCap(Paint.Cap.ROUND);
+        paint.setColor(color);
+        canvas.drawRoundRect(cx - 5.5f, cy - 13f, cx + 5.5f, cy + 3f, 5.5f, 5.5f, paint);
+        canvas.drawArc(cx - 10f, cy - 7f, cx + 10f, cy + 9f, 0f, 180f, false, paint);
+        canvas.drawLine(cx, cy + 9f, cx, cy + 13f, paint);
+        if (muted) canvas.drawLine(cx - 12f, cy - 13f, cx + 12f, cy + 13f, paint);
+        paint.setStrokeCap(Paint.Cap.BUTT);
+        paint.setStyle(Paint.Style.FILL);
+    }
+
+    /** Scrollable conversation, newest at the bottom, like ChatGPT Voice's transcript. */
+    private void drawTranscript(Canvas canvas) {
+        float top = 196f;
+        float bottom = 518f;
+        float y = 0f;
+        java.util.ArrayList<Object[]> layout = new java.util.ArrayList<>();
+        for (String[] message : messages) {
+            boolean user = "user".equals(message[0]);
+            java.util.List<String> lines = wrap(message[1], user ? 300f : 404f, 16f);
+            float height = lines.size() * 22f + (user ? 20f : 8f);
+            layout.add(new Object[]{user, lines, y, height});
+            y += height + 12f;
+        }
+        transcriptHeight = y;
+        float max = Math.max(0f, transcriptHeight - (bottom - top));
+        if (followTranscript) transcriptScroll = max;
+        transcriptScroll = Math.min(transcriptScroll, max);
+        canvas.save();
+        canvas.clipRect(0f, top, WIDTH, bottom);
+        if (messages.isEmpty()) {
+            ReSonoTheme.text(canvas, paint, "Your conversation will show up here", 240f, 340f, 16f,
+                    ReSonoTheme.MUTED, Paint.Align.CENTER, false);
+        }
+        for (Object[] item : layout) {
+            boolean user = (Boolean) item[0];
+            @SuppressWarnings("unchecked") java.util.List<String> lines = (java.util.List<String>) item[1];
+            float itemTop = top + (Float) item[2] - transcriptScroll;
+            float height = (Float) item[3];
+            if (itemTop + height < top || itemTop > bottom) continue;
+            if (user) {
+                float widest = 0f;
+                paint.setTextSize(16f);
+                for (String line : lines) widest = Math.max(widest, paint.measureText(line));
+                RectF bubble = new RectF(452f - widest - 28f, itemTop, 452f, itemTop + height);
+                ReSonoTheme.glass(canvas, paint, bubble, 18f, true);
+                for (int line = 0; line < lines.size(); line++) {
+                    ReSonoTheme.text(canvas, paint, lines.get(line), 438f, itemTop + 26f + line * 22f, 16f,
+                            ReSonoTheme.INK, Paint.Align.RIGHT, false);
+                }
+            } else {
+                for (int line = 0; line < lines.size(); line++) {
+                    ReSonoTheme.text(canvas, paint, lines.get(line), 30f, itemTop + 16f + line * 22f, 16f,
+                            ReSonoTheme.INK, Paint.Align.LEFT, false);
+                }
+            }
+        }
+        canvas.restore();
+    }
+
+    private java.util.List<String> wrap(String value, float width, float size) {
+        java.util.ArrayList<String> lines = new java.util.ArrayList<>();
+        paint.setTextSize(size);
+        String remaining = value == null ? "" : value.trim();
+        while (!remaining.isEmpty()) {
+            int count = paint.breakText(remaining, true, width, null);
+            if (count < remaining.length()) {
+                int space = remaining.lastIndexOf(' ', Math.max(0, count - 1));
+                if (space > 0) count = space;
+            }
+            lines.add(remaining.substring(0, Math.max(1, count)).trim());
+            remaining = remaining.substring(Math.min(remaining.length(), Math.max(1, count))).trim();
+        }
+        return lines;
     }
 
     private void drawCameraGlyph(Canvas canvas, float cx, float cy) {

@@ -49,6 +49,7 @@ public final class ReSonoTheme {
     public static void background(Canvas canvas, Paint paint, float width, float height,
                                   float glowX, float glowY, float glowRadius, int glowColor) {
         paint.setStyle(Paint.Style.FILL);
+        paint.setColor(Color.BLACK);
         paint.setShader(new LinearGradient(0f, 0f, 0f, height, BACKGROUND_TOP, BACKGROUND,
                 Shader.TileMode.CLAMP));
         canvas.drawRect(0f, 0f, width, height, paint);
@@ -63,6 +64,7 @@ public final class ReSonoTheme {
     /** Frosted glass panel: faint top-lit fill with a hairline edge. */
     public static void glass(Canvas canvas, Paint paint, RectF rect, float radius, boolean selected) {
         paint.setStyle(Paint.Style.FILL);
+        paint.setColor(Color.BLACK);
         paint.setShader(new LinearGradient(0f, rect.top, 0f, rect.bottom,
                 Color.argb(selected ? 46 : 30, 200, 220, 255),
                 Color.argb(selected ? 22 : 12, 200, 220, 255), Shader.TileMode.CLAMP));

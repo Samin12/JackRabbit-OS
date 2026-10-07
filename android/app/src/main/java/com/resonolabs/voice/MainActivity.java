@@ -60,6 +60,8 @@ public final class MainActivity extends Activity {
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, 41);
         }
+        NotificationFeed.ensureEnabled(this);
+        disableSystemShade();
         DisplayPolicy.apply(getWindow());
         installFullscreenPolicy();
         enterProductFullscreen();
@@ -133,10 +135,25 @@ public final class MainActivity extends Activity {
                         | View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
     }
 
+    /** The stock shade is unusable at 480x640; the HOME Control Center replaces it. */
+    private void disableSystemShade() {
+        try {
+            Object statusBar = getSystemService("statusbar");
+            int disableExpand = 0x00010000;
+            statusBar.getClass().getMethod("disable", int.class).invoke(statusBar, disableExpand);
+        } catch (ReflectiveOperationException | RuntimeException error) {
+            android.util.Log.w("ReSonoChrome", "system shade stays enabled: " + error);
+        }
+    }
+
     private void installFullscreenPolicy() {
         View decor = getWindow().getDecorView();
         decor.setOnApplyWindowInsetsListener((view, insets) -> {
             int bars = WindowInsets.Type.statusBars() | WindowInsets.Type.navigationBars();
+            if (insets.isVisible(WindowInsets.Type.statusBars()) && root != null) {
+                // A swipe from the top edge revealed the system bar: answer with our Control Center.
+                view.post(root::openControlCenter);
+            }
             if (insets.isVisible(bars)) view.post(this::enterProductFullscreen);
             return insets;
         });

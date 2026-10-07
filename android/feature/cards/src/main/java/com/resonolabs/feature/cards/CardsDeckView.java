@@ -8,6 +8,7 @@ import android.graphics.RectF;
 import android.view.MotionEvent;
 import android.view.View;
 
+import com.resonolabs.ui.design.FluidOrb;
 import com.resonolabs.ui.design.ReSonoTheme;
 import com.resonolabs.ui.input.UiInputIntent;
 
@@ -21,6 +22,7 @@ final class CardsDeckView extends View {
     private static final float WIDTH = 480f;
     private static final float HEIGHT = 640f;
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final FluidOrb orb = new FluidOrb();
     private final Activation activation;
     private JSONArray items = new JSONArray();
     private int index;
@@ -64,9 +66,9 @@ final class CardsDeckView extends View {
         if (event.getActionMasked() != MotionEvent.ACTION_UP) return true;
         float delta = y - downY;
         if (Math.abs(delta) > 55f) move(delta < 0f ? 1 : -1);
-        else if (y >= 560f && x <= 110f) move(-1);
-        else if (y >= 560f && x >= 370f) move(1);
-        else if (y >= 165f && y <= 500f) activate();
+        else if (y >= 560f && x <= 120f) move(-1);
+        else if (y >= 560f && x >= 360f) move(1);
+        else if (y >= 130f && y <= 530f) activate();
         return true;
     }
 
@@ -96,92 +98,110 @@ final class CardsDeckView extends View {
     }
 
     @Override protected void onDraw(Canvas canvas) {
-        canvas.drawColor(ReSonoTheme.BACKGROUND);
         canvas.save();
         canvas.scale(getWidth() / WIDTH, getHeight() / HEIGHT);
+        JSONObject front = items.optJSONObject(index);
+        int accent = accentOf(front);
+        ReSonoTheme.background(canvas, paint, WIDTH, HEIGHT, 240f, 250f, 280f, accent);
         if (items.length() == 0) {
-            ReSonoTheme.text(canvas, paint, "No Creations installed.", 240f, 350f, 18f,
-                    ReSonoTheme.MUTED, Paint.Align.CENTER, false);
-            ReSonoTheme.text(canvas, paint, "Import one from R1 management.", 240f, 380f, 16f,
+            ReSonoTheme.text(canvas, paint, "No cards yet", 240f, 330f, 24f,
+                    ReSonoTheme.INK, Paint.Align.CENTER, true);
+            ReSonoTheme.text(canvas, paint, "Import one from R1 management.", 240f, 362f, 17f,
                     ReSonoTheme.MUTED, Paint.Align.CENTER, false);
         } else {
-            for (int depth = Math.min(2, items.length() - 1); depth >= 0; depth--) {
-                int itemIndex = (index + depth) % items.length();
-                drawCard(canvas, items.optJSONObject(itemIndex), depth);
+            for (int depth = Math.min(2, items.length() - 1); depth >= 1; depth--) {
+                drawBackCard(canvas, depth);
             }
+            drawFrontCard(canvas, front, accent);
             drawDots(canvas);
         }
-        drawArrow(canvas, 48f, false);
-        drawArrow(canvas, 432f, true);
+        drawArrow(canvas, 60f, false);
+        drawArrow(canvas, 420f, true);
         canvas.restore();
+        if (isShown() && items.length() > 0) postInvalidateDelayed(33L);
     }
 
-    private void drawCard(Canvas canvas, JSONObject item, int depth) {
+    private void drawBackCard(Canvas canvas, int depth) {
+        float inset = 36f + depth * 18f;
+        RectF rect = new RectF(inset, 124f - depth * 14f, WIDTH - inset, 500f);
+        paint.setColor(ReSonoTheme.withAlpha(ReSonoTheme.PANEL_RAISED, 255 - depth * 70));
+        canvas.drawRoundRect(rect, 28f, 28f, paint);
+        ReSonoTheme.glass(canvas, paint, rect, 28f, false);
+    }
+
+    private void drawFrontCard(Canvas canvas, JSONObject item, int accent) {
         if (item == null) return;
-        float inset = 20f + depth * 10f;
-        float top = 190f - depth * 25f + (depth == 0 ? settleOffset : 0f);
-        float bottom = top + 275f;
-        int accent;
-        try { accent = Color.parseColor(item.optString("accent", "#72efcf")); }
-        catch (IllegalArgumentException ignored) { accent = ReSonoTheme.MINT; }
-        paint.setColor(depth == 0 ? ReSonoTheme.PANEL : ReSonoTheme.PANEL_RAISED);
-        canvas.drawRoundRect(new RectF(inset, top, WIDTH - inset, bottom), 14f, 14f, paint);
-        paint.setStyle(Paint.Style.STROKE);
-        paint.setStrokeWidth(1.5f);
-        paint.setColor(ReSonoTheme.MUTED);
-        canvas.drawRoundRect(new RectF(inset, top, WIDTH - inset, bottom), 14f, 14f, paint);
-        paint.setStyle(Paint.Style.FILL);
-        paint.setColor(accent);
-        canvas.drawRoundRect(new RectF(inset, top, inset + 6f, bottom), 6f, 6f, paint);
-        if (depth != 0) return;
+        float offset = settleOffset;
+        RectF rect = new RectF(36f, 130f + offset, WIDTH - 36f, 524f + offset);
+        paint.setColor(ReSonoTheme.PANEL);
+        canvas.drawRoundRect(rect, 28f, 28f, paint);
+        ReSonoTheme.glass(canvas, paint, rect, 28f, true);
+        orb.setColor(accent).setEnergy(0.25f).setSpeed(0.7f);
+        orb.draw(canvas, 240f, 252f + offset + orb.bob(4f), 68f);
         String sourceType = item.optString("sourceType");
-        String kind = "builtin_calendar".equals(sourceType) ? "CALENDAR" : "builtin_tasks".equals(sourceType) ? "TASKS" : "plugin_card".equals(sourceType) ? "APP" : "CREATION";
-        ReSonoTheme.text(canvas, paint, kind, inset + 20f, top + 48f, 22f,
-                accent, Paint.Align.LEFT, true);
-        ReSonoTheme.text(canvas, paint, "READY", WIDTH - inset - 18f, top + 48f, 22f,
-                accent, Paint.Align.RIGHT, true);
+        String kind = "builtin_calendar".equals(sourceType) ? "Calendar"
+                : "builtin_tasks".equals(sourceType) ? "Tasks"
+                : "plugin_card".equals(sourceType) ? "App" : "Creation";
+        ReSonoTheme.text(canvas, paint, kind.toUpperCase(java.util.Locale.ROOT), 240f, 362f + offset,
+                13f, ReSonoTheme.withAlpha(accent, 230), Paint.Align.CENTER, true);
         String title = item.optString("title", "Creation").trim();
         if (title.isEmpty()) title = "Creation";
-        if (title.length() > 28) title = title.substring(0, 27) + "…";
-        ReSonoTheme.text(canvas, paint, title, inset + 20f, top + 94f, 27f,
-                ReSonoTheme.INK, Paint.Align.LEFT, true);
-        drawDescription(canvas, item.optString("description", ""), inset + 20f, top + 136f,
-                WIDTH - inset * 2f - 40f);
+        if (title.length() > 22) title = title.substring(0, 21) + "…";
+        ReSonoTheme.text(canvas, paint, title, 240f, 398f + offset, 30f,
+                ReSonoTheme.INK, Paint.Align.CENTER, true);
+        drawDescription(canvas, item.optString("description", ""), 240f, 432f + offset, 340f);
+        ReSonoTheme.text(canvas, paint, "Tap to open", 240f, 500f + offset, 15f,
+                ReSonoTheme.withAlpha(ReSonoTheme.INK, 150), Paint.Align.CENTER, false);
     }
 
-    private void drawDescription(Canvas canvas, String value, float x, float y, float width) {
-        paint.setTextSize(19f);
+    private int accentOf(JSONObject item) {
+        if (item == null) return ReSonoTheme.ORB_BLUE;
+        String source = item.optString("sourceType");
+        if ("builtin_calendar".equals(source)) return ReSonoTheme.PINK;
+        if ("builtin_tasks".equals(source)) return ReSonoTheme.AMBER;
+        try { return Color.parseColor(item.optString("accent", "#1A73F2")); }
+        catch (IllegalArgumentException ignored) { return ReSonoTheme.ORB_BLUE; }
+    }
+
+    private void drawDescription(Canvas canvas, String value, float centerX, float y, float width) {
+        paint.setTextSize(17f);
         String remaining = value == null ? "" : value.trim();
-        for (int line = 0; line < 3 && !remaining.isEmpty(); line++) {
+        for (int line = 0; line < 2 && !remaining.isEmpty(); line++) {
             int count = paint.breakText(remaining, true, width, null);
             if (count < remaining.length()) {
                 int space = remaining.lastIndexOf(' ', Math.max(0, count - 1));
                 if (space > 0) count = space;
             }
             String text = remaining.substring(0, Math.max(1, count)).trim();
-            if (line == 2 && count < remaining.length()) text += "…";
-            ReSonoTheme.text(canvas, paint, text, x, y + line * 28f, 19f,
-                    ReSonoTheme.MUTED, Paint.Align.LEFT, false);
+            if (line == 1 && count < remaining.length()) text += "…";
+            ReSonoTheme.text(canvas, paint, text, centerX, y + line * 24f, 17f,
+                    ReSonoTheme.MUTED, Paint.Align.CENTER, false);
             remaining = remaining.substring(Math.min(remaining.length(), Math.max(1, count))).trim();
         }
     }
 
     private void drawDots(Canvas canvas) {
-        float total = Math.min(items.length(), 8) * 14f;
-        float start = 240f - total / 2f + 7f;
-        for (int dot = 0; dot < Math.min(items.length(), 8); dot++) {
-            paint.setColor(dot == index ? ReSonoTheme.MINT : ReSonoTheme.MUTED);
-            canvas.drawCircle(start + dot * 14f, 552f, dot == index ? 4f : 3f, paint);
+        int count = Math.min(items.length(), 8);
+        float spacing = 16f;
+        float start = 240f - (count - 1) * spacing / 2f;
+        for (int dot = 0; dot < count; dot++) {
+            boolean active = dot == index;
+            paint.setColor(active ? ReSonoTheme.INK : ReSonoTheme.withAlpha(ReSonoTheme.MUTED, 120));
+            if (active) canvas.drawRoundRect(start + dot * spacing - 9f, 549f, start + dot * spacing + 9f, 555f, 3f, 3f, paint);
+            else canvas.drawCircle(start + dot * spacing, 552f, 3f, paint);
         }
     }
 
     private void drawArrow(Canvas canvas, float centerX, boolean next) {
+        ReSonoTheme.glass(canvas, paint, new RectF(centerX - 28f, 568f, centerX + 28f, 624f), 28f, false);
         paint.setStyle(Paint.Style.STROKE);
-        paint.setStrokeWidth(1.5f);
-        paint.setColor(ReSonoTheme.LINE);
-        canvas.drawRoundRect(new RectF(centerX - 24f, 575f, centerX + 24f, 623f), 12f, 12f, paint);
+        paint.setStrokeWidth(2.6f);
+        paint.setStrokeCap(Paint.Cap.ROUND);
+        paint.setColor(ReSonoTheme.INK);
+        float dir = next ? 1f : -1f;
+        canvas.drawLine(centerX - 4f * dir, 586f, centerX + 5f * dir, 596f, paint);
+        canvas.drawLine(centerX + 5f * dir, 596f, centerX - 4f * dir, 606f, paint);
+        paint.setStrokeCap(Paint.Cap.BUTT);
         paint.setStyle(Paint.Style.FILL);
-        ReSonoTheme.text(canvas, paint, next ? "›" : "‹", centerX, 609f, 28f,
-                ReSonoTheme.INK, Paint.Align.CENTER, false);
     }
 }
