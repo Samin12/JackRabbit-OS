@@ -110,14 +110,14 @@ class T3VoiceInstructionTest(unittest.TestCase):
 
 class T3MigrationTest(unittest.TestCase):
     def test_migration_43_widens_kinds_and_keeps_existing_rows(self) -> None:
-        self.assertEqual(43, LATEST_VERSION)
+        self.assertGreaterEqual(LATEST_VERSION, 43)
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "runtime.sqlite3"
             connection = sqlite3.connect(path)
             connection.row_factory = sqlite3.Row
             connection.execute("PRAGMA foreign_keys = ON")
             connection.execute("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)")
-            for migration in MIGRATIONS[:-1]:
+            for migration in [m for m in MIGRATIONS if m.version < 43]:
                 migration.apply(connection)
                 connection.execute("INSERT INTO schema_migrations VALUES (?, 'x')", (migration.version,))
             connection.commit()
@@ -132,7 +132,7 @@ class T3MigrationTest(unittest.TestCase):
 
             database = RuntimeDatabase(path)
             database.migrate()
-            self.assertEqual({"status": "ready", "migrationVersion": 43}, database.health())
+            self.assertEqual({"status": "ready", "migrationVersion": LATEST_VERSION}, database.health())
             with database.connect() as db:
                 db.execute("INSERT INTO connections VALUES ('t3-row', 't3', 'T3', 1, 'ready', NULL, NULL, 'a', 'a')")
                 db.execute("INSERT INTO connections VALUES ('hb-row', 'heptabase', 'HB', 1, 'ready', NULL, NULL, 'a', 'a')")
