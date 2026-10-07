@@ -26,7 +26,9 @@ class CalendarRoutes:
             return True
         if path == "/v1/calendar/upcoming":
             events = self._repository.upcoming_events(datetime.now(UTC).isoformat(), limit=50)
-            request.respond_json(200, {"events": [_event(item) for item in events]})
+            # "configured" lets glanceable surfaces tell "no events" apart from "no calendar connected".
+            configured = any(item.enabled for item in self._repository.list_accounts())
+            request.respond_json(200, {"events": [_event(item) for item in events], "configured": configured})
             return True
         if path.startswith("/v1/calendar/events/"):
             item = self._repository.get_event(path.rsplit("/", 1)[-1])
