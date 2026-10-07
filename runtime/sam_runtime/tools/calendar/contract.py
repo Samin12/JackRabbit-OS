@@ -20,13 +20,17 @@ def contracts() -> tuple[CalendarToolContract, ...]:
     return (
         CalendarToolContract(
             "calendar_list_upcoming",
-            "List upcoming events from the local synchronized Calendar service.",
+            "List upcoming events from the local synchronized Calendar service, soonest first, with "
+            "their start and end times. Use this for today, tomorrow, this week or any date: list, "
+            "then keep only the events in that range.",
             "read",
             _schema({"limit": {"type": "integer", "minimum": 1, "maximum": 50}}),
         ),
         CalendarToolContract(
             "calendar_search",
-            "Search upcoming events in the local synchronized Calendar service.",
+            "Search upcoming events in the local synchronized Calendar service by words in their "
+            "title, location or description. Not for dates: for today, tomorrow or a date use "
+            "calendar_list_upcoming.",
             "read",
             _schema({"query": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 50}}, ("query",)),
         ),
