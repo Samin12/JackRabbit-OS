@@ -68,6 +68,16 @@ public final class T3FakeBackendTest {
     }
 
     @Test
+    public void turnEndingWithAnOpenRequestNeedsTheUserAgain() {
+        T3FakeBackend fake = new T3FakeBackend(NOW);
+        assertTrue(fake.send(NOW, "fake-deploy", "Wait, first tell me what this does"));
+        assertEquals("working", T3Model.Detail.from(fake.thread(NOW + 1_000L, "fake-deploy")).thread.status);
+        T3Model.Detail after = T3Model.Detail.from(fake.thread(NOW + 10_000L, "fake-deploy"));
+        assertEquals("needs-approval", after.thread.status);
+        assertEquals(1, after.approvals.size());
+    }
+
+    @Test
     public void emptyModeIsConnectedWithProjectsButNoThreads() {
         T3Model.Snapshot snapshot = T3Model.Snapshot.from(new T3FakeBackend(NOW, false).threads(NOW, 40));
         assertTrue(snapshot.connected);

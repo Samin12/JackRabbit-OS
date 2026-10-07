@@ -213,8 +213,10 @@ final class T3FakeBackend {
             thread.finishAt = 0L;
             if (thread.reply != null) addMessage(thread, false, thread.reply, now);
             thread.reply = null;
-            thread.status = T3Status.DONE;
-            thread.statusLabel = "Done";
+            // A turn that ends with a request still open is waiting on the user again.
+            thread.status = !thread.approvals.isEmpty() ? T3Status.NEEDS_APPROVAL
+                    : !thread.inputs.isEmpty() ? T3Status.NEEDS_INPUT : T3Status.DONE;
+            thread.statusLabel = T3Status.label(thread.status, null);
             thread.phase = null;
             thread.progress = -1d;
             thread.updatedAt = now;

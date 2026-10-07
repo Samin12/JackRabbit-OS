@@ -96,6 +96,8 @@ final class T3ListView extends View {
     private float lastY;
     private boolean dragging;
     private boolean caughtMotion;
+    /** Set when returning from a thread: the next layout focuses the top row. */
+    private boolean focusTop;
     private boolean anyWorking;
 
     T3ListView(Context context, T3Toast toast, Actions actions) {
@@ -117,6 +119,7 @@ final class T3ListView extends View {
         demo = demoData;
         mode = Mode.READY;
         relayout();
+        if (threadRows.isEmpty()) relayoutState();
         invalidate();
     }
 
@@ -142,6 +145,7 @@ final class T3ListView extends View {
     void resetFocus() {
         focus = threadRows.isEmpty() ? -1 : 0;
         rememberFocus();
+        focusTop = true; // The refresh that follows may reorder rows; keep the top row focused.
         scroller.forceFinished(true);
         scrollTarget = 0f;
     }
@@ -199,6 +203,14 @@ final class T3ListView extends View {
             y += 6f;
         }
         contentHeight = y + BOTTOM_PAD;
+        if (focusTop) {
+            focusTop = false;
+            focus = threadRows.isEmpty() ? -1 : 0;
+            rememberFocus();
+            scroll = 0f;
+            scrollTarget = 0f;
+            return;
+        }
         // Keep focus on the same thread across refreshes.
         int restored = -1;
         for (int i = 0; i < threadRows.size(); i++) {
@@ -263,6 +275,7 @@ final class T3ListView extends View {
     }
 
     private void moveFocus(int delta) {
+        focusTop = false;
         int next = Math.max(-1, Math.min(threadRows.size() - 1, focus + delta));
         if (next == focus) return;
         focus = next;
@@ -346,6 +359,7 @@ final class T3ListView extends View {
     }
 
     private void tap(float x, float y) {
+        focusTop = false;
         if (mode != Mode.READY || threadRows.isEmpty()) {
             if (mode != Mode.LOADING && mode != Mode.RUNTIME_DOWN && hit(STATE_BUTTON, x, y, 10f)) activateState();
             return;
