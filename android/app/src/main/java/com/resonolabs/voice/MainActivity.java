@@ -4,9 +4,15 @@ import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.Manifest;
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.os.Bundle;
 import android.os.PowerManager;
+import android.os.SystemClock;
+import android.util.Log;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
@@ -27,6 +33,17 @@ public final class MainActivity extends Activity {
     private RuntimeManagementClient runtimeManagement;
     private RuntimeBackgroundRunClient backgroundRuns;
     private RuntimeCreationImportClient creationImports;
+    private final SideButtonGesture sideButton = new SideButtonGesture();
+    /** Cold start through the side-button alias: start Voice once the runtime answers. */
+    private boolean sideButtonStartPending;
+    private boolean screenOffRegistered;
+    private final BroadcastReceiver screenOff = new BroadcastReceiver() {
+        @Override public void onReceive(Context context, Intent intent) {
+            if (root != null && root.stopVoiceForScreenOff()) {
+                Log.i(SideButtonGesture.LOG_TAG, "screen off -> voice stopped");
+            }
+        }
+    };
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
@@ -36,8 +53,15 @@ public final class MainActivity extends Activity {
         runtimeManagement = new RuntimeManagementClient();
         backgroundRuns = new RuntimeBackgroundRunClient();
         creationImports = new RuntimeCreationImportClient();
-        runtimeHealth.checkUntilReady(this, health ->
-                android.util.Log.i("SamRuntime", "HOME boundary status=" + health.status()));
+        runtimeHealth.checkUntilReady(this, health -> {
+            android.util.Log.i("SamRuntime", "HOME boundary status=" + health.status());
+            if (sideButtonStartPending && root != null) {
+                sideButtonStartPending = false;
+                boolean started = root.startVoiceFromSideButton();
+                Log.i(SideButtonGesture.LOG_TAG, "double press (cold start) -> "
+                        + (started ? "voice started" : "already in session"));
+            }
+        });
         setShowWhenLocked(true);
         setTurnScreenOn(true);
         root = new ProductRootView(
@@ -57,6 +81,13 @@ public final class MainActivity extends Activity {
                 backgroundRuns,
                 creationImports);
         setContentView(root);
+        // A fresh launch whose intent is the alias = double press while HOME was not running.
+        // (A recreated activity keeps the old intent; it must not toggle again.)
+        if (state == null && SideButtonGesture.isToggle(getIntent())) sideButtonStartPending = true;
+        SideButtonGesture.checkFrameworkPolicy(this);
+        registerReceiver(screenOff, new IntentFilter(Intent.ACTION_SCREEN_OFF),
+                Context.RECEIVER_NOT_EXPORTED);
+        screenOffRegistered = true;
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, 41);
         }
@@ -72,7 +103,31 @@ public final class MainActivity extends Activity {
         enterProductFullscreen();
     }
 
+    @Override protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        if (SideButtonGesture.isToggle(intent)) onSideButtonDoublePress();
+    }
+
+    private void onSideButtonDoublePress() {
+        if (root == null) return;
+        if (!sideButton.accept(SystemClock.elapsedRealtime())) {
+            Log.i(SideButtonGesture.LOG_TAG, "double press ignored (duplicate delivery)");
+            return;
+        }
+        // Posted so it runs after the resume that accompanies this intent: the microphone is
+        // then opened from a TOP process (the press may have just woken the screen).
+        root.post(() -> {
+            boolean started = root.toggleVoiceFromSideButton();
+            Log.i(SideButtonGesture.LOG_TAG, "double press -> " + (started ? "voice started" : "voice stopped"));
+        });
+    }
+
     @Override protected void onDestroy() {
+        if (screenOffRegistered) {
+            unregisterReceiver(screenOff);
+            screenOffRegistered = false;
+        }
         if (root != null) root.close();
         if (runtimeHealth != null) runtimeHealth.close();
         if (runtimeManagement != null) runtimeManagement.close();

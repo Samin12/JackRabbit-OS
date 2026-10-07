@@ -163,6 +163,15 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
         invalidate();
     }
 
+    /** True while a session is connecting, live or responding. */
+    public boolean isInSession() { return inSession(); }
+
+    /** Side-button double press: ends any session (even mid-reply), otherwise starts one. */
+    public void toggleSession() {
+        toggle();
+        invalidate();
+    }
+
     private boolean inSession() {
         VoiceSessionStateTracker.State state = sessionState.state();
         return state == VoiceSessionStateTracker.State.CONNECTING

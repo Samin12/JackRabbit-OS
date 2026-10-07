@@ -81,5 +81,13 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Started by PhoneWindowManager on a side-button (KEYCODE_POWER) double press through the
+             com.resonolabs.overlay.powerbutton RRO (config_doublePressOnPowerTargetActivity).
+             Not exported: only system/root can start it. MainActivity tells it apart by component. -->
+        <activity-alias
+            android:name=".SideButtonToggle"
+            android:exported="false"
+            android:targetActivity=".MainActivity" />
     </application>
 </manifest>
