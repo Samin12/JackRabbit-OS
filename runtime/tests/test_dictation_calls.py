@@ -107,7 +107,7 @@ class DictationSessionShapeTest(unittest.TestCase):
         self.assertNotIn("output_modalities", session)
         audio = session["audio"]
         self.assertNotIn("output", audio)
-        self.assertEqual({"model": "gpt-4o-transcribe"}, audio["input"]["transcription"])
+        self.assertEqual({"model": "gpt-4o-transcribe", "language": "en"}, audio["input"]["transcription"])
         self.assertEqual("server_vad", audio["input"]["turn_detection"]["type"])
         self.assertNotIn("create_response", audio["input"]["turn_detection"])
 

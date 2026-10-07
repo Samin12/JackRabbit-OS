@@ -290,6 +290,11 @@ DICTATION_INSTRUCTION = (
     "Never respond, never call tools, never speak."
 )
 
+# Dictation is English: without a language the transcriber turns room noise into text in other
+# scripts (seen on the R1). Server VAD needs a clear voice near the mic (Voice uses 0.92).
+DICTATION_LANGUAGE = "en"
+DICTATION_VAD_THRESHOLD = 0.7
+
 # Tried in order until OpenAI accepts one (the ChatGPT subscription credential may not allow a
 # transcription-only session); the controller remembers the first accepted variant.
 DICTATION_VARIANTS: tuple[tuple[str, str], ...] = (
@@ -308,14 +313,14 @@ def _dictation_session(variant: str, *, model: str, transcription_model: str) ->
     """
     turn_detection: dict[str, object] = {
         "type": "server_vad",
-        "threshold": 0.6,
+        "threshold": DICTATION_VAD_THRESHOLD,
         "prefix_padding_ms": 300,
         "silence_duration_ms": 700,
     }
     audio_input: dict[str, object] = {
         "format": {"type": "audio/pcm", "rate": 24_000},
         "noise_reduction": {"type": "near_field"},
-        "transcription": {"model": transcription_model},
+        "transcription": {"model": transcription_model, "language": DICTATION_LANGUAGE},
         "turn_detection": turn_detection,
     }
     if variant == "transcription":
