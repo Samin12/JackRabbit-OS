@@ -47,7 +47,7 @@ Everything runs on the R1. Only the AI and the services you connect go over the 
 
 ### 2. Flash it
 
-1. Download the full image bundle (`jackrabbit-current-v0.2.zip`) from the [image folder](https://drive.google.com/drive/folders/1iteItXoQ3cVqyN4DhChQ3EOBlv68f8wM?usp=drive_link) and unzip it. The image keeps its original filename for now. The installer checks that name, so don't rename the file.
+1. Download the full image bundle (`jackrabbit-current-v0.2.zip`) from the [image folder](https://drive.google.com/drive/folders/1iteItXoQ3cVqyN4DhChQ3EOBlv68f8wM?usp=drive_link) and unzip it. The current bundle was built before the rename, so some file names and prompts inside it still use the old name. That's fine. Type the confirmation phrase exactly as the installer shows it.
 2. Open the folder for your computer and run the installer:
 
    | Computer | Folder | Run |

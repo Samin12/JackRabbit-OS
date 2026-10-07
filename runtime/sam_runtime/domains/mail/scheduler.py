@@ -20,7 +20,7 @@ class MailSyncScheduler:
         if self._thread is not None:
             return
         self._stop.clear()
-        self._thread = threading.Thread(target=self._run, name="resono-mail-sync", daemon=True)
+        self._thread = threading.Thread(target=self._run, name="sam-mail-sync", daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
