@@ -555,6 +555,7 @@ final class T3ListView extends View {
             "In T3 Code on your Mac: Settings → Connections → Create link.",
             "On that R1 page, under T3 Code, paste the server URL and pairing code.",
     };
+    private static final String[] STEP_NUMBERS = {"1", "2", "3"};
     private List<List<String>> stepLines;
 
     private void drawSteps(Canvas canvas, float top) {
@@ -571,7 +572,7 @@ final class T3ListView extends View {
             List<String> lines = stepLines.get(step);
             surface.paint.setColor(SamTheme.withAlpha(SamTheme.ORB_PALE, 40));
             canvas.drawCircle(52f, y + 12f, 13f, surface.paint);
-            surface.text(canvas, String.valueOf(step + 1), 52f, y + 17.5f, 15f, SamTheme.ORB_PALE,
+            surface.text(canvas, STEP_NUMBERS[step], 52f, y + 17.5f, 15f, SamTheme.ORB_PALE,
                     Paint.Align.CENTER, T3Surface.MEDIUM);
             for (int line = 0; line < lines.size(); line++) {
                 surface.text(canvas, lines.get(line), 78f, y + 17f + line * 20f, 15f, SamTheme.INK,

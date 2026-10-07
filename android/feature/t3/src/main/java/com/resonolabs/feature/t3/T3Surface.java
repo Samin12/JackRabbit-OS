@@ -10,13 +10,12 @@ import android.graphics.RadialGradient;
 import android.graphics.RectF;
 import android.graphics.Shader;
 import android.graphics.Typeface;
+import android.util.SparseArray;
 
 import com.resonolabs.ui.design.SamTheme;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 
 /**
  * Allocation-free drawing primitives for the T3 tab in the orb/glass language. Gradients are
@@ -38,7 +37,8 @@ final class T3Surface {
             SamTheme.withAlpha(SamTheme.ORB_BLUE, 200));
     private final LinearGradient fadeTop = vertical(SamTheme.BACKGROUND_TOP, SamTheme.withAlpha(SamTheme.BACKGROUND_TOP, 0));
     private final LinearGradient fadeBottom = vertical(SamTheme.withAlpha(SamTheme.BACKGROUND, 0), SamTheme.BACKGROUND);
-    private final Map<Integer, RadialGradient> glows = new HashMap<>();
+    /** Keyed by ARGB without boxing (a HashMap<Integer, …> lookup allocates every frame). */
+    private final SparseArray<RadialGradient> glows = new SparseArray<>();
     private LinearGradient background;
     private RadialGradient backgroundGlow;
     private int backgroundGlowColor;
