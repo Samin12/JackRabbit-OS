@@ -65,4 +65,16 @@ public class JournalStatusTest {
         assertEquals("Runtime offline · note not saved", JournalStatus.noteFailed(0, "runtime_unavailable"));
         assertEquals("That note couldn't be saved", JournalStatus.noteFailed(400, "invalid_request"));
     }
+
+    @Test public void connectedThroughTheMacBridgeIsConnected() throws Exception {
+        // The Mac bridge (Heptabase CLI) reports connected with mode "mac"; no OAuth grant involved.
+        JournalStatus mac = JournalStatus.from(status(true, false, 0, 0, today(1, 0)).put("mode", "mac"));
+        assertEquals(JournalStatus.State.CONNECTED, mac.state);
+        assertTrue(mac.canWrite());
+        assertEquals("Heptabase · Mac", mac.chip());
+        assertEquals("Heptabase", JournalStatus.from(status(true, false, 0, 0, null).put("mode", "oauth")).chip());
+        JournalStatus off = JournalStatus.from(status(false, false, 0, 0, null).put("mode", JSONObject.NULL));
+        assertEquals(JournalStatus.State.DISCONNECTED, off.state);
+        assertFalse(off.canWrite());
+    }
 }

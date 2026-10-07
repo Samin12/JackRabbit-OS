@@ -17,13 +17,16 @@ final class JournalStatus {
     /** Everything still waiting to go out (all days). */
     final int pending;
     final int failed;
+    /** Transport when connected: "mac" (Heptabase CLI through the Mac bridge), "oauth", or "". */
+    final String mode;
 
-    private JournalStatus(State state, int sentToday, int queuedToday, int pending, int failed) {
+    private JournalStatus(State state, int sentToday, int queuedToday, int pending, int failed, String mode) {
         this.state = state;
         this.sentToday = sentToday;
         this.queuedToday = queuedToday;
         this.pending = pending;
         this.failed = failed;
+        this.mode = mode;
     }
 
     static JournalStatus from(JSONObject value) {
@@ -34,8 +37,9 @@ final class JournalStatus {
         JSONObject today = json.isNull("today") ? null : json.optJSONObject("today");
         int sent = today == null ? -1 : Math.max(0, today.optInt("sent", 0));
         int queued = today == null ? -1 : Math.max(0, today.optInt("queued", 0));
+        String mode = json.isNull("mode") ? "" : json.optString("mode", "");
         return new JournalStatus(state, sent, queued, Math.max(0, json.optInt("pending", 0)),
-                Math.max(0, json.optInt("failed", 0)));
+                Math.max(0, json.optInt("failed", 0)), mode);
     }
 
     boolean canWrite() {
@@ -57,10 +61,10 @@ final class JournalStatus {
         return out.toString();
     }
 
-    /** Header chip text: "Heptabase", "Reconnect", "Not connected". */
+    /** Header chip text: "Heptabase · Mac" (through the Mac bridge), "Heptabase", "Reconnect", "Not connected". */
     String chip() {
         return switch (state) {
-            case CONNECTED -> "Heptabase";
+            case CONNECTED -> "mac".equals(mode) ? "Heptabase · Mac" : "Heptabase";
             case RECONNECT -> "Reconnect";
             case DISCONNECTED -> "Not connected";
         };
