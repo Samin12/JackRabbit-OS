@@ -89,6 +89,16 @@ public final class GenCardRenderer {
         if (expanded || squeezed) canvas.restore();
         if (expanded) {
             float viewport = l.bodyBottom - l.bodyTop;
+            float maxScroll = l.contentHeight - viewport;
+            // Soft edges where content scrolls under the header / actions.
+            int panel = GenColors.withAlpha(GenColors.PANEL, 248);
+            int clear = GenColors.withAlpha(GenColors.PANEL, 0);
+            if (scroll > 1f) {
+                glass.fillVertical(canvas, paint, 2f, l.bodyTop, w - 2f, l.bodyTop + 20f, 0f, panel, clear, 20f);
+            }
+            if (maxScroll > 1f && scroll < maxScroll - 1f) {
+                glass.fillVertical(canvas, paint, 2f, l.bodyBottom - 28f, w - 2f, l.bodyBottom, 0f, clear, panel, 28f);
+            }
             if (l.contentHeight > viewport + 1f) {
                 float track = viewport - 12f;
                 float thumb = Math.max(28f, track * viewport / l.contentHeight);
@@ -592,7 +602,9 @@ public final class GenCardRenderer {
             icons.drawClose(canvas, paint, l.closeCx, l.closeCy, 15f, GenColors.withAlpha(GenColors.INK, 150), 1.8f);
         }
         // live work in progress: a quiet shimmer along the bottom edge
-        if (card.live != null && timer == null && card.isRunningLive() && !stale && !card.livePaused) {
+        if (card.live != null && (card.live.type == LiveBinding.Type.T3_THREAD
+                || card.live.type == LiveBinding.Type.BACKGROUND_RUN)
+                && card.isRunningLive() && !stale && !card.livePaused && card.liveNote == null) {
             float phase = (now % 1600L) / 1600f;
             float span = w - 80f;
             float start = 40f + span * phase - 40f;

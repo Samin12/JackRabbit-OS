@@ -328,7 +328,7 @@ public final class LiveCardsPageView extends View implements GenCardStore.Listen
             }
             if (top > LIST_BOTTOM + 8f || top + ROW < LIST_TOP - 6f) continue;
             GenCardLayout layout = layouts.get(entry.card);
-            layout = renderer.layout(layout, entry.card, GenCardLayout.MODE_PILL, 432f, ROW);
+            layout = renderer.layout(layout, entry.card, GenCardLayout.MODE_ROW, 432f, ROW);
             layouts.put(entry.card, layout);
             entry.layout = layout;
             if (entry.recent) {

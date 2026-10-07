@@ -14,6 +14,8 @@ public final class GenCardLayout {
     public static final int MODE_CARD = 0;
     public static final int MODE_EXPANDED = 1;
     public static final int MODE_PILL = 2;
+    /** A pill in a list (Cards > Live): no leading verb button, the whole row opens the card. */
+    public static final int MODE_ROW = 3;
 
     static final float PAD_X = 20f;
     static final float PAD_TOP = 18f;
@@ -150,7 +152,7 @@ public final class GenCardLayout {
         this.width = width;
         this.budget = budget;
         staleMinute = -1L;
-        if (mode == MODE_PILL) buildPill(fonts);
+        if (mode == MODE_PILL || mode == MODE_ROW) buildPill(fonts);
         else buildCard(fonts);
         return true;
     }
@@ -473,7 +475,8 @@ public final class GenCardLayout {
                     float value = block.bars[block.highlight];
                     String text = value == Math.rint(value) && Math.abs(value) < 1e9
                             ? Long.toString((long) value) : String.format(Locale.US, "%.1f", value);
-                    box.barValue = block.unit != null ? text + " " + block.unit : text;
+                    box.barValue = block.unit == null ? text
+                            : isCurrency(block.unit) ? block.unit + text : text + " " + block.unit;
                     box.barValueWidth = fonts.barValue.measureText(box.barValue);
                 }
                 box.labelStep = 1;
@@ -505,6 +508,10 @@ public final class GenCardLayout {
         }
     }
 
+    static boolean isCurrency(String unit) {
+        return unit.length() <= 2 && "$€£¥₹₩".indexOf(unit.charAt(0)) >= 0;
+    }
+
     static float barGap(int count) {
         return count > 8 ? 5f : 8f;
     }
@@ -521,7 +528,8 @@ public final class GenCardLayout {
         verb = null;
         if (timerDone) {
             verb = "Stop";
-        } else if (!timer && card.liveTrailing == null && !card.actions.isEmpty() && card.live == null) {
+        } else if (mode == MODE_PILL && !timer && card.liveTrailing == null && !card.actions.isEmpty()
+                && card.live == null) {
             verb = card.actions.get(0).label;
         }
         float left;
@@ -570,11 +578,50 @@ public final class GenCardLayout {
                 GenBlock progress = firstOf(GenBlock.Type.PROGRESS);
                 if (progress != null) sub = progress.label;
             }
+            if (sub == null) sub = summary(card);
             subtitle = sub == null ? "" : GenText.ellipsize(sub, fonts.pillSubtitle, textWidth);
         }
         actionCount = 0;
         boxCount = 0;
         overflow = false;
+    }
+
+    /** One glanceable line from the body for title-only pills ("64° • Rain", "2 of 6 done"). */
+    static String summary(GenCard card) {
+        for (int index = 0; index < card.body.size(); index++) {
+            GenBlock block = card.body.get(index);
+            switch (block.type) {
+                case WEATHER -> {
+                    String condition = GenSchema.CONDITIONS[block.condition].replace('-', ' ');
+                    condition = Character.toUpperCase(condition.charAt(0)) + condition.substring(1);
+                    return block.temp != null ? block.temp + " • " + condition : condition;
+                }
+                case STAT -> {
+                    return block.label != null ? block.value + " • " + block.label : block.value;
+                }
+                case CHECKLIST -> {
+                    int done = 0;
+                    for (GenRow row : block.items) if (row.checked) done++;
+                    return done + " of " + block.items.length + " done";
+                }
+                case LIST -> {
+                    GenRow first = block.items[0];
+                    String more = block.items.length > 1 ? " +" + (block.items.length - 1) : "";
+                    return first.title + more;
+                }
+                case TEXT -> {
+                    return block.text;
+                }
+                case KV -> {
+                    return block.keys[0] + " " + block.vals[0];
+                }
+                case PROGRESS -> {
+                    if (!block.indeterminate()) return Math.round(block.progress * 100f) + "%";
+                }
+                default -> { }
+            }
+        }
+        return null;
     }
 
     private GenBlock firstOf(GenBlock.Type type) {
@@ -593,7 +640,7 @@ public final class GenCardLayout {
     }
 
     public int actionAt(float x, float y) {
-        if (mode == MODE_PILL || actionCount == 0) return -1;
+        if (mode == MODE_PILL || mode == MODE_ROW || actionCount == 0) return -1;
         float actionTop = actionTop();
         if (y < actionTop - 4f || y > actionTop + ACTION_H + 6f) return -1;
         for (int index = 0; index < actionCount; index++) {
@@ -608,7 +655,7 @@ public final class GenCardLayout {
 
     /** Pill: hit on the leading verb pill. */
     public boolean verbAt(float x, float y) {
-        return mode == MODE_PILL && verb != null && x <= 14f + verbWidth + 8f && y >= 6f && y <= PILL_HEIGHT - 6f;
+        return (mode == MODE_PILL || mode == MODE_ROW) && verb != null && x <= 14f + verbWidth + 8f && y >= 6f && y <= PILL_HEIGHT - 6f;
     }
 
     /**
@@ -616,7 +663,7 @@ public final class GenCardLayout {
      * Returns {@code boxIndex << 8 | row}, or -1.
      */
     public int rowAt(float x, float y, float scroll) {
-        if (mode == MODE_PILL) return -1;
+        if (mode == MODE_PILL || mode == MODE_ROW) return -1;
         if (y < bodyTop || y > bodyBottom) return -1;
         float contentY = y + scroll;
         for (int index = 0; index < boxCount; index++) {
