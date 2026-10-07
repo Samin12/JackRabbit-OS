@@ -204,8 +204,10 @@ final class T3Repository implements AutoCloseable {
     }
 
     private boolean enterFakeIfMissing(T3Client.Failure failure) {
-        if (closed || fake != null || !failure.routeMissing() || !fakeAllowed()) return false;
-        boolean empty = "empty".equals(systemProperty(FAKE_PROPERTY));
+        if (closed || fake != null || !failure.routeMissing()) return false;
+        String value = fakeProperty();
+        if (!"1".equals(value) && !"empty".equals(value)) return false;
+        boolean empty = "empty".equals(value);
         if (demo == null || demoEmpty != empty) {
             Log.i(LOG_TAG, "runtime has no /v1/t3 routes; serving " + (empty ? "empty " : "") + "demo data");
             demo = new T3FakeBackend(System.currentTimeMillis(), !empty);
@@ -219,10 +221,13 @@ final class T3Repository implements AutoCloseable {
         main.postAtTime(() -> { if (!closed) action.run(); }, SystemClock.uptimeMillis() + FAKE_LATENCY_MS);
     }
 
-    private boolean fakeAllowed() {
+    /**
+     * The demo switch, read only in debuggable builds (release builds never look it up: the
+     * fallback spawns getprop, and this runs on the main thread on every route-missing 404).
+     */
+    private String fakeProperty() {
         boolean debuggable = (context.getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
-        String value = systemProperty(FAKE_PROPERTY);
-        return debuggable && ("1".equals(value) || "empty".equals(value));
+        return debuggable ? systemProperty(FAKE_PROPERTY) : "";
     }
 
     private static String systemProperty(String key) {
