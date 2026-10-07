@@ -28,6 +28,10 @@ public final class T3ClientTest {
         assertFalse(new T3Client.Failure(404, "thread_not_found", "").routeMissing());
         assertTrue(new T3Client.Failure(409, "t3_not_connected", "").notConnected());
         assertTrue(new T3Client.Failure(0, "runtime_unavailable", "").runtimeUnavailable());
+        // A timeout means the runtime accepted the call (it is running) but T3 Code was slow.
+        assertFalse(new T3Client.Failure(0, "runtime_timeout", "").runtimeUnavailable());
+        assertTrue(new T3Client.Failure(0, "runtime_timeout", "").timedOut());
+        assertFalse(new T3Client.Failure(502, "t3_unavailable", "").timedOut());
         assertEquals("t3-409:t3_not_connected", new T3Client.Failure(409, "t3_not_connected", "").toString());
     }
 }

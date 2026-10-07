@@ -39,7 +39,11 @@ public final class T3Client implements AutoCloseable {
         void onFailure(Failure failure);
     }
 
-    /** Transport or runtime error. {@code httpStatus == 0} means the runtime is unreachable. */
+    /**
+     * Transport or runtime error. {@code httpStatus == 0} means no HTTP answer: the runtime is
+     * not running ({@link #runtimeUnavailable()}) or it accepted the call but did not answer in
+     * time ({@link #timedOut()}).
+     */
     public static final class Failure {
         public final int httpStatus;
         public final String code;
@@ -60,8 +64,14 @@ public final class T3Client implements AutoCloseable {
             return httpStatus == 409 && "t3_not_connected".equals(code);
         }
 
+        /** The runtime could not be reached at all (not running / restarting). */
         public boolean runtimeUnavailable() {
-            return httpStatus == 0;
+            return httpStatus == 0 && !timedOut();
+        }
+
+        /** The runtime is up but did not answer in time (usually waiting on T3 Code itself). */
+        public boolean timedOut() {
+            return httpStatus == 0 && TIMEOUT.equals(code);
         }
 
         @Override public String toString() {
@@ -70,8 +80,14 @@ public final class T3Client implements AutoCloseable {
     }
 
     private static final String BASE = "http://127.0.0.1:8765";
-    private static final int READ_TIMEOUT_MS = 6_000;
-    private static final int WRITE_TIMEOUT_MS = 20_000;
+    private static final String TIMEOUT = "runtime_timeout";
+    /**
+     * Above the runtime's own T3 Code timeouts (6-8 s per upstream request, plus waiting for an
+     * in-flight sync), so a slow or asleep Mac comes back as the runtime's error, not ours.
+     */
+    private static final int READ_TIMEOUT_MS = 15_000;
+    /** Writes may chain a pending re-check and a dispatch upstream. */
+    private static final int WRITE_TIMEOUT_MS = 30_000;
     private static final int MAX_BODY_BYTES = 512 * 1024;
 
     private final ExecutorService reads = Executors.newSingleThreadExecutor(runnable -> {
@@ -223,7 +239,7 @@ public final class T3Client implements AutoCloseable {
         } catch (ConnectException refused) {
             deliver(callback, new Failure(0, "runtime_unavailable", "SamRabbit runtime is not running."));
         } catch (java.net.SocketTimeoutException timeout) {
-            deliver(callback, new Failure(0, "runtime_timeout", "SamRabbit runtime did not answer."));
+            deliver(callback, new Failure(0, TIMEOUT, "SamRabbit runtime did not answer."));
         } catch (Exception error) {
             deliver(callback, new Failure(0, "runtime_unavailable", "SamRabbit runtime is unavailable."));
         } finally {
