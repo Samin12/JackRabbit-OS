@@ -14,13 +14,14 @@ import java.nio.charset.StandardCharsets;
  * Debug-only voice test hooks (src/debug; never in release builds). {@code -p} is required.
  *
  * <pre>
- * adb shell am broadcast -p com.resonolabs.voice.engineering -a com.resonolabs.voice.DEBUG_SAY --es text "Show me a 1 minute timer"
+ * adb shell am broadcast -p com.resonolabs.voice.engineering -a com.resonolabs.voice.DEBUG_SAY --es text "What's on my calendar tomorrow?" [--ez quiet true]
  * adb shell am broadcast -p com.resonolabs.voice.engineering -a com.resonolabs.voice.DEBUG_ANNOUNCE --es b64 $(printf '%s' "$JSON" | base64)
  * adb shell am broadcast -p com.resonolabs.voice.engineering -a com.resonolabs.voice.DEBUG_STATE
  * </pre>
  * DEBUG_SAY sends the text as the user's turn in the live session (conversation.item.create
  * user input_text + response.create), starting a session first if none is live (the text then
- * replaces the connect greeting). DEBUG_ANNOUNCE routes a synthetic runtime announcement exactly
+ * replaces the connect greeting); {@code --ez quiet true} mutes the microphone and speaker for
+ * that session first (no sound, no echo). DEBUG_ANNOUNCE routes a synthetic runtime announcement exactly
  * like a real one (ids &lt;= 0 are never acknowledged). The result data is the HOME state.
  */
 public final class VoiceDebugReceiver extends BroadcastReceiver {
@@ -39,8 +40,9 @@ public final class VoiceDebugReceiver extends BroadcastReceiver {
                 setResultData("missing --es text");
                 return;
             }
-            Log.i(TAG, "DEBUG_SAY (" + text.length() + " chars)");
-            root.debugSay(text);
+            boolean quiet = intent.getBooleanExtra("quiet", false);
+            Log.i(TAG, "DEBUG_SAY (" + text.length() + " chars" + (quiet ? ", quiet" : "") + ")");
+            root.debugSay(text, quiet);
         } else if (action.endsWith("DEBUG_ANNOUNCE")) {
             String json = extra(intent, "json");
             try {

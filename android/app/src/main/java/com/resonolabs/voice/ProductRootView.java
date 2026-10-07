@@ -460,10 +460,14 @@ final class ProductRootView extends FrameLayout {
 
     // ---- debug hooks (VoiceDebugReceiver, debug builds only) -------------------------------
 
-    /** DEBUG_SAY: show Voice and send {@code text} as the user's turn (starting a session). */
-    void debugSay(String text) {
+    /**
+     * DEBUG_SAY: show Voice and send {@code text} as the user's turn (starting a session).
+     * {@code quiet} mutes the microphone and the speaker for this session first, so a test
+     * makes no sound and cannot hear itself.
+     */
+    void debugSay(String text, boolean quiet) {
         showVoicePage();
-        voice.debugSay(text);
+        voice.debugSay(text, quiet);
     }
 
     /** DEBUG_ANNOUNCE: route a synthetic announcement exactly like a runtime one. */
@@ -474,7 +478,22 @@ final class ProductRootView extends FrameLayout {
     /** One-line state for debug broadcasts. */
     String debugState() {
         return "inSession=" + voice.isInSession() + " live=" + voice.isLive() + " starting=" + voice.isStarting()
-                + " alwaysOn=" + AlwaysOnVoice.isEnabled(getContext());
+                + " alwaysOn=" + AlwaysOnVoice.isEnabled(getContext()) + " page=" + debugPage();
+    }
+
+    /** What is in front, so test scripts never tap into a page someone else has open. */
+    private String debugPage() {
+        if (controlCenter.isOpen()) return "control-center";
+        if (creationImportOpen) return "creation-import";
+        if (runnerOpen) return "runner";
+        if (cameraOpen) return "camera";
+        if (settingsOpen) {
+            String sub = settings.openPageName();
+            return sub == null ? "settings" : "settings:" + sub.replace(' ', '-');
+        }
+        if (cardsOpen) return "cards";
+        if (t3Open) return t3.detailOpen() ? "t3-thread" : "t3";
+        return "voice";
     }
 
     private void showCreation(boolean visible) {

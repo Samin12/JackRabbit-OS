@@ -191,6 +191,11 @@ public final class SettingsPanelView extends View implements UiInputTarget {
         stepButtons(canvas);
     }
 
+    /** The open sub-page ("Sound", "AI", ...) or null on the list (debug state for test scripts). */
+    public String openPageName() {
+        return openPage;
+    }
+
     /** Always-on voice: keep a voice session listening with the screen off, reconnect if it drops. */
     private void drawAlwaysOnRow(Canvas canvas) {
         boolean on = AlwaysOnVoice.isEnabled(activity);

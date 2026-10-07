@@ -275,14 +275,26 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
 
     /**
      * Debug hook (DEBUG_SAY): send {@code text} as the user's turn; starts a session first if
-     * none is live and sends it on connect instead of the greeting.
+     * none is live and sends it on connect instead of the greeting. {@code quiet} mutes the
+     * microphone and speaker first (tests near people; no echo of the model's own voice).
      */
-    public void debugSay(String text) {
+    public void debugSay(String text, boolean quiet) {
         if (text == null || text.isBlank()) return;
+        if (quiet && inSession()) muteForTest();
         if (sendUserTurn(text.trim(), "debug.say")) return;
         pendingActionText = text.trim();
         pendingActionEvent = "debug.say";
-        if (!inSession()) startSession();
+        if (!inSession()) {
+            startSession();
+            if (quiet) muteForTest();
+        }
+    }
+
+    /** Debug: microphone and speaker off for this session (shown on the controls as usual). */
+    private void muteForTest() {
+        setMicMuted(true);
+        setSpeakerMuted(true);
+        invalidate();
     }
 
     private boolean sendUserTurn(String text, String eventType) {
@@ -724,6 +736,7 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
     }
 
     private void stopSession() {
+        if (debuggable && inSession()) Log.i(LOG_TAG, "session stopped", new Throwable("stop caller"));
         pendingHostNote = null;
         reconnectPolicy.onUserStop();
         cancelReconnect();
