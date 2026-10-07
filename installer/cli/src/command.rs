@@ -64,7 +64,7 @@ impl Command {
                 Ok(())
             }
             Self::Version => {
-                println!("SAM Project installer CLI {}", env!("CARGO_PKG_VERSION"));
+                println!("SamRabbit installer CLI {}", env!("CARGO_PKG_VERSION"));
                 Ok(())
             }
             Self::Prepare => physical::run(&mut io::stdin().lock(), &mut io::stdout().lock(), None),
@@ -107,8 +107,8 @@ fn interactive_command() -> Result<Command, CommandError> {
     let mut input = io::stdin().lock();
     let mut output = io::stdout().lock();
     loop {
-        writeln!(output, "SAM Project installer").map_err(terminal_io)?;
-        writeln!(output, "1. Install SAM Project from this package").map_err(terminal_io)?;
+        writeln!(output, "SamRabbit installer").map_err(terminal_io)?;
+        writeln!(output, "1. Install SamRabbit from this package").map_err(terminal_io)?;
         writeln!(output, "2. Prepare the R1").map_err(terminal_io)?;
         writeln!(output, "3. Diagnose an R1 already showing FASTBOOT").map_err(terminal_io)?;
         writeln!(output, "4. Show version").map_err(terminal_io)?;
@@ -151,7 +151,7 @@ fn terminal_io(error: io::Error) -> CommandError {
 }
 
 fn print_help() {
-    println!("SAM Project installer fallback\n\nCommands:\n  install RELEASE_DIRECTORY  Verify and install the complete current stock-R1 release\n  prepare                    Guide physical preparation\n  diagnose                   Read fixed R1 fastboot identity and state\n  version                    Show source/package version\n\nRun with no arguments for the prompt-based menu.");
+    println!("SamRabbit installer fallback\n\nCommands:\n  install RELEASE_DIRECTORY  Verify and install the complete current stock-R1 release\n  prepare                    Guide physical preparation\n  diagnose                   Read fixed R1 fastboot identity and state\n  version                    Show source/package version\n\nRun with no arguments for the prompt-based menu.");
 }
 
 #[cfg(test)]

@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 #
-# SAM Project APK builder image.
+# SamRabbit APK builder image.
 #
 # A pinned Linux toolchain for android/scripts/build_debug.sh: JDK 17,
 # Android SDK (API 36 + Build Tools 36.0.0), Gradle 9.5.0, and the Chaquopy
@@ -27,10 +27,10 @@ ARG PY_VERSION=3.13.2
 ARG PY_BUILD_DATE=20250212
 ARG IMAGE_VERSION=dev
 
-LABEL org.opencontainers.image.title="SAM Project APK builder" \
+LABEL org.opencontainers.image.title="SamRabbit APK builder" \
       org.opencontainers.image.description="Pinned Linux toolchain (JDK 17, Android SDK 36, Gradle 9.5.0, CPython 3.13.2) for android/scripts/build_debug.sh" \
       org.opencontainers.image.version="${IMAGE_VERSION}" \
-      org.opencontainers.image.source="https://github.com/Samin12/SAM-Project"
+      org.opencontainers.image.source="https://github.com/Samin12/SamRabbit"
 
 # Base tools: curl/unzip for toolchain downloads, git, and ripgrep (required
 # by android/scripts/check_boundaries.sh / check_runtime_package.sh).

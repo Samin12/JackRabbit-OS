@@ -1,8 +1,8 @@
 ---
 name: voice-mail
-description: Safely read, organize, draft, review, and send email through the built-in SAM Mail tools.
+description: Safely read, organize, draft, review, and send email through the built-in SamRabbit Mail tools.
 license: Apache-2.0
-compatibility: Requires a configured SAM Mail account and the built-in Mail tool set.
+compatibility: Requires a configured SamRabbit Mail account and the built-in Mail tool set.
 metadata:
   owner: sam-labs
 ---

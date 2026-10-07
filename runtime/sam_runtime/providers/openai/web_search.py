@@ -77,7 +77,7 @@ async def _run_search(*, query: str, api_key: str, base_url: str | None) -> dict
     provider = OpenAIProvider(openai_client=client, use_responses=True)
     try:
         agent = Agent(
-            name="SAM Web Search",
+            name="SamRabbit Web Search",
             instructions=_SEARCH_INSTRUCTIONS,
             model=_SEARCH_MODEL,
             model_settings=ModelSettings(store=False if base_url else None),

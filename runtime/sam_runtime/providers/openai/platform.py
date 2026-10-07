@@ -206,7 +206,7 @@ def _realtime_session(
         {
             "type": "function",
             "name": "get_device_status",
-            "description": "Read the current health of this SAM R1 on-device runtime.",
+            "description": "Read the current health of this SamRabbit on-device runtime.",
             "parameters": {
                 "type": "object",
                 "properties": {},

@@ -40,7 +40,7 @@ def register_device_status(catalog: ToolCatalog, health: Callable[[], dict[str, 
         ToolDefinition(
             tool_id="builtin.device-status.v1",
             name=DEVICE_STATUS_NAME,
-            description="Read the current health of this SAM R1 on-device runtime.",
+            description="Read the current health of this SamRabbit on-device runtime.",
             input_schema=DEVICE_STATUS_SCHEMA,
             handler=handle,
             audience_resource=DEVICE_STATUS_TOOL_SET,

@@ -77,7 +77,7 @@ final class ProductRootView extends FrameLayout {
         addView(controlCenter, match());
         setFocusable(true);
         setFocusableInTouchMode(true);
-        setContentDescription("SAM R1 HOME");
+        setContentDescription("SamRabbit HOME");
         runner.start();
     }
 

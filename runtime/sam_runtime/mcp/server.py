@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 PROTOCOL_VERSION = "2025-11-25"
 DEVICE_STATUS_TOOL = {
     "name": "get_device_status",
-    "description": "Read the current health of this SAM R1 on-device runtime.",
+    "description": "Read the current health of this SamRabbit on-device runtime.",
     "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
 }
 

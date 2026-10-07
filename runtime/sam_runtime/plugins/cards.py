@@ -1,4 +1,4 @@
-"""Validation for the SAM Agent Plugin Card client extension."""
+"""Validation for the SamRabbit Agent Plugin Card client extension."""
 
 from __future__ import annotations
 

@@ -7,7 +7,7 @@
 #
 # Signing: the container mounts ~/.android/debug.keystore read-only. If that
 # file is missing, a fresh local debug key is generated (with a warning: it
-# will NOT upgrade over APKs signed with the shared SAM Project key).
+# will NOT upgrade over APKs signed with the shared SamRabbit key).
 # See BUILDING.md -> "Debug signing" for the shared key.
 #
 # Usage:
@@ -40,7 +40,7 @@ if [[ ! -f "$KEYSTORE" ]]; then
     fi
     mkdir -p "$HOME/.android"
     echo "Generating a fresh local debug key at $KEYSTORE." >&2
-    echo "WARNING: builds signed with this key will NOT upgrade over APKs signed with the shared SAM Project key." >&2
+    echo "WARNING: builds signed with this key will NOT upgrade over APKs signed with the shared SamRabbit key." >&2
     if [[ -n "$KEYTOOL" ]]; then
         "$KEYTOOL" -genkeypair -v -keystore "$KEYSTORE" -storepass android -keypass android \
             -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \

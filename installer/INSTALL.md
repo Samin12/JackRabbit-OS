@@ -1,7 +1,7 @@
-# Install SAM Project on a stock Rabbit R1
+# Install SamRabbit on a stock Rabbit R1
 
 This guide starts with a stock Rabbit R1 and ends with the current complete
-SAM Project image. The guided installer handles FASTBOOT entry, the locked or
+SamRabbit image. The guided installer handles FASTBOOT entry, the locked or
 unlocked bootloader branch, every required image write, userdata erasure, slot
 selection, and reboot.
 
@@ -20,7 +20,7 @@ unplug it while an image transfer is active.
    download and extraction.
 5. Extract the complete ZIP in any convenient local directory. Do not run it
    from inside the ZIP.
-   The v0.2 bundle was built before the SAM Project rename. Inside it, the
+   The v0.2 bundle was built before the SamRabbit rename. Inside it, the
    installer binary, the Linux USB rule, and the typed confirmation phrase
    still use the old name. The steps are the same; type the phrase exactly as
    the installer shows it.
@@ -110,7 +110,7 @@ the installer stops before device access or writing.
 5. Follow the installer screen. It will tell you when the R1 must be powered
    off, disconnected, or connected.
 
-Do not use Rabbit's **Flash Stock ROM** action. The SAM Project package performs
+Do not use Rabbit's **Flash Stock ROM** action. The SamRabbit package performs
 its own complete fixed installation route.
 
 ## Run the installer
@@ -143,7 +143,7 @@ flashers that may already own the R1 USB interface.
 Double-click `install.cmd`. Accept the driver-setup prompt unless the packaged
 Rabbit MediaTek and Google fastboot drivers are already installed and working.
 Windows may show an administrator-consent dialog for driver installation; the
-SAM Project flash program itself does not run as Administrator.
+SamRabbit flash program itself does not run as Administrator.
 
 ## What the guided flow does
 
@@ -159,7 +159,7 @@ The installer:
    rejoins the main installation flow.
 5. Writes both boot slots and the required verified-boot metadata.
 6. Enters fastbootd, resets stock `super`, creates the CipherOS
-   `system_ext_a` partition, and writes the SAM Project/CipherOS logical images.
+   `system_ext_a` partition, and writes the SamRabbit/CipherOS logical images.
 7. Returns to bootloader FASTBOOT, activates the final verified-boot metadata,
    erases userdata, selects slot A, and reboots.
 
@@ -181,7 +181,7 @@ successful transfer and a successful Android first boot are separate events.
 After first boot, connect the R1 to Wi-Fi and pair its management console. The
 first management setup action is **Overview → Your Profile → Your name → Save
 name**. Confirm **Name saved.** before connecting ChatGPT/Platform access or
-starting Voice; SAM Project uses this profile for its personalized Voice
+starting Voice; SamRabbit uses this profile for its personalized Voice
 greeting.
 
 If the installer returns an error code instead, use

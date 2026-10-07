@@ -73,7 +73,7 @@ class ExecutionBudget:
 
 class AgentsSdkExecutor:
     def __init__(self, *, api_key: str, model: str, base_url: str | None,
-                 reasoning_effort: str, agent_name: str = "SAM Background Agent",
+                 reasoning_effort: str, agent_name: str = "SamRabbit Background Agent",
                  mcp_url: str | None = None, local_api_token: str | None = None,
                  timeout_seconds: int = 300, run_id: str | None = None,
                  runs: AgentRunRepository | None = None,

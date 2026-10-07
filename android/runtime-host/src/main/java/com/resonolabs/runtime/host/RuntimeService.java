@@ -89,7 +89,7 @@ public final class RuntimeService extends Service {
         NotificationManager notifications = getSystemService(NotificationManager.class);
         NotificationChannel channel = new NotificationChannel(
                 NOTIFICATION_CHANNEL,
-                "SAM runtime",
+                "SamRabbit runtime",
                 NotificationManager.IMPORTANCE_LOW);
         channel.setDescription("Keeps Voice and local R1 management available.");
         channel.setSound(null, null);
@@ -98,7 +98,7 @@ public final class RuntimeService extends Service {
         notifications.createNotificationChannel(channel);
         return new Notification.Builder(this, NOTIFICATION_CHANNEL)
                 .setSmallIcon(android.R.drawable.stat_notify_sync_noanim)
-                .setContentTitle("SAM R1")
+                .setContentTitle("SamRabbit")
                 .setContentText("Voice and device management are ready")
                 .setCategory(Notification.CATEGORY_SERVICE)
                 .setOngoing(true)

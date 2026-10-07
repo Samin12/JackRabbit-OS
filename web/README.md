@@ -1,6 +1,6 @@
 # Web
 
-This directory owns SAM Project's real browser management surfaces and shared design vocabulary.
+This directory owns SamRabbit's real browser management surfaces and shared design vocabulary.
 
 - `design/` contains semantic tokens and base behavior.
 - `management/` contains the paired, live device configuration and runtime surface.

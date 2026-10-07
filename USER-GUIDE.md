@@ -1,17 +1,17 @@
-# Using SAM Project
+# Using SamRabbit
 
-This guide begins with a SAM Project R1 that is already running. It covers the device UI and the management console that the R1 serves to a browser on the same local network.
+This guide begins with a SamRabbit R1 that is already running. It covers the device UI and the management console that the R1 serves to a browser on the same local network.
 
-SAM Project is under active development. When a capability has incomplete physical acceptance, the guide says so directly.
+SamRabbit is under active development. When a capability has incomplete physical acceptance, the guide says so directly.
 
 ## Device controls
 
-SAM Project is the R1 HOME surface. Voice is the first page and Cards is the second.
+SamRabbit is the R1 HOME surface. Voice is the first page and Cards is the second.
 
 - Use the touch screen for buttons, tabs, lists, and sliders.
 - Use the scroll wheel for supported list navigation.
 - Use the side button for the context-sensitive action exposed by the current page.
-- Use the power button normally. SAM Project keeps the screen awake while its activity is visible.
+- Use the power button normally. SamRabbit keeps the screen awake while its activity is visible.
 
 Open the gear icon at the upper right for Settings. The running-person icon at the top opens the native Background Agent run surface.
 
@@ -38,11 +38,11 @@ or using ChatGPT, Platform access, or Voice:
 
 1. Open **Overview** in the management console.
 2. Find the **Your Profile** card titled **How R1 addresses you**.
-3. Enter the name you want SAM Project to use in **Your name**.
+3. Enter the name you want SamRabbit to use in **Your name**.
 4. Choose **Save name**.
 5. Do not continue until the card reports **Name saved.**
 
-Do not skip this setup step. SAM Project reads this saved profile when creating
+Do not skip this setup step. SamRabbit reads this saved profile when creating
 the personalized greeting for a new Voice connection. If no name is saved, the
 personalized connection greeting is omitted. The name can be changed later from
 the same **Overview → Your Profile** card.
@@ -60,9 +60,9 @@ Open **AI & Voice** in the management console.
 1. Choose the ChatGPT/Codex connection action.
 2. Follow the device-code authorization instructions shown by the management page.
 3. Complete authorization in the OpenAI page opened by your browser.
-4. Return to SAM Project and wait for the connection state to report connected.
+4. Return to SamRabbit and wait for the connection state to report connected.
 
-The authorization attempt is time-limited. SAM Project exchanges and refreshes the resulting subscription credentials through its trusted runtime boundary. Disconnecting removes the saved authorization.
+The authorization attempt is time-limited. SamRabbit exchanges and refreshes the resulting subscription credentials through its trusted runtime boundary. Disconnecting removes the saved authorization.
 
 ### OpenAI Platform access
 
@@ -76,13 +76,13 @@ The API key is sealed by the Android credential owner and is not stored as plain
 
 After connecting an access method:
 
-1. Select the access path SAM Project should use.
+1. Select the access path SamRabbit should use.
 2. Select a text model.
 3. Select a Realtime model.
 4. Select the reasoning effort.
 5. Save the settings and confirm the page reflects the selection.
 
-Subscription choices come from SAM Project's current catalog. Platform choices are filtered from the account's reported model list. Availability in either selector is not a guarantee that the model has completed physical R1 acceptance.
+Subscription choices come from SamRabbit's current catalog. Platform choices are filtered from the account's reported model list. Availability in either selector is not a guarantee that the model has completed physical R1 acceptance.
 
 ## Start and stop Voice
 
@@ -119,7 +119,7 @@ Open **Connections → Calendar** in Management.
 3. Save and wait for the connection status to report the synchronization result.
 4. Open **Cards → Calendar** on the R1 to view upcoming events.
 
-SAM Project accepts up to two Calendar accounts and schedules synchronization every five minutes. The source's discovered capabilities determine whether create, update, or delete tools are available. Read-only sources reject mutations.
+SamRabbit accepts up to two Calendar accounts and schedules synchronization every five minutes. The source's discovered capabilities determine whether create, update, or delete tools are available. Read-only sources reject mutations.
 
 The supplied R1 screenshot proves a real upcoming event can reach the native Calendar view. Not every Calendar provider and mutation path has completed physical acceptance.
 
@@ -131,7 +131,7 @@ Open **Connections → Mail** in Management.
 2. Enter the IMAP and SMTP details requested by the form.
 3. Save the account and wait for validation and synchronization status.
 
-SAM Project accepts up to three Mail accounts and schedules synchronization every five minutes. It can read locally synchronized messages, change read/unread state, prepare drafts, and send through SMTP. A sent message is also appended to the provider's Sent folder when supported.
+SamRabbit accepts up to three Mail accounts and schedules synchronization every five minutes. It can read locally synchronized messages, change read/unread state, prepare drafts, and send through SMTP. A sent message is also appended to the provider's Sent folder when supported.
 
 Sending requires explicit confirmation. The approval is single-use and is bound to the exact draft content and the approving user utterance. Changing the draft invalidates the earlier approval. No model-facing Mail delete, trash, expunge, or purge operation exists.
 
@@ -158,7 +158,7 @@ packages.
 
 ### Plugins
 
-Plugin packages declare their identity and components in `plugin.json` and can include Skills, MCP connections, and Cards. SAM Project preflights imports before confirmation, records component ownership, and supports enable, disable, replacement, and removal.
+Plugin packages declare their identity and components in `plugin.json` and can include Skills, MCP connections, and Cards. SamRabbit preflights imports before confirmation, records component ownership, and supports enable, disable, replacement, and removal.
 
 Known limitation: replacing a Plugin that previously supplied a Card with one
 that supplies no Card can leave the old Card registered in a disabled state.
@@ -218,7 +218,7 @@ Reasoning Logs do not contain hidden chain-of-thought, tool arguments, or tool r
 - Confirm the browser and R1 are on the same local network.
 - Reopen **Settings → Management** and use the currently displayed HTTPS address.
 - Confirm the browser trusts the certificate presented by this R1.
-- Do not substitute a cellular address; SAM Project advertises the active local Wi-Fi or Ethernet address.
+- Do not substitute a cellular address; SamRabbit advertises the active local Wi-Fi or Ethernet address.
 
 ### Pairing fails or expires
 
@@ -249,7 +249,7 @@ Reasoning Logs do not contain hidden chain-of-thought, tool arguments, or tool r
 
 ### An installed Creation does not open
 
-Known issue: the current CipherOS-derived SAM Project image can have the AOSP
+Known issue: the current CipherOS-derived SamRabbit image can have the AOSP
 WebView package installed and enabled while Android has selected no current
 WebView provider. The Creation may be installed correctly even though tapping
 its Card cannot open it.
@@ -276,7 +276,7 @@ Number of relros finished: <the same count>
 The confirmed R1 reached `1` started and `1` finished.
 
 This changes Android's selected provider only. It does not erase data, reflash
-the R1, reinstall SAM Project, or reinstall the Creation. If the verification
+the R1, reinstall SamRabbit, or reinstall the Creation. If the verification
 still reports `Current WebView package is null`, preserve the complete output
 and report it rather than changing partitions manually.
 
@@ -286,7 +286,7 @@ The runtime catalog and audit records can still show the affected Creation as
 installed and enabled.
 
 The permanent correction belongs in the CipherOS-derived Android image's
-WebView provider policy, not in the SAM Project APK. The current image retains
+WebView provider policy, not in the SamRabbit APK. The current image retains
 `/product/app/webview/webview.apk` as `com.android.webview`, but Android's
 WebView update service can still start with no provider selected. Because the
 current image is assembled from binary partition images and no
@@ -304,4 +304,4 @@ above is the documented resolution for an already-installed device.
 - Treat imported packages and external MCP servers as third-party components and review their declared access before enabling them.
 - Management is local-network scoped, but it still exposes owner controls; pair only browsers you trust.
 
-Return to the [SAM Project README](README.md).
+Return to the [SamRabbit README](README.md).

@@ -1,12 +1,12 @@
-# SAM Project Extension Development Guide
+# SamRabbit Extension Development Guide
 
-This is the authoritative contributor guide for SAM Project instruction
+This is the authoritative contributor guide for SamRabbit instruction
 documents, Agent Skills, Agent Plugins, MCP connections, built-in Tools,
 Creations, and Plugin-owned Cards. It describes the formats and behavior the
 current code accepts; it does not promise a marketplace or arbitrary plugin
 code execution.
 
-SAM Project implements three open standards within their actual scope:
+SamRabbit implements three open standards within their actual scope:
 
 - [Agent Skills](https://agentskills.io/specification) for portable
   `SKILL.md` instruction packages.
@@ -15,13 +15,13 @@ SAM Project implements three open standards within their actual scope:
 - [Model Context Protocol](https://modelcontextprotocol.io/specification/2025-11-25)
   for model-facing tools and connection lifecycle.
 
-The SAM Project Card extension and Rabbit Creation import are product-specific
-formats layered beside those standards. SAM Project itself remains licensed as
+The SamRabbit Card extension and Rabbit Creation import are product-specific
+formats layered beside those standards. SamRabbit itself remains licensed as
 a source-available noncommercial project.
 
 ## Pick one owner before building
 
-| Need | Correct owner | Imported without rebuilding SAM Project? |
+| Need | Correct owner | Imported without rebuilding SamRabbit? |
 |---|---|---:|
 | Change instructions for one device owner | `SKILLS.MD` instruction document | Yes |
 | Package reusable agent instructions | Agent Skill inside a Plugin | Yes |
@@ -83,7 +83,7 @@ Relevant implementation:
 ## Agent Skills (`SKILL.md`)
 
 A standard Agent Skill is a directory whose name matches the `name` in its
-required `SKILL.md` frontmatter. SAM Project currently activates standard Skills
+required `SKILL.md` frontmatter. SamRabbit currently activates standard Skills
 when they are packaged under an Agent Plugin's `skills/` directory.
 
 ```text
@@ -96,7 +96,7 @@ calendar-summary/
 name: calendar-summary
 description: Summarize upcoming events when the user asks about their schedule.
 license: CC-BY-NC-4.0
-compatibility: Requires the SAM Project Calendar tool set.
+compatibility: Requires the SamRabbit Calendar tool set.
 metadata:
   author: example-author
 ---
@@ -107,7 +107,7 @@ Use the calendar tools only when a configured calendar is available. State the
 time zone when it could be ambiguous.
 ```
 
-SAM Project validates:
+SamRabbit validates:
 
 - UTF-8 YAML frontmatter closed by `---`;
 - a 1–64 character lowercase, digit, and hyphen `name` matching the directory;
@@ -116,7 +116,7 @@ SAM Project validates:
   `metadata`, and `allowed-tools` string.
 
 `allowed-tools` is descriptive standard metadata. It does not grant access in
-SAM Project. The selected audience and canonical Tool/MCP permission gates still
+SamRabbit. The selected audience and canonical Tool/MCP permission gates still
 decide what the agent can invoke.
 
 The runtime discloses only the names and descriptions of relevant enabled
@@ -353,15 +353,15 @@ window.addEventListener("scrollUp", () => window.scrollBy(0, -120));
 window.addEventListener("sideClick", () => document.activeElement?.click());
 ```
 
-There is currently no JavaScript bridge from a Creation to SAM Project Tools or
+There is currently no JavaScript bridge from a Creation to SamRabbit Tools or
 canonical domain data. Do not simulate that data in the Card. If real data is
 required, use an implemented product contract or propose the smallest new
 contract separately.
 
-Rabbit-compatible QR descriptors are a second Creation source. SAM Project
+Rabbit-compatible QR descriptors are a second Creation source. SamRabbit
 accepts `title`, public HTTPS `url`, optional `description`, public HTTPS
 `iconUrl`, and `themeColor` in `#RRGGBB` form. It tolerates and discards the
-Boondit compatibility fields `author` and `installConfirmUrl`; SAM Project does
+Boondit compatibility fields `author` and `installConfirmUrl`; SamRabbit does
 not call the analytics URL.
 
 Relevant implementation:
@@ -374,7 +374,7 @@ Relevant implementation:
 
 ## Add a Card to a Plugin
 
-Agent Plugins standardizes Skills and MCP components. SAM Project adds one
+Agent Plugins standardizes Skills and MCP components. SamRabbit adds one
 client-specific Card extension using the standard's reverse-domain extension
 namespace mechanism. Put it at `com.resonolabs.cards/` inside the Plugin root.
 

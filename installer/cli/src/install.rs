@@ -11,7 +11,7 @@ const SYSTEM_EXT_SIZE: &str = "559304704";
 pub fn run(release_root: &Path) -> Result<(), CommandError> {
     let mut input = io::stdin().lock();
     let mut output = io::stdout().lock();
-    writeln!(output, "SAM Project guided stock-R1 install\n").map_err(io_error)?;
+    writeln!(output, "SamRabbit guided stock-R1 install\n").map_err(io_error)?;
     release::verify(release_root, |index, artifact| {
         let _ = writeln!(output, "Verifying {}/12: {}", index + 1, artifact.path);
     })?;
@@ -69,8 +69,8 @@ pub fn run(release_root: &Path) -> Result<(), CommandError> {
     confirm(
         &mut input,
         &mut output,
-        "This installs the complete current SAM Project image and erases stock user data.",
-        "INSTALL SAM",
+        "This installs the complete current SamRabbit image and erases stock user data.",
+        "INSTALL SAMRABBIT",
     )?;
     let file = |relative: &str| release::path(release_root, relative).display().to_string();
     let mut step = 1;
@@ -170,7 +170,7 @@ pub fn run(release_root: &Path) -> Result<(), CommandError> {
         &mut output,
         &mut fastboot,
         &mut step,
-        "Writing current SAM Project system",
+        "Writing current SamRabbit system",
         &["flash", "system_a", &file("images/jackrabbit/system.img")],
     )?;
     perform(
@@ -188,7 +188,7 @@ pub fn run(release_root: &Path) -> Result<(), CommandError> {
         &mut output,
         &mut fastboot,
         &mut step,
-        "Writing current SAM Project product",
+        "Writing current SamRabbit product",
         &["flash", "product_a", &file("images/jackrabbit/product.img")],
     )?;
     perform(
@@ -253,10 +253,10 @@ pub fn run(release_root: &Path) -> Result<(), CommandError> {
         &mut output,
         &mut fastboot,
         &mut step,
-        "Rebooting into SAM Project",
+        "Rebooting into SamRabbit",
         &["reboot"],
     )?;
-    writeln!(output, "\nImage transfer complete. The screen may remain blank during early first boot. Keep the R1 powered and wait for SAM Project.").map_err(io_error)
+    writeln!(output, "\nImage transfer complete. The screen may remain blank during early first boot. Keep the R1 powered and wait for SamRabbit.").map_err(io_error)
 }
 
 fn enter_or_find_fastboot(
@@ -436,18 +436,18 @@ mod tests {
     #[test]
     fn destructive_confirmation_retries_after_incorrect_entry() {
         assert!(confirm(
-            &mut Cursor::new("INSTALL SAM\n"),
+            &mut Cursor::new("INSTALL SAMRABBIT\n"),
             &mut Vec::new(),
             "warning",
-            "INSTALL SAM"
+            "INSTALL SAMRABBIT"
         )
         .is_ok());
         let mut output = Vec::new();
         assert!(confirm(
-            &mut Cursor::new("INSTALL\n\nINSTALL SAM\n"),
+            &mut Cursor::new("INSTALL\n\nINSTALL SAMRABBIT\n"),
             &mut output,
             "warning",
-            "INSTALL SAM"
+            "INSTALL SAMRABBIT"
         )
         .is_ok());
         assert!(String::from_utf8(output)
@@ -457,7 +457,7 @@ mod tests {
             &mut Cursor::new("INSTALL\ny\n"),
             &mut Vec::new(),
             "warning",
-            "INSTALL SAM",
+            "INSTALL SAMRABBIT",
         )
         .unwrap_err();
         assert_eq!(error.code(), "JR-CLI-CANCELLED");
