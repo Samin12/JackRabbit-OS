@@ -33,6 +33,9 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 
 import com.resonolabs.ui.design.FluidOrb;
+import com.resonolabs.ui.design.GlassPainter;
+import com.resonolabs.ui.design.OrbStyle;
+import com.resonolabs.ui.design.OrbStyleSetting;
 import com.resonolabs.ui.design.SamTheme;
 import com.resonolabs.ui.input.UiInputIntent;
 import com.resonolabs.ui.input.UiInputTarget;
@@ -60,6 +63,16 @@ public final class SettingsPanelView extends View implements UiInputTarget {
     private static final float AI_REFRESH_TOP = 556f;
     private static final List<String> ROWS = List.of(
             "Wi-Fi", "Bluetooth", "Management", "AI", "Creations", "Sound", "Display", "About");
+    // Display page: brightness (value, bar, -/+) and the orb style picker with a live preview.
+    private static final RectF DISPLAY_BRIGHTNESS = new RectF(20f, 100f, 460f, 250f);
+    private static final RectF DISPLAY_MINUS = new RectF(20f, 262f, 230f, 326f);
+    private static final RectF DISPLAY_PLUS = new RectF(250f, 262f, 460f, 326f);
+    private static final RectF ORB_STYLE_PANEL = new RectF(20f, 342f, 460f, 562f);
+    private static final RectF ORB_STYLE_TRACK = new RectF(36f, 482f, 444f, 546f);
+    private static final float ORB_PREVIEW_Y = 416f;
+    private static final float ORB_PREVIEW_RADIUS = 40f;
+    private static final RectF BACK_DISC = new RectF(10f, 22f, 54f, 66f);
+    private static final RectF CLOSE_DISC = new RectF(414f, 20f, 462f, 68f);
 
     private final Activity activity;
     private final Runnable close;
@@ -68,7 +81,15 @@ public final class SettingsPanelView extends View implements UiInputTarget {
     private final ManagementPairingSource managementPairing;
     private final ManagementOpenAiSource openAiSource;
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final FluidOrb aboutOrb = new FluidOrb();
+    private final FluidOrb aboutOrb = new FluidOrb().hero(getContext());
+    /** Live preview of the chosen orb style on the Display page. */
+    private final FluidOrb styleOrb = new FluidOrb().hero(getContext());
+    private final GlassPainter glassPainter = new GlassPainter();
+    private final RectF segment = new RectF();
+    private final LinearGradient brightnessFill = new LinearGradient(64f, 0f, 416f, 0f,
+            SamTheme.ORB_PALE, SamTheme.ORB_BLUE, Shader.TileMode.CLAMP);
+    private float displayLevel;
+    private String displayValue;
     private final WifiNetworkScanner wifiScanner;
     private int selected;
     private String openPage;
@@ -126,8 +147,8 @@ public final class SettingsPanelView extends View implements UiInputTarget {
                 90f, 20f, 300f, SamTheme.ORB_BLUE);
         if (openPage == null) drawIndex(canvas); else drawPage(canvas);
         canvas.restore();
-        // Only the About hero orb animates; every other settings page is static.
-        if (about && isShown()) postInvalidateDelayed(33L);
+        // Only the About hero orb and the Display orb style preview animate; other pages are static.
+        if ((about || "Display".equals(openPage)) && isShown()) postInvalidateDelayed(33L);
     }
 
     private void drawIndex(Canvas canvas) {
@@ -186,14 +207,78 @@ public final class SettingsPanelView extends View implements UiInputTarget {
         stepButtons(canvas);
     }
 
+    /** Redrawn every frame for the live orb preview, so nothing here allocates. */
     private void drawDisplayPage(Canvas canvas) {
-        SettingValue[] values = display();
+        if (displayValue == null) readDisplayBrightness();
+        glassPainter.draw(canvas, paint, DISPLAY_BRIGHTNESS, 24f, false);
+        SamTheme.text(canvas, paint, "Brightness", 240f, 134f, 16f, SamTheme.MUTED, Paint.Align.CENTER, false);
+        SamTheme.text(canvas, paint, displayValue, 240f, 196f, 54f, SamTheme.INK, Paint.Align.CENTER, true);
+        paint.setStyle(Paint.Style.FILL);
+        paint.setColor(SamTheme.withAlpha(SamTheme.INK, 26));
+        canvas.drawRoundRect(64f, 220f, 416f, 229f, 4.5f, 4.5f, paint);
+        if (displayLevel > 0f) {
+            paint.setColor(SamTheme.INK);
+            paint.setShader(brightnessFill);
+            canvas.drawRoundRect(64f, 220f, 64f + 352f * displayLevel, 229f, 4.5f, 4.5f, paint);
+            paint.setShader(null);
+            canvas.drawCircle(64f + 352f * displayLevel, 224.5f, 9f, paint);
+        }
+        glassPainter.draw(canvas, paint, DISPLAY_MINUS, 24f, false);
+        glassPainter.draw(canvas, paint, DISPLAY_PLUS, 24f, false);
+        SamTheme.text(canvas, paint, "−", DISPLAY_MINUS.centerX(), DISPLAY_MINUS.centerY() + 12f, 38f,
+                SamTheme.INK, Paint.Align.CENTER, true);
+        SamTheme.text(canvas, paint, "+", DISPLAY_PLUS.centerX(), DISPLAY_PLUS.centerY() + 12f, 38f,
+                SamTheme.INK, Paint.Align.CENTER, true);
+        drawOrbStyle(canvas);
+        SamTheme.text(canvas, paint, "Screen sleep · Manual while open", 240f, 600f, 15f,
+                SamTheme.MUTED, Paint.Align.CENTER, false);
+    }
+
+    /** "Orb style": live preview of the current hero orb and an Orb | Pixel head segmented control. */
+    private void drawOrbStyle(Canvas canvas) {
+        OrbStyle style = OrbStyleSetting.current();
+        glassPainter.draw(canvas, paint, ORB_STYLE_PANEL, 24f, false);
+        SamTheme.text(canvas, paint, "Orb style", 40f, 376f, 16f, SamTheme.MUTED, Paint.Align.LEFT, false);
+        styleOrb.setColor(SamTheme.ORB_BLUE).setEnergy(0.15f).setSpeed(0.6f);
+        styleOrb.draw(canvas, 240f, ORB_PREVIEW_Y + styleOrb.bob(3f), ORB_PREVIEW_RADIUS);
+        glassPainter.draw(canvas, paint, ORB_STYLE_TRACK, 32f, false);
+        OrbStyle[] styles = OrbStyle.values();
+        float width = ORB_STYLE_TRACK.width() / styles.length;
+        for (int i = 0; i < styles.length; i++) {
+            boolean on = styles[i] == style;
+            float left = ORB_STYLE_TRACK.left + i * width;
+            if (on) {
+                segment.set(left + 5f, ORB_STYLE_TRACK.top + 5f, left + width - 5f, ORB_STYLE_TRACK.bottom - 5f);
+                paint.setStyle(Paint.Style.FILL);
+                paint.setColor(SamTheme.withAlpha(SamTheme.ORB_BLUE, 225));
+                canvas.drawRoundRect(segment, 27f, 27f, paint);
+            }
+            SamTheme.text(canvas, paint, styles[i].label(), left + width / 2f, ORB_STYLE_TRACK.centerY() + 7f,
+                    20f, on ? SamTheme.INK : SamTheme.MUTED, Paint.Align.CENTER, true);
+        }
+    }
+
+    private void readDisplayBrightness() {
         int brightness = Settings.System.getInt(activity.getContentResolver(),
                 Settings.System.SCREEN_BRIGHTNESS, 0);
-        drawLevelHero(canvas, "Brightness", values[0].value, brightness / 255f);
-        SamTheme.text(canvas, paint, "Screen sleep · " + values[1].value, 240f, 424f, 16f,
-                SamTheme.MUTED, Paint.Align.CENTER, false);
-        stepButtons(canvas);
+        displayLevel = Math.max(0f, Math.min(1f, brightness / 255f));
+        displayValue = Math.round(brightness * 100f / 255f) + "%";
+    }
+
+    /** Display page taps: brightness -/+ and the orb style segments (the wheel picks styles too). */
+    private void onDisplayTap(float x, float y) {
+        if (y >= DISPLAY_MINUS.top - 6f && y <= DISPLAY_MINUS.bottom + 6f) {
+            adjustBrightness(x >= DESIGN_WIDTH / 2f);
+            displayValue = null;
+        } else if (y >= ORB_STYLE_TRACK.top - 10f && y <= ORB_STYLE_PANEL.bottom) {
+            applyOrbStyle(x < ORB_STYLE_TRACK.centerX() ? OrbStyle.FLUID : OrbStyle.PIXEL_HEAD);
+        }
+        invalidate();
+    }
+
+    private void applyOrbStyle(OrbStyle style) {
+        OrbStyleSetting.set(activity, style);
+        invalidate();
     }
 
     private void drawLevelHero(Canvas canvas, String label, String value, float level) {
@@ -863,7 +948,7 @@ public final class SettingsPanelView extends View implements UiInputTarget {
     }
 
     private void drawBack(Canvas canvas) {
-        SamTheme.glass(canvas, paint, new RectF(10f, 22f, 54f, 66f), 22f, false);
+        glassPainter.draw(canvas, paint, BACK_DISC, 22f, false);
         paint.setStyle(Paint.Style.STROKE);
         paint.setStrokeWidth(2.6f);
         paint.setStrokeCap(Paint.Cap.ROUND);
@@ -875,8 +960,7 @@ public final class SettingsPanelView extends View implements UiInputTarget {
     }
 
     private void drawClose(Canvas canvas) {
-        RectF disc = new RectF(414f, 20f, 462f, 68f);
-        SamTheme.glass(canvas, paint, disc, 24f, false);
+        glassPainter.draw(canvas, paint, CLOSE_DISC, 24f, false);
         paint.setStyle(Paint.Style.STROKE);
         paint.setStrokeWidth(2.4f);
         paint.setStrokeCap(Paint.Cap.ROUND);
@@ -1137,6 +1221,10 @@ public final class SettingsPanelView extends View implements UiInputTarget {
             invalidate();
             return true;
         }
+        if ("Display".equals(openPage)) {
+            onDisplayTap(x, y);
+            return true;
+        }
         if (openPage == null) {
             int row = (int) ((y - ROW_TOP) / ROW_STEP);
             float within = (y - ROW_TOP) % ROW_STEP;
@@ -1171,8 +1259,6 @@ public final class SettingsPanelView extends View implements UiInputTarget {
         } else if (y >= 482f && y <= 584f) {
             if ("Sound".equals(openPage)) {
                 adjustVolume(x >= DESIGN_WIDTH / 2f);
-            } else if ("Display".equals(openPage)) {
-                adjustBrightness(x >= DESIGN_WIDTH / 2f);
             } else if ("Bluetooth".equals(openPage)) {
                 toggleBluetooth();
             } else if ("About".equals(openPage)) {
@@ -1205,9 +1291,14 @@ public final class SettingsPanelView extends View implements UiInputTarget {
             if (!wifiNetworks.isEmpty()) selectNetwork(wifiNetworks.get(0));
             return true;
         }
+        OrbStyle wheelStyle = SettingsInputPolicy.orbStyleForWheel(openPage, intent);
+        if (wheelStyle != null) {
+            applyOrbStyle(wheelStyle);
+            return true;
+        }
         if (SettingsInputPolicy.consumeWheelWithoutAdjustment(openPage, intent)) {
-            // The R1 wheel stays navigation-only. Sound and Display changes
-            // require their explicit on-screen buttons.
+            // Volume and brightness never follow the R1 wheel; they need
+            // their explicit on-screen buttons.
             return true;
         }
         if ("Bluetooth".equals(openPage) && intent == UiInputIntent.ACTIVATE) {
@@ -1239,6 +1330,7 @@ public final class SettingsPanelView extends View implements UiInputTarget {
         if ("Wi-Fi".equals(openPage)) wifiScanner.refresh();
         if ("Management".equals(openPage)) refreshManagement();
         if ("AI".equals(openPage)) refreshOpenAi();
+        if ("Display".equals(openPage)) displayValue = null;
         invalidate();
     }
 
