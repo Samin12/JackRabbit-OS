@@ -50,6 +50,8 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
     private String transcript = "Tap to start a conversation";
     private String failure = "";
     private JSONObject pendingConnectGreeting;
+    /** Host note to hand the model on connect instead of the greeting (startSessionWithNote). */
+    private String pendingHostNote;
     private String sessionId = "";
     private String lastUserUtterance = "";
     private long userUtteranceId = 0;
@@ -251,6 +253,14 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
                 activity.runOnUiThread(() -> {
                     sessionState.live();
                     transcript = "I’m listening";
+                    if (pendingHostNote != null && peer != null) {
+                        String note = pendingHostNote;
+                        pendingHostNote = null;
+                        if (sendHostNote(note)) {
+                            pendingConnectGreeting = null;
+                            responseCoordinator.requestDefault();
+                        }
+                    }
                     if (pendingConnectGreeting != null && peer != null) {
                         responseCoordinator.request(pendingConnectGreeting);
                         pendingConnectGreeting = null;
@@ -367,7 +377,40 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
         }
     }
 
+    /**
+     * Starts a voice session (or reuses the live one) and gives the model a system note first:
+     * sent at once when live, otherwise on connect in place of the greeting. Used by the T3 tab's
+     * Talk button so the next utterance goes to the thread the user is looking at.
+     */
+    public void startSessionWithNote(String note) {
+        String trimmed = note == null ? "" : note.trim();
+        if (isAvailable()) {
+            if (!trimmed.isEmpty() && sendHostNote(trimmed)) responseCoordinator.requestDefault();
+            return;
+        }
+        pendingHostNote = trimmed.isEmpty() ? null : trimmed;
+        if (sessionState.state() != VoiceSessionStateTracker.State.CONNECTING) startSession();
+    }
+
+    private boolean sendHostNote(String note) {
+        if (peer == null) return false;
+        try {
+            return peer.sendRealtimeEvent(new JSONObject()
+                    .put("type", "conversation.item.create")
+                    .put("item", new JSONObject()
+                            .put("type", "message")
+                            .put("role", "system")
+                            .put("content", new JSONArray().put(new JSONObject()
+                                    .put("type", "input_text")
+                                    .put("text", note)))));
+        } catch (Exception error) {
+            Log.w(LOG_TAG, "host note injection failed", error);
+            return false;
+        }
+    }
+
     private void stopSession() {
+        pendingHostNote = null;
         removeCallbacks(completionPoll);
         clearPendingModeTool();
         // Close WebRTC peer immediately for instant audio stop
@@ -430,6 +473,7 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
     }
 
     private void fail(String reason) {
+        pendingHostNote = null;
         dispatchPendingFinalize();
         closeTransports();
         sessionState.error();
