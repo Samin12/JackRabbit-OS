@@ -41,4 +41,27 @@ public final class VoiceSessionStateTrackerTest {
         tracker.onRealtimeEvent("response.done");
         assertEquals(VoiceSessionStateTracker.State.LIVE, tracker.state());
     }
+
+    @Test public void localToolWithoutFollowUpReturnsToLiveAfterTheResponse() {
+        VoiceSessionStateTracker tracker = new VoiceSessionStateTracker();
+        tracker.live();
+        tracker.onRealtimeEvent("response.created");
+        tracker.onRealtimeEvent("response.function_call_arguments.done");
+        // show_card answered on-device after the reply already spoke: no follow-up response.
+        tracker.toolOutputSentWithoutFollowUp();
+        assertEquals(VoiceSessionStateTracker.State.RESPONDING, tracker.state());
+        tracker.onRealtimeEvent("response.done");
+        assertEquals(VoiceSessionStateTracker.State.LIVE, tracker.state());
+    }
+
+    @Test public void lateLocalToolOutputAfterResponseDoneGoesLive() {
+        VoiceSessionStateTracker tracker = new VoiceSessionStateTracker();
+        tracker.live();
+        tracker.onRealtimeEvent("response.created");
+        tracker.onRealtimeEvent("response.function_call_arguments.done");
+        tracker.onRealtimeEvent("response.done");
+        assertEquals(VoiceSessionStateTracker.State.RESPONDING, tracker.state());
+        tracker.toolOutputSentWithoutFollowUp();
+        assertEquals(VoiceSessionStateTracker.State.LIVE, tracker.state());
+    }
 }

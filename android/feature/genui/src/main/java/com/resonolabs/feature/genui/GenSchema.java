@@ -40,6 +40,8 @@ public final class GenSchema {
     public static final int ITEMS = 8;
     public static final int PAIRS = 6;
     public static final int ACTIONS = 2;
+    /** App-built (trusted) cards may carry one more button, e.g. Open + Deny + Approve. */
+    public static final int HOST_ACTIONS = 3;
     public static final int BARS = 12;
     public static final int HOURS = 5;
     public static final int STEPS = 4;

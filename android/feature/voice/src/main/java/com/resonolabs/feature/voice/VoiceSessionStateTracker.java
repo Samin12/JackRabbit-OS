@@ -7,6 +7,8 @@ final class VoiceSessionStateTracker {
     private State state = State.IDLE;
     private int pendingToolCalls;
     private boolean toolFollowUpPending;
+    /** Between the provider's response.created and response.done. */
+    private boolean responseActive;
 
     State state() {
         return state;
@@ -15,6 +17,7 @@ final class VoiceSessionStateTracker {
     void connecting() {
         pendingToolCalls = 0;
         toolFollowUpPending = false;
+        responseActive = false;
         state = State.CONNECTING;
     }
 
@@ -25,12 +28,14 @@ final class VoiceSessionStateTracker {
     void idle() {
         pendingToolCalls = 0;
         toolFollowUpPending = false;
+        responseActive = false;
         state = State.IDLE;
     }
 
     void error() {
         pendingToolCalls = 0;
         toolFollowUpPending = false;
+        responseActive = false;
         state = State.ERROR;
     }
 
@@ -41,14 +46,17 @@ final class VoiceSessionStateTracker {
                     state = State.RESPONDING;
             case "response.created" -> {
                 toolFollowUpPending = false;
+                responseActive = true;
                 state = State.RESPONDING;
             }
             case "response.function_call_arguments.done" -> {
                 pendingToolCalls += 1;
                 state = State.RESPONDING;
             }
-            case "response.done" -> state = pendingToolCalls == 0 && !toolFollowUpPending
-                    ? State.LIVE : State.RESPONDING;
+            case "response.done" -> {
+                responseActive = false;
+                state = pendingToolCalls == 0 && !toolFollowUpPending ? State.LIVE : State.RESPONDING;
+            }
             default -> { }
         }
     }
@@ -57,5 +65,15 @@ final class VoiceSessionStateTracker {
         pendingToolCalls = Math.max(0, pendingToolCalls - 1);
         toolFollowUpPending = true;
         state = State.RESPONDING;
+    }
+
+    /**
+     * A local tool (GenUI card) answered without asking for a follow-up response because the
+     * reply already spoke. Once nothing else is pending and the provider's response is over,
+     * the session is simply live again.
+     */
+    void toolOutputSentWithoutFollowUp() {
+        pendingToolCalls = Math.max(0, pendingToolCalls - 1);
+        if (pendingToolCalls == 0 && !toolFollowUpPending && !responseActive) state = State.LIVE;
     }
 }

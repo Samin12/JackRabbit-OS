@@ -6,6 +6,7 @@ import android.util.Log;
 import android.os.Handler;
 import android.os.Looper;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.InputStream;
@@ -20,6 +21,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public final class RuntimeVoiceClient implements AutoCloseable {
     private static final String MCP_VERSION = "2025-11-25";
     private static final String LOG_TAG = "RuntimeVoiceClient";
+    static final int MAX_MCP_RESPONSE_BYTES = 1_048_576;
 
     public interface Callback {
         void onAnswer(String sdp, String sessionId, JSONObject connectGreetingEvent);
@@ -152,11 +154,74 @@ public final class RuntimeVoiceClient implements AutoCloseable {
             }
             JSONObject sessionUpdate = result.optJSONObject("samSessionUpdate");
             result.remove("samSessionUpdate");
+            compactForModel(result);
             JSONObject finalSessionUpdate = sessionUpdate;
             if (!closed.get()) main.post(() -> callback.onResult(result.toString(), finalSessionUpdate));
         } catch (Exception ignored) {
             deliverToolFailure(callback, "mcp-unavailable");
         }
+    }
+
+    /**
+     * The Realtime model reads a tool result as text. Most runtime tools carry the same data
+     * twice (the JSON text in {@code content} and again as {@code structuredContent}, either
+     * as-is or wrapped as {@code {"result": ...}}); drop the copy so large results (e.g. a
+     * calendar with long descriptions) cost half the tokens. Only an exact JSON copy is dropped:
+     * some tools answer with a short summary text and keep the data in {@code structuredContent}
+     * alone (e.g. {@code goal_inspect}: "Goal is completed." plus the run's output), and the
+     * model must still see that.
+     */
+    static void compactForModel(JSONObject result) {
+        if (result == null || !result.has("structuredContent")) return;
+        JSONArray content = result.optJSONArray("content");
+        if (content == null) return;
+        Object structured = result.opt("structuredContent");
+        Object wrapped = structured instanceof JSONObject object && object.length() == 1
+                ? object.opt("result") : null;
+        for (int index = 0; index < content.length(); index++) {
+            JSONObject block = content.optJSONObject(index);
+            if (block == null || !"text".equals(block.optString("type"))) continue;
+            Object text = parseJson(block.optString("text"));
+            if (text != null && (sameJson(text, structured) || wrapped != null && sameJson(text, wrapped))) {
+                result.remove("structuredContent");
+                return;
+            }
+        }
+    }
+
+    /** A JSON object or array parsed from {@code text}, or null when it is not JSON. */
+    private static Object parseJson(String text) {
+        String trimmed = text == null ? "" : text.trim();
+        if (trimmed.isEmpty() || (trimmed.charAt(0) != '{' && trimmed.charAt(0) != '[')) return null;
+        try {
+            return new org.json.JSONTokener(trimmed).nextValue();
+        } catch (Exception invalid) {
+            return null;
+        }
+    }
+
+    /** Structural JSON equality (key order and number spelling ignored). */
+    static boolean sameJson(Object left, Object right) {
+        if (left instanceof JSONObject a && right instanceof JSONObject b) {
+            if (a.length() != b.length()) return false;
+            java.util.Iterator<String> keys = a.keys();
+            while (keys.hasNext()) {
+                String key = keys.next();
+                if (!b.has(key) || !sameJson(a.opt(key), b.opt(key))) return false;
+            }
+            return true;
+        }
+        if (left instanceof JSONArray a && right instanceof JSONArray b) {
+            if (a.length() != b.length()) return false;
+            for (int index = 0; index < a.length(); index++) {
+                if (!sameJson(a.opt(index), b.opt(index))) return false;
+            }
+            return true;
+        }
+        if (left instanceof Number a && right instanceof Number b) {
+            return Double.compare(a.doubleValue(), b.doubleValue()) == 0;
+        }
+        return left == null ? right == null : left.equals(right);
     }
 
     private McpResponse postMcp(
@@ -213,7 +278,9 @@ public final class RuntimeVoiceClient implements AutoCloseable {
             int status = connection.getResponseCode();
             String returnedSession = connection.getHeaderField("Mcp-Session-Id");
             InputStream source = status >= 400 ? connection.getErrorStream() : connection.getInputStream();
-            byte[] bytes = source == null ? new byte[0] : source.readNBytes(65_536);
+            // Tool results are JSON twice over (text + structuredContent): 64 KB truncated a real
+            // calendar listing mid-JSON, which surfaced as "mcp-unavailable".
+            byte[] bytes = source == null ? new byte[0] : source.readNBytes(MAX_MCP_RESPONSE_BYTES);
             if (status >= 400) throw new IllegalStateException("MCP HTTP " + status);
             if (bytes.length == 0 && allowEmpty) return new McpResponse(new JSONObject(), returnedSession);
             JSONObject payload = new JSONObject(new String(bytes, StandardCharsets.UTF_8));

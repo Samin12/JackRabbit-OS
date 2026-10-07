@@ -15,7 +15,8 @@ import java.util.List;
 
 /** Posted notifications for the Control Center, fed by the system notification listener. */
 public final class NotificationFeed extends NotificationListenerService {
-    record Item(String key, String app, String title, String text, long when, boolean clearable) {}
+    record Item(String key, String app, String title, String text, long when, boolean clearable,
+                android.app.PendingIntent intent) {}
 
     private static final Handler MAIN = new Handler(Looper.getMainLooper());
     private static volatile NotificationFeed connected;
@@ -43,6 +44,21 @@ public final class NotificationFeed extends NotificationListenerService {
 
     static void observe(Runnable onChange) {
         observer = onChange;
+    }
+
+    /** Tap on a notification row: fire its content intent and clear it if auto-cancel. */
+    static boolean open(Item item) {
+        if (item == null || item.intent() == null) return false;
+        try {
+            item.intent().send();
+        } catch (android.app.PendingIntent.CanceledException | RuntimeException ignored) {
+            return false;
+        }
+        NotificationFeed service = connected;
+        if (service != null && item.clearable()) {
+            try { service.cancelNotification(item.key()); } catch (RuntimeException ignored) { }
+        }
+        return true;
     }
 
     static void dismissAll() {
@@ -82,7 +98,7 @@ public final class NotificationFeed extends NotificationListenerService {
                 if ((title == null || title.length() == 0) && (text == null || text.length() == 0)) continue;
                 next.add(new Item(posted.getKey(), appLabel(posted.getPackageName()),
                         title == null ? "" : title.toString(), text == null ? "" : text.toString(),
-                        posted.getPostTime(), posted.isClearable()));
+                        posted.getPostTime(), posted.isClearable(), notification.contentIntent));
             }
         }
         next.sort((left, right) -> Long.compare(right.when(), left.when()));

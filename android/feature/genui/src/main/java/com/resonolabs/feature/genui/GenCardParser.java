@@ -150,7 +150,7 @@ public final class GenCardParser {
 
         card.live = live(value(json, "live"), notes);
         parseBody(card.body, value(json, "body"), "body", notes, now, trusted);
-        parseActions(card.actions, value(json, "actions"), notes);
+        parseActions(card.actions, value(json, "actions"), notes, trusted);
         normalizeLive(card, notes, now);
         return new ParseResult(true, null, card, notes.list());
     }
@@ -553,12 +553,21 @@ public final class GenCardParser {
     }
 
     static void parseActions(List<GenAction> out, Object raw, Notes notes) {
+        parseActions(out, raw, notes, false);
+    }
+
+    /**
+     * {@code trusted} (app-built or restored cards) also accepts {@code host} buttons, any
+     * {@code open} target (e.g. {@code t3:<threadId>}) and one extra button; model payloads never do.
+     */
+    static void parseActions(List<GenAction> out, Object raw, Notes notes, boolean trusted) {
         JSONArray actions = array(raw);
         if (actions == null) return;
-        if (actions.length() > GenSchema.ACTIONS) {
-            notes.add("actions " + actions.length() + "->" + GenSchema.ACTIONS);
+        int max = trusted ? GenSchema.HOST_ACTIONS : GenSchema.ACTIONS;
+        if (actions.length() > max) {
+            notes.add("actions " + actions.length() + "->" + max);
         }
-        for (int index = 0; index < actions.length() && out.size() < GenSchema.ACTIONS; index++) {
+        for (int index = 0; index < actions.length() && out.size() < max; index++) {
             JSONObject json = object(actions.opt(index));
             String path = "actions[" + index + "]";
             if (json == null) continue;
@@ -578,8 +587,17 @@ public final class GenCardParser {
                 effects++;
             }
             int open = GenSchema.indexOf(GenSchema.OPEN_PAGES, value(json, "open"));
-            if (open >= 0) {
-                if (action == null) action = new GenAction(label, style, GenAction.Kind.OPEN, GenSchema.OPEN_PAGES[open]);
+            String hostOpen = trusted && open < 0 ? clean(value(json, "open"), GenSchema.SAY, null, null) : null;
+            if (open >= 0 || hostOpen != null) {
+                if (action == null) {
+                    action = new GenAction(label, style, GenAction.Kind.OPEN,
+                            open >= 0 ? GenSchema.OPEN_PAGES[open] : hostOpen);
+                }
+                effects++;
+            }
+            String host = trusted ? clean(value(json, "host"), GenSchema.SAY, null, null) : null;
+            if (host != null) {
+                if (action == null) action = new GenAction(label, style, GenAction.Kind.HOST, host);
                 effects++;
             }
             int timer = GenSchema.indexOf(GenSchema.TIMER_OPS, value(json, "timer"));

@@ -25,6 +25,7 @@ final class ProductChromeView extends View {
     private static final String[] LABELS = {"Voice", "Cards", "T3"};
     private static final RectF GEAR = new RectF(404f, 28f, 452f, 76f);
     private static final RectF RUNNER = new RectF(28f, 28f, 76f, 76f);
+    private static final int DONE_GREEN = Color.rgb(96, 214, 160);
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final FluidOrb runnerOrb = new FluidOrb().setEnergy(0.8f).setSpeed(2f);
     private final RectF pill = new RectF();
@@ -35,6 +36,8 @@ final class ProductChromeView extends View {
     private boolean runnerVisible;
     private boolean runnerActive;
     private int t3Badge;
+    /** A T3 thread finished or failed while nobody was listening (cleared when T3 opens). */
+    private boolean t3Done;
     private float indicator;
 
     ProductChromeView(Context context, Runnable openSettings, Runnable openVoice,
@@ -65,6 +68,13 @@ final class ProductChromeView extends View {
         invalidate();
     }
 
+    /** Green dot (when no amber one) for T3 updates that arrived while Voice was not live. */
+    void showT3Done(boolean done) {
+        if (t3Done == done) return;
+        t3Done = done;
+        invalidate();
+    }
+
     @Override protected void onDraw(Canvas canvas) {
         canvas.save();
         canvas.scale(getWidth() / WIDTH, getHeight() / HEIGHT);
@@ -86,11 +96,12 @@ final class ProductChromeView extends View {
             float cx = SEGMENTS.left + third * tab + third / 2f;
             SamTheme.text(canvas, paint, LABELS[tab], cx, 59f, 18f,
                     blend(SamTheme.MUTED, SamTheme.BACKGROUND, under), Paint.Align.CENTER, true);
-            if (tab == TAB_T3 && t3Badge > 0 && activeTab != TAB_T3) {
+            if (tab == TAB_T3 && (t3Badge > 0 || t3Done) && activeTab != TAB_T3) {
                 float dotX = cx + paint.measureText(LABELS[tab]) / 2f + 8f;
-                paint.setColor(SamTheme.withAlpha(SamTheme.AMBER, 70));
+                int dot = t3Badge > 0 ? SamTheme.AMBER : DONE_GREEN;
+                paint.setColor(SamTheme.withAlpha(dot, 70));
                 canvas.drawCircle(dotX, 40f, 8f, paint);
-                paint.setColor(SamTheme.AMBER);
+                paint.setColor(dot);
                 canvas.drawCircle(dotX, 40f, 4.5f, paint);
             }
         }
