@@ -124,12 +124,15 @@ def expand(
     all_day: bool,
     window_start: datetime,
     window_end: datetime,
+    open_ended_limit: int | None = None,
 ) -> list[datetime]:
     """Occurrence starts of ``rule`` that begin in [window_start - one day, window_end].
 
     ``start`` is the master DTSTART as an aware datetime (all-day: UTC midnight of its date).
     Results keep ``start``'s tzinfo and wall-clock time; all-day results are UTC midnights.
     Occurrences are counted from DTSTART, so COUNT holds even when the window starts later.
+    ``open_ended_limit`` caps rules without COUNT or UNTIL the way the source does (Google
+    Calendar stops a never-ending series after 730 occurrences, two years of a daily event).
     """
     zone = start.tzinfo or UTC
     local = start.replace(tzinfo=None)
@@ -138,7 +141,10 @@ def expand(
     low = window_start - timedelta(days=1)
     results: list[datetime] = []
     produced = 0
-    skip = 0 if rule.count is not None else _skip_periods(rule, first_day, low.astimezone(zone).date())
+    limit = rule.count
+    if limit is None and rule.until is None and open_ended_limit is not None:
+        limit = max(1, open_ended_limit)
+    skip = 0 if limit is not None else _skip_periods(rule, first_day, low.astimezone(zone).date())
     for index in range(skip, skip + _MAX_PERIODS):
         period = _period_days(rule, first_day, index)
         if period is None:
@@ -154,7 +160,7 @@ def expand(
             if not _before_until(day, moment, rule.until, all_day):
                 return results
             produced += 1
-            if rule.count is not None and produced > rule.count:
+            if limit is not None and produced > limit:
                 return results
             if moment > window_end:
                 return results

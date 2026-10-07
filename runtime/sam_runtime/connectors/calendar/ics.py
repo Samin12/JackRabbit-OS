@@ -14,6 +14,9 @@ from .recurrence import expand, occurrence_key, parse_rule, resolve_zone
 
 # How far ahead recurring events are expanded (single events keep the caller's range).
 RECURRENCE_HORIZON = timedelta(days=92)
+# Google Calendar ends a series without COUNT/UNTIL after this many occurrences (its own UI and
+# API stop there, while its ICS feed still says "repeat forever").
+GOOGLE_OPEN_ENDED_LIMIT = 730
 
 
 @dataclass(slots=True, frozen=True)
@@ -105,6 +108,7 @@ class IcsCalendarProviderClient:
         """
         calendar_name: str | None = None
         default_zone = None
+        open_ended_limit: int | None = None
         components: list[dict[str, list[_Property]]] = []
         current: dict[str, list[_Property]] | None = None
         nested = 0
@@ -120,6 +124,8 @@ class IcsCalendarProviderClient:
                     calendar_name = self._decode_value(line.partition(":")[2])
                 elif upper.startswith("X-WR-TIMEZONE:"):
                     default_zone = resolve_zone(line.partition(":")[2])
+                elif upper.startswith("PRODID:") and "GOOGLE CALENDAR" in upper:
+                    open_ended_limit = GOOGLE_OPEN_ENDED_LIMIT
                 continue
             # VALARM and other components nested in an event carry their own DESCRIPTION/SUMMARY.
             if upper.startswith("BEGIN:"):
@@ -152,7 +158,7 @@ class IcsCalendarProviderClient:
             try:
                 yield from self._build_events(
                     component, calendar_name=calendar_name, default_zone=default_zone,
-                    overridden=overridden, low=low, high=high,
+                    overridden=overridden, low=low, high=high, open_ended_limit=open_ended_limit,
                 )
             except (ValueError, OverflowError):
                 continue  # one malformed event never fails the whole feed
@@ -176,6 +182,7 @@ class IcsCalendarProviderClient:
         overridden: dict[str, set[str]],
         low: datetime,
         high: datetime,
+        open_ended_limit: int | None = None,
     ) -> Iterable[IcsCalendarEvent]:
         uid = _first_value(component, "UID")
         dtstart = _first(component, "DTSTART")
@@ -221,7 +228,8 @@ class IcsCalendarProviderClient:
                     if key:
                         skipped.add(key)
         length = ends_at - starts_at if ends_at is not None else None
-        for moment in expand(starts_at, rule, all_day=all_day, window_start=low, window_end=high):
+        for moment in expand(starts_at, rule, all_day=all_day, window_start=low, window_end=high,
+                             open_ended_limit=open_ended_limit):
             key = occurrence_key(moment, all_day=all_day)
             if key in skipped:
                 continue

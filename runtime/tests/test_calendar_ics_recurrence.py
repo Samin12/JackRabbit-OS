@@ -221,6 +221,32 @@ SUMMARY:Birthday
         self.assertEqual("20270312", later[0].recurrence_id)
         self.assertEqual(timedelta(days=1), later[0].ends_at - later[0].starts_at)
 
+    def test_google_ends_never_ending_series_after_730_occurrences(self) -> None:
+        # Google's own UI/API stop a "forever" daily series after 730 days; its feed still says FREQ=DAILY.
+        dinner = """
+DTSTART;TZID=America/New_York:20240926T184500
+DTEND;TZID=America/New_York:20240926T193000
+RRULE:FREQ=DAILY
+UID:dinner@google.com
+SUMMARY:Dinner
+"""
+        evening = """
+DTSTART;TZID=America/New_York:20250126T204500
+DTEND;TZID=America/New_York:20250126T223000
+RRULE:FREQ=DAILY
+UID:evening@google.com
+SUMMARY:Evening Routine
+"""
+        google = "X-WR-CALNAME:sam@example.com\nX-WR-TIMEZONE:America/New_York"
+        start = datetime(2026, 9, 24, 12, 0, tzinfo=UTC)
+        events = parse(feed(dinner, evening, header=google), start, start + timedelta(days=5))
+        # The 730th occurrence is Sep 25 (the window keeps a day of slack, so Sep 23 is in it).
+        self.assertEqual(["2026-09-23T22:45Z", "2026-09-24T22:45Z", "2026-09-25T22:45Z"], starts(events, "Dinner"))
+        self.assertEqual(6, len(starts(events, "Evening Routine")))
+        other = parse(feed(dinner, header=google).replace("Google Inc//Google Calendar 70.9054", "Apple Inc.//macOS 15"),
+                      start, start + timedelta(days=5))
+        self.assertEqual(6, len(starts(other, "Dinner")))  # other sources really repeat forever
+
     def test_unsupported_rules_keep_only_the_first_occurrence(self) -> None:
         for rule in ("FREQ=HOURLY", "FREQ=MONTHLY;BYSETPOS=-1;BYDAY=MO,TU,WE,TH,FR", "FREQ=YEARLY;BYDAY=20MO", "garbage"):
             with self.subTest(rule):
