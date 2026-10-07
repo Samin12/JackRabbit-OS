@@ -106,6 +106,13 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
     private final GlassPainter glass = new GlassPainter();
     private final RectF scratch = new RectF();
     private final boolean debuggable;
+    /**
+     * Debug builds log tool names and sizes only; the words themselves (what the user said, the
+     * model's replies, tool arguments and results) are logged only after
+     * {@code adb shell setprop debug.sam.voice.log_content 1}, read at each session start.
+     * Journal tool payloads are never logged.
+     */
+    private boolean logContent;
     /** The current response already streamed audio: a card tool must not trigger a second reply. */
     private boolean responseAudioSeen;
     /** A card "say" button / debug utterance to send as the user's turn once the session is live. */
@@ -262,7 +269,7 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
     public boolean deliverHostUpdate(String text) {
         if (!isAvailable() || text == null || text.isBlank()) return false;
         if (!sendItem("user", text)) return false;
-        logTool("host update " + truncate(text, 240));
+        logTool("host update " + shown(text, 240));
         responseCoordinator.requestDefault();
         invalidate();
         return true;
@@ -519,6 +526,7 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
             return;
         }
         closeTransports();
+        logContent = debuggable && contentLoggingRequested();
         reconnecting = resume;
         failure = "";
         sessionId = "";
@@ -636,7 +644,7 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
             } else if ("conversation.item.input_audio_transcription.completed".equals(type)
                     || "conversation.item.input_audio_transcript.completed".equals(type)) {
                 String text = event.optString("transcript", "").trim();
-                if (!text.isEmpty()) logTool("heard " + truncate(text, 160));
+                if (!text.isEmpty()) logTool("heard " + shown(text, 160));
                 lastUserUtterance = text;
                 if (!text.isEmpty()) userUtteranceId += 1;
                 recordTranscript("user", type, text);
@@ -666,7 +674,7 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
                     || "response.output_audio_transcript.done".equals(type)) {
                 String text = event.optString("transcript", assistantDraft.toString()).trim();
                 recordTranscript("assistant", type, text);
-                logTool("said " + truncate(text, 240));
+                logTool("said " + shown(text, 240));
                 assistantDraft.setLength(0);
                 if (!text.isEmpty()) {
                     transcript = text;
@@ -1260,14 +1268,14 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
         String callId = event.optString("call_id", "");
         if (name.isBlank() || callId.isBlank()) return;
         String raw = event.optString("arguments", "{}");
-        logTool("call " + name + " " + truncate(raw, 400));
+        logTool("call " + name + " " + shownTool(name, raw, 400));
         if (GenUiTools.isLocal(name)) {
             // Cards run on-device (~1 ms, never throws). If this response already spoke, the
             // output must not trigger a second spoken reply.
             boolean followUp = !responseAudioSeen;
             toolCallQueue.enqueue(completion -> {
                 String output = genUi.execute(name, raw, SystemClock.elapsedRealtime());
-                logTool("output " + name + " " + truncate(output, 400));
+                logTool("output " + name + " " + shownTool(name, output, 400));
                 recordTranscript("assistant", "genui." + name, genUi.lastTranscriptLine());
                 sendToolOutput(callId, output, followUp);
                 completion.complete();
@@ -1289,7 +1297,7 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
             }
             runtimeClient.callTool(activity, sessionId, callId, lastUserUtterance, userUtteranceId, name, toolArguments, new RuntimeVoiceClient.ToolCallback() {
                 @Override public void onResult(String output, JSONObject sessionUpdate) {
-                    logTool("output " + name + " " + truncate(output, 400));
+                    logTool("output " + name + " " + shownTool(name, output, 400));
                     if (sessionUpdate != null) {
                         beginModeUpdate(callId, output, sessionUpdate, completion::complete);
                     } else {
@@ -1310,6 +1318,33 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
 
     private void logTool(String line) {
         if (debuggable) Log.i(TOOL_LOG_TAG, line);
+    }
+
+    /** Conversation text for a debug log line: its size, or the text when content logging is on. */
+    private String shown(String text, int max) {
+        if (logContent) return truncate(text, max);
+        return "(" + (text == null ? 0 : text.length()) + " chars)";
+    }
+
+    /** A tool's arguments or result for a debug log line; journal payloads are never logged. */
+    private String shownTool(String name, String payload, int max) {
+        if (name != null && name.startsWith("journal_")) {
+            return "(" + (payload == null ? 0 : payload.length()) + " chars, journal: not logged)";
+        }
+        return shown(payload, max);
+    }
+
+    /** Debug builds only: {@code debug.sam.voice.log_content} is 1 or true. */
+    private static boolean contentLoggingRequested() {
+        try {
+            Class<?> properties = Class.forName("android.os.SystemProperties");
+            Object value = properties.getMethod("get", String.class, String.class)
+                    .invoke(null, "debug.sam.voice.log_content", "");
+            String flag = value == null ? "" : value.toString().trim();
+            return "1".equals(flag) || "true".equalsIgnoreCase(flag);
+        } catch (Exception | LinkageError unavailable) {
+            return false;
+        }
     }
 
     private void beginModeUpdate(
