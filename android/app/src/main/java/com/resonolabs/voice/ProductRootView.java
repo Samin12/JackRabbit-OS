@@ -283,7 +283,8 @@ final class ProductRootView extends FrameLayout {
         }
         if (settingsOpen) return settings.onInput(UiInputIntent.BACK);
         if (cardsOpen) return cards.onInput(UiInputIntent.BACK);
-        return true;
+        // Voice is the visible page: BACK closes its transcript, then ends a live session.
+        return voice.onInput(UiInputIntent.BACK);
     }
 
     /**
