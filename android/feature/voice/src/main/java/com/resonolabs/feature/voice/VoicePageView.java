@@ -110,6 +110,8 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
     private boolean responseAudioSeen;
     /** A card "say" button / debug utterance to send as the user's turn once the session is live. */
     private String pendingActionText;
+    /** Transcript event type for {@link #pendingActionText}: genui.action or debug.say. */
+    private String pendingActionEvent = "genui.action";
     private boolean cardGesture;
     // ---- always-on voice ----
     private final VoiceReconnectPolicy reconnectPolicy = new VoiceReconnectPolicy();
@@ -192,6 +194,7 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
 
             @Override public void startSessionWith(String text) {
                 pendingActionText = text;
+                pendingActionEvent = "genui.action";
                 if (!inSession()) startSession();
             }
 
@@ -277,6 +280,7 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
         if (text == null || text.isBlank()) return;
         if (sendUserTurn(text.trim(), "debug.say")) return;
         pendingActionText = text.trim();
+        pendingActionEvent = "debug.say";
         if (!inSession()) startSession();
     }
 
@@ -554,7 +558,7 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
                         String text = pendingActionText;
                         pendingActionText = null;
                         pendingConnectGreeting = null;
-                        sendUserTurn(text, "genui.action");
+                        sendUserTurn(text, pendingActionEvent);
                     }
                     if (pendingConnectGreeting != null && peer != null) {
                         responseCoordinator.request(pendingConnectGreeting);
