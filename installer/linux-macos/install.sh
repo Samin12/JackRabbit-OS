@@ -9,7 +9,7 @@ SAM_FASTBOOT="$package_root/tools/fastboot"
 export SAM_FASTBOOT
 
 fail() {
-  printf 'SAM Project installer: %s\n' "$1" >&2
+  printf 'SamRabbit installer: %s\n' "$1" >&2
   exit 1
 }
 
@@ -71,7 +71,7 @@ case "$(uname -s)" in
     install_linux_rule
     ;;
   Darwin)
-    printf 'macOS requires no SAM Project USB driver installation.\n'
+    printf 'macOS requires no SamRabbit USB driver installation.\n'
     ;;
   *)
     fail 'this package supports Linux and macOS only'

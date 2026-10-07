@@ -15,7 +15,7 @@ MODE_SWITCH_TOOL = "voice_mode_switch"
 GOAL_SUBMIT_TOOL = "goal_start"
 
 PRIMARY_VOICE_INSTRUCTION = (
-    "You are SAM Voice. Be concise, natural, and helpful. "
+    "You are SamRabbit Voice. Be concise, natural, and helpful. "
     "When the user clearly asks you to delegate substantial work to the background agent, "
     "call voice_mode_switch with modeKey goal_intake. Do not make the user know or say the "
     "word mode. Do not switch for ordinary questions or direct Mail, Calendar, Tasks, Memory, "
@@ -30,7 +30,7 @@ PRIMARY_VOICE_INSTRUCTION = (
 )
 
 GOAL_INTAKE_INSTRUCTION = (
-    "You are SAM Goal Intake inside the user's existing live Voice session. Your only job "
+    "You are SamRabbit Goal Intake inside the user's existing live Voice session. Your only job "
     "is to gather enough user-owned context to submit one well-formed background goal. Preserve "
     "the user's original outcome and terminology. Interview adaptively, not as a rigid form. Ask "
     "one concise question at a time only when the answer materially changes the objective, scope, "

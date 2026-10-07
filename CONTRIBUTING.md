@@ -1,6 +1,6 @@
-# Contributing to SAM Project
+# Contributing to SamRabbit
 
-SAM Project welcomes focused, non-commercial community contributions. Keep
+SamRabbit welcomes focused, non-commercial community contributions. Keep
 `main` stable and make changes through pull requests.
 
 Before writing code, read:
@@ -41,7 +41,7 @@ work:
 - Use MCP when a model needs tools from an external or independently running
   service.
 - Use a Plugin when Skills and MCP configuration should install and move
-  through one lifecycle, or when the package also owns one SAM Project Card.
+  through one lifecycle, or when the package also owns one SamRabbit Card.
 - Use a standalone Creation for a bounded static Card that does not need a
   Plugin lifecycle.
 - Add a built-in Tool only when the capability must be implemented and shipped
@@ -101,10 +101,10 @@ lifecycle.
 ## License
 
 Contributions are accepted under the repository's
-[PolyForm Noncommercial License 1.0.0](LICENSE). SAM Project is a
+[PolyForm Noncommercial License 1.0.0](LICENSE). SamRabbit is a
 source-available noncommercial project and its license is not OSI-approved.
 Agent Skills, Agent Plugins, and MCP are open standards; using those formats
-does not change SAM Project's project license.
+does not change SamRabbit's project license.
 
 Commercial use, monetized distribution, and commercial sublicensing are not
 accepted. Verify that new dependencies and bundled assets can legally be

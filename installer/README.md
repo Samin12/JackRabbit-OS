@@ -1,4 +1,4 @@
-# SAM Project Installer
+# SamRabbit Installer
 
 This directory contains the complete prompt-driven installer source and the
 metadata for the current image set. Downloadable releases contain the images
@@ -23,6 +23,6 @@ The installer verifies all 12 images before device access, detects or enters
 FASTBOOT, unlocks a locked bootloader with confirmation, flashes the complete
 fixed image route, erases userdata, selects slot A, and reboots.
 
-SAM Project is source-available only for noncommercial community use under the
+SamRabbit is source-available only for noncommercial community use under the
 repository's [PolyForm Noncommercial License 1.0.0](../LICENSE). Commercial use,
 commercial licensing, and monetized distribution are not permitted or offered.

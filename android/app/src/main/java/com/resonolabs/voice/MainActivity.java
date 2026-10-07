@@ -84,7 +84,7 @@ public final class MainActivity extends Activity {
     private void confirmRestart() {
         new AlertDialog.Builder(this)
                 .setTitle("Restart R1?")
-                .setMessage("SAM will restart and return to HOME.")
+                .setMessage("SamRabbit will restart and return to HOME.")
                 .setNegativeButton("Cancel", null)
                 .setPositiveButton("Restart", (ignored, which) -> {
                     PowerManager power = getSystemService(PowerManager.class);

@@ -139,13 +139,13 @@ async def _run_with_mcp(
             api_key=api_key,
             model=model,
             instructions=(
-                "You are the concise text assistant on a SAM R1. Use the device MCP tool "
+                "You are the concise text assistant on a SamRabbit. Use the device MCP tool "
                 "when the user asks about this device or its runtime. Never invent device state."
             ),
             input_text=user_input,
             base_url=base_url,
             reasoning_effort=reasoning_effort,
             max_turns=10,
-            agent_name="SAM R1",
+            agent_name="SamRabbit",
             mcp_server=mcp_server,
         )

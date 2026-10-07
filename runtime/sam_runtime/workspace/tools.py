@@ -18,7 +18,7 @@ def register_workspace_tools(catalog: ToolCatalog, durable: DurableWorkspace,
                              runs: RunWorkspaceRegistry) -> None:
     catalog.register(ToolDefinition(
         tool_id="builtin.workspace-list.v1", name="workspace_list",
-        description="List files published in the durable SAM workspace.",
+        description="List files published in the durable SamRabbit workspace.",
         input_schema={"type":"object","properties":{"directory":{"type":"string","enum":["inbox","documents","projects","generated","downloads","scratch"]}},"additionalProperties":False},
         handler=lambda args: _list(durable, args), audience_resource=WORKSPACE_TOOL_SET,
     ))

@@ -95,7 +95,7 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
                     }
                 },
                 () -> fail("event-invalid"));
-        setContentDescription("SAM Voice. Tap the center or press the side button to talk.");
+        setContentDescription("SamRabbit Voice. Tap the center or press the side button to talk.");
         setFocusable(true);
         setFocusableInTouchMode(true);
     }

@@ -56,7 +56,7 @@ pub fn run(
         }
         writeln!(
             output,
-            "SAM Project R1 setup                                      Step {} of {}\n{}\n\n{}\n\nDO THIS\n{}\n\nEXPECTED\n{}\n\nWARNING\n{}",
+            "SamRabbit R1 setup                                      Step {} of {}\n{}\n\n{}\n\nDO THIS\n{}\n\nEXPECTED\n{}\n\nWARNING\n{}",
             index + 1,
             steps.len(),
             detected_status(detected_unlocked),
@@ -154,7 +154,7 @@ mod tests {
             "Enable bootloader unlocking",
             "Back up the R1",
             "Prepare the hardware",
-            "Let SAM Project enter FASTBOOT",
+            "Let SamRabbit enter FASTBOOT",
         ]
         .iter()
         .map(|value| text.find(value).unwrap())
@@ -197,6 +197,6 @@ mod tests {
         assert!(text.contains("Bootloader FASTBOOT detected and unlocked"));
         assert!(text.contains("Back up the R1"));
         assert!(!text.contains("Prepare the hardware"));
-        assert!(!text.contains("Let SAM Project enter FASTBOOT"));
+        assert!(!text.contains("Let SamRabbit enter FASTBOOT"));
     }
 }

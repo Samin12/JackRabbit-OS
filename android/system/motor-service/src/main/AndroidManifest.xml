@@ -6,7 +6,7 @@
     </queries>
     <application
         android:allowBackup="false"
-        android:label="SAM R1 Hardware">
+        android:label="SamRabbit Hardware">
         <service
             android:name=".R1MotorService"
             android:directBootAware="true"

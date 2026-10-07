@@ -59,7 +59,7 @@ class CaldavCalendarProviderClient:
             calendar_home_url=calendar_home_url,
         )
         if not calendars:
-            raise ValueError("SAM Project could not discover any writable calendars for that Apple/CalDAV account.")
+            raise ValueError("SamRabbit could not discover any writable calendars for that Apple/CalDAV account.")
         return calendars
 
     def validate_calendar(self, *, credentials: CaldavCalendarCredentials) -> None:
@@ -226,7 +226,7 @@ class CaldavCalendarProviderClient:
                 return self._absolute_url(str(response.url), principal_href)
             if candidate == ICLOUD_CALDAV_PRINCIPAL_URL:
                 return candidate
-        raise ValueError("SAM Project could not discover the principal URL for that Apple/CalDAV account.")
+        raise ValueError("SamRabbit could not discover the principal URL for that Apple/CalDAV account.")
 
     def _discover_calendar_home_url(self, *, credentials: CaldavCalendarCredentials, principal_url: str) -> str:
         body = (
@@ -245,7 +245,7 @@ class CaldavCalendarProviderClient:
         response.raise_for_status()
         home_href = self._extract_first_href(response.text, f"{{{self._NS_CALDAV}}}calendar-home-set")
         if not home_href:
-            raise ValueError("SAM Project could not discover the calendar home for that Apple/CalDAV account.")
+            raise ValueError("SamRabbit could not discover the calendar home for that Apple/CalDAV account.")
         return self._absolute_url(str(response.url), home_href)
 
     def _discover_calendar_collection_urls(
@@ -441,7 +441,7 @@ class CaldavCalendarProviderClient:
         lines = [
             "BEGIN:VCALENDAR",
             "VERSION:2.0",
-            "PRODID:-//SAM Project//Calendar Runtime//EN",
+            "PRODID:-//SamRabbit//Calendar Runtime//EN",
             "CALSCALE:GREGORIAN",
             "BEGIN:VEVENT",
             f"UID:{uid}",

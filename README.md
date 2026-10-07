@@ -1,4 +1,4 @@
-# SAM Project
+# SamRabbit
 
 **A voice-first AI assistant for the Rabbit R1, with a floating orb UI.**
 
@@ -21,7 +21,7 @@
 
 ## What it is
 
-SAM Project replaces the R1's home screen with its own app:
+SamRabbit replaces the R1's home screen with its own app:
 
 - **Voice:** tap the orb or press the side button and talk. It works like ChatGPT Voice: live replies, a transcript, and mute, cancel, and end buttons.
 - **Cards:** swipe for Calendar, Tasks, and any Creations you install. Each card has its own colored orb.
@@ -58,7 +58,7 @@ The full walkthrough is in [installer/INSTALL.md](installer/INSTALL.md). If some
 
 ### 3. Put the stuff in
 
-1. **Install the SAM UI.** Build the APK (see [BUILDING.md](BUILDING.md)), then install it with USB connected:
+1. **Install the SamRabbit UI.** Build the APK (see [BUILDING.md](BUILDING.md)), then install it with USB connected:
    ```bash
    ./android/scripts/build_apk_docker.sh
    adb install -r android/app/build/outputs/apk/debug/app-debug.apk
@@ -72,7 +72,7 @@ The full walkthrough is in [installer/INSTALL.md](installer/INSTALL.md). If some
 
 ## Using an orchestrator
 
-SAM Project is meant to be driven by a coding agent such as **T3 Code** or **Hermes Agent**. Open this repo in the agent and plug the R1 in over USB (ADB). The agent can then build and install new UI, take screenshots, and add Skills and MCP connections for you. [llm.md](llm.md) gives the agent the context it needs to work on the project safely.
+SamRabbit is meant to be driven by a coding agent such as **T3 Code** or **Hermes Agent**. Open this repo in the agent and plug the R1 in over USB (ADB). The agent can then build and install new UI, take screenshots, and add Skills and MCP connections for you. [llm.md](llm.md) gives the agent the context it needs to work on the project safely.
 
 ## More docs
 
@@ -91,4 +91,4 @@ SAM Project is meant to be driven by a coding agent such as **T3 Code** or **Her
 
 ## License
 
-Noncommercial use only, under the [PolyForm Noncommercial License 1.0.0](LICENSE). See [LICENSE](LICENSE) for the full terms and required notices. SAM Project is not affiliated with, endorsed by, or sponsored by rabbit inc.
+Noncommercial use only, under the [PolyForm Noncommercial License 1.0.0](LICENSE). See [LICENSE](LICENSE) for the full terms and required notices. SamRabbit is not affiliated with, endorsed by, or sponsored by rabbit inc.

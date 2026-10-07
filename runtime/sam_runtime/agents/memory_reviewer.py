@@ -222,7 +222,7 @@ def _summarizer_instructions() -> str:
         "Use identity only for explicit stable identity; personal for durable user preferences; "
         "relationship for explicit people or organization roles; environment for stable user setup; "
         "project for durable project scope and terminology; device for durable device configuration; "
-        "platform only for owner-accepted SAM decisions and constraints. "
+        "platform only for owner-accepted SamRabbit decisions and constraints. "
         "Do not store live status owned by tools, Mail/Calendar/Tasks records, source files, temporary "
         "plans, greetings, one-time requests, assistant recommendations, or unsupported inference. "
         "Use reconciliationIntent create, confirm, correct, or conflict. Do not resolve ambiguity. "
@@ -416,7 +416,7 @@ def _run_review_with_agents_sdk(
         base_url=base_url,
         reasoning_effort=reasoning_effort,
         max_turns=4,
-        agent_name="SAM R1 Memory Review",
+        agent_name="SamRabbit Memory Review",
         output_type=SessionMemoryReviewOutput,
     )
     if isinstance(result, SessionMemoryReviewOutput):

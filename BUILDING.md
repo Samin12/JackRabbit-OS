@@ -1,6 +1,6 @@
-# Build the SAM Project APK
+# Build the SamRabbit APK
 
-SAM Project is built as one Android APK containing the native Rabbit R1 interface, the embedded Python runtime, and the local management website.
+SamRabbit is built as one Android APK containing the native Rabbit R1 interface, the embedded Python runtime, and the local management website.
 
 ## Source directories
 

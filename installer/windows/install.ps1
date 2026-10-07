@@ -5,7 +5,7 @@ $Release = [System.IO.Path]::GetFullPath((Join-Path $PackageRoot "..\..\release"
 $env:SAM_FASTBOOT = Join-Path $PackageRoot "tools\fastboot.exe"
 $DriverSetup = Join-Path $PackageRoot "install-drivers.ps1"
 
-Write-Host "SAM Project guided Windows installer" -ForegroundColor Cyan
+Write-Host "SamRabbit guided Windows installer" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "Windows may need one-time R1 USB driver setup before flashing."
 $SkipDrivers = $false
