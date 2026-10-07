@@ -15,11 +15,11 @@ import android.graphics.RectF;
  * {@link #refresh} must never block the UI thread: use the runtime clients' workers and call
  * {@link BoardHost#widgetChanged} from the main-thread callback.
  *
- * <p>Wave 2 plugs in a "t3" widget (working / needs-you threads) and a "live" widget (GenUI
- * pinned/live cards) by implementing this interface; see the TODO(wave2:*) hooks in CardsPageView.
+ * <p>Wave 2 widgets: "t3" (needs-you / working threads), "live" (GenUI live, pinned and recent
+ * cards) and "journal" (Heptabase journal status and a Note button).
  */
 public interface BoardWidget {
-    /** Stable id: "clock", "agenda", "tasks", "creations"; wave 2: "t3", "live". */
+    /** Stable id: "clock", "agenda", "t3", "tasks", "live", "journal", "creations". */
     String id();
 
     /** Lays out for {@code width} logical px at {@code nowMs}; returns the height (0 hides the widget). */
@@ -33,6 +33,9 @@ public interface BoardWidget {
 
     /** Writes the local bounds of focus row {@code index} into {@code out}. */
     void focusBounds(int index, RectF out);
+
+    /** Corner radius of the focus / pressed highlight for row {@code index}. */
+    default float focusRadius(int index) { return 20f; }
 
     /** Touch tap at local coordinates; true when handled. */
     boolean onTap(float x, float y);
@@ -54,6 +57,19 @@ public interface BoardWidget {
 
     /** True while the widget runs a short animation and needs another frame. */
     default boolean animating(long nowMs) { return false; }
+
+    /**
+     * While the widget is on screen: how soon it needs to be redrawn without a data change, in
+     * ms (a ticking timer, a spinning "working" orb), or -1 for never. Cheaper than
+     * {@link #animating}, which redraws every vsync. Allocation-free; called after {@link #draw}.
+     */
+    default long redrawDelayMs(long nowMs) { return -1L; }
+
+    /**
+     * Stable identity of focus row {@code index} (e.g. a thread or card id), or null. When a
+     * refresh reorders rows, the board keeps the wheel focus on the row with the same key.
+     */
+    default String focusKey(int index) { return null; }
 
     default void close() {}
 }

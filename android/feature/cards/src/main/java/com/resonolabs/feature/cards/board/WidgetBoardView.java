@@ -32,6 +32,9 @@ import java.util.List;
  *       view; PREVIOUS past the first row returns to the top. ACTIVATE acts on the focused row.</li>
  *   <li>Each widget's {@link BoardWidget#refreshIntervalMs()} cadence runs while the board is shown;
  *       time-dependent text is re-measured on each minute boundary.</li>
+ *   <li>On-screen widgets may ask for a delayed redraw ({@link BoardWidget#redrawDelayMs}): one
+ *       coalesced callback, so a ticking timer costs one frame per second, not one per vsync.</li>
+ *   <li>Wheel focus follows a row's {@link BoardWidget#focusKey} when a refresh reorders rows.</li>
  *   <li>onDraw does not allocate: shaders are cached, text is prepared in measure.</li>
  * </ul>
  */
@@ -77,6 +80,7 @@ public final class WidgetBoardView extends View {
     private boolean tapCandidate;
     private boolean disallowed;
     private long lastScrollAt;
+    private final Runnable frame = this::invalidate;
 
     private final Runnable minuteTick = new Runnable() {
         @Override public void run() {
@@ -93,7 +97,7 @@ public final class WidgetBoardView extends View {
         // whose framework focus highlight washes the whole screen grey; the board draws its own focus.
         setFocusableInTouchMode(true);
         setDefaultFocusHighlightEnabled(false);
-        setContentDescription("Widgets: up next, tasks and creations");
+        setContentDescription("Widgets: up next, T3 threads, tasks, live cards, journal and creations");
         scroller = new OverScroller(context, new DecelerateInterpolator(1.6f));
         touchSlopPx = ViewConfiguration.get(context).getScaledTouchSlop();
         backdrop = new LinearGradient(0f, 0f, 0f, H, SamTheme.BACKGROUND_TOP, SamTheme.BACKGROUND, Shader.TileMode.CLAMP);
@@ -187,6 +191,8 @@ public final class WidgetBoardView extends View {
 
     private void relayout() {
         long now = System.currentTimeMillis();
+        String focusKey = focusWidget >= 0 && focusWidget < widgets.size() && focusRow >= 0
+                && focusRow < widgets.get(focusWidget).focusCount() ? widgets.get(focusWidget).focusKey(focusRow) : null;
         int anchor = -1;
         float anchorOffset = 0f;
         if (scrollY > 0f) {
@@ -206,6 +212,12 @@ public final class WidgetBoardView extends View {
         maxScroll = Math.max(0f, content - H);
         if (anchor >= 0) scrollY = tops[anchor] + anchorOffset;
         scrollY = clamp(scrollY);
+        if (focusKey != null && focusWidget < widgets.size()) {
+            BoardWidget widget = widgets.get(focusWidget);
+            for (int row = 0; row < widget.focusCount(); row++) {
+                if (focusKey.equals(widget.focusKey(row))) { focusRow = row; break; }
+            }
+        }
         if (focusWidget >= 0 && (focusWidget >= widgets.size() || focusRow >= widgets.get(focusWidget).focusCount())) {
             clearFocus(false);
         }
@@ -237,6 +249,7 @@ public final class WidgetBoardView extends View {
         paint.setShader(null);
 
         boolean animating = false;
+        long redraw = -1L;
         for (int i = 0; i < widgets.size(); i++) {
             float top = tops[i] - scrollY;
             float height = heights[i];
@@ -249,6 +262,8 @@ public final class WidgetBoardView extends View {
             else if (i == focusWidget && focusRow >= 0) highlight(canvas, widget, focusRow, true);
             canvas.restore();
             animating |= widget.animating(now);
+            long delay = widget.redrawDelayMs(now);
+            if (delay >= 0L && (redraw < 0L || delay < redraw)) redraw = delay;
         }
 
         // Cover the chrome band so scrolled content never shows behind the tabs.
@@ -262,21 +277,28 @@ public final class WidgetBoardView extends View {
         paint.setShader(null);
         boolean indicator = drawScrollIndicator(canvas, now);
         canvas.restore();
-        if (scrolling || animating || indicator) postInvalidateOnAnimation();
+        if (scrolling || animating || indicator) {
+            handler.removeCallbacks(frame);
+            postInvalidateOnAnimation();
+        } else if (redraw >= 0L && started) {
+            handler.removeCallbacks(frame);
+            handler.postDelayed(frame, Math.max(16L, redraw));
+        }
     }
 
     private void highlight(Canvas canvas, BoardWidget widget, int row, boolean focus) {
         if (row >= widget.focusCount()) return;
         widget.focusBounds(row, rect);
+        float radius = widget.focusRadius(row);
         paint.setShader(null);
         paint.setStyle(Paint.Style.FILL);
         paint.setColor(SamTheme.withAlpha(SamTheme.INK, focus ? 16 : 26));
-        canvas.drawRoundRect(rect, 20f, 20f, paint);
+        canvas.drawRoundRect(rect, radius, radius, paint);
         if (focus) {
             paint.setStyle(Paint.Style.STROKE);
             paint.setStrokeWidth(2f);
             paint.setColor(SamTheme.withAlpha(SamTheme.ORB_PALE, 165));
-            canvas.drawRoundRect(rect, 20f, 20f, paint);
+            canvas.drawRoundRect(rect, radius, radius, paint);
             paint.setStyle(Paint.Style.FILL);
         }
     }
