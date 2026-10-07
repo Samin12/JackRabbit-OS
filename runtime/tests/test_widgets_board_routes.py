@@ -132,6 +132,44 @@ class CalendarUpcomingStateTest(unittest.TestCase):
         self.assertEqual("Work", payload["events"][0]["calendar"])
 
 
+class AllDayGraceTest(unittest.TestCase):
+    """All-day events are UTC midnight of a floating date; New York evenings must still see today's."""
+
+    def setUp(self) -> None:
+        self.temp = TemporaryDirectory()
+        database = RuntimeDatabase(Path(self.temp.name) / "runtime.sqlite3")
+        database.migrate()
+        self.repository = CalendarRepository(database)
+        account = self.repository.create_account(CalendarAccountConfiguration(
+            str(uuid4()), "ics_subscription", "Family", "https://example.com/family.ics", None), None)
+        self.account_id = account.configuration.account_id
+        stamp = datetime(2026, 10, 7, tzinfo=UTC).isoformat()
+        self.repository.replace_account_events(self.account_id, (
+            CalendarEvent(str(uuid4()), self.account_id, "birthday", "", "Birthday",
+                          "2026-10-07T00:00:00+00:00", "2026-10-08T00:00:00+00:00", "UTC", True, None,
+                          "Family", None, None, "confirmed", False, None, stamp),
+            CalendarEvent(str(uuid4()), self.account_id, "dinner", "", "Dinner",
+                          "2026-10-07T22:00:00+00:00", "2026-10-07T23:30:00+00:00", "UTC", False, None,
+                          "Family", None, None, "confirmed", False, None, stamp),
+        ))
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def titles(self, now: str, grace: int) -> list[str]:
+        return [item.title for item in self.repository.upcoming_events(now, all_day_grace_hours=grace)]
+
+    def test_device_projection_keeps_todays_all_day_event_through_the_local_evening(self) -> None:
+        nine_pm_new_york = "2026-10-08T01:00:00+00:00"
+        self.assertEqual([], self.titles(nine_pm_new_york, 0))  # previous behaviour: gone at 8 PM local
+        self.assertEqual(["Birthday"], self.titles(nine_pm_new_york, 14))
+        self.assertEqual([], self.titles("2026-10-08T14:00:01+00:00", 14))
+
+    def test_timed_events_are_unaffected_by_the_grace(self) -> None:
+        self.assertEqual(["Birthday", "Dinner"], self.titles("2026-10-07T21:00:00+00:00", 14))
+        self.assertEqual(["Birthday"], self.titles("2026-10-07T23:31:00+00:00", 14))
+
+
 class _Request:
     def __init__(self, path: str, *, body: bytes = b"") -> None:
         self.path = path
