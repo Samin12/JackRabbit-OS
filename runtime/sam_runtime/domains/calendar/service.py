@@ -144,7 +144,10 @@ class CalendarService:
     def _store(self, account: CalendarAccount, values: list[IcsCalendarEvent]) -> None:
         now = datetime.now(UTC).isoformat()
         editable = account.configuration.provider_type == "caldav" and (account.capabilities.can_update or account.capabilities.can_delete)
-        events = tuple(CalendarEvent(str(uuid5(NAMESPACE_URL, f"calendar:{account.configuration.account_id}:{item.provider_event_id}:{item.recurrence_id}")), account.configuration.account_id, item.provider_event_id, item.recurrence_id, item.title, item.starts_at.astimezone(UTC).isoformat(), item.ends_at.astimezone(UTC).isoformat() if item.ends_at else None, "UTC", item.all_day, item.location, item.calendar_label or account.configuration.label, item.organizer, item.description, item.status, editable, None, now) for item in values)
+        # One occurrence of a repeating event (expanded or overridden) shares the series UID, and
+        # CalDAV updates and deletes act on the whole resource: editing "tomorrow's" occurrence would
+        # rewrite or delete every occurrence. Occurrences stay read-only.
+        events = tuple(CalendarEvent(str(uuid5(NAMESPACE_URL, f"calendar:{account.configuration.account_id}:{item.provider_event_id}:{item.recurrence_id}")), account.configuration.account_id, item.provider_event_id, item.recurrence_id, item.title, item.starts_at.astimezone(UTC).isoformat(), item.ends_at.astimezone(UTC).isoformat() if item.ends_at else None, "UTC", item.all_day, item.location, item.calendar_label or account.configuration.label, item.organizer, item.description, item.status, editable and not item.recurrence_id, None, now) for item in values)
         self._repository.replace_account_events(account.configuration.account_id, events)
 
     def _credential_value(self, account_id: str) -> dict[str, object]:
