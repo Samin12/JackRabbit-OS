@@ -392,7 +392,7 @@ class JournalHarness:
 
     def __init__(self, *, clock: FakeClock | None = None,
                  connections: object | None = None, timeout: float = 3.0,
-                 transport: HttpTransport | None = None) -> None:
+                 transport: HttpTransport | None = None, bridge_transport: HttpTransport | None = None) -> None:
         self.directory = tempfile.TemporaryDirectory()
         self.database = RuntimeDatabase(Path(self.directory.name) / "runtime.sqlite3")
         self.database.migrate()
@@ -405,7 +405,7 @@ class JournalHarness:
             database=self.database, credentials=self.credentials,
             envelopes=ConnectionCredentialEnvelopes(self.bridge), sessions=self.sessions, connections=connections,
             endpoints=self.fake.endpoints, transport=transport or HttpTransport(timeout=timeout), clock=self.clock,
-            deliver_timeout=3.0,
+            deliver_timeout=3.0, bridge_transport=bridge_transport,
         )
 
     def connect(self, redirect: str = "loopback", origin: str | None = None) -> dict[str, object]:

@@ -62,6 +62,10 @@ final class ManagementRuntimeProxy {
             "/v1/management/heptabase/disconnect",
             "/v1/management/heptabase/retry",
             "/v1/management/heptabase/oauth/import",
+            "/v1/management/heptabase/bridge",
+            "/v1/management/heptabase/bridge/check",
+            "/v1/management/heptabase/bridge/disconnect",
+            "/v1/management/heptabase/test-entry",
             // OAuth redirect target: authenticated by its single-use state, not by a session.
             "/v1/heptabase/oauth/callback");
     /** Routes that receive the request query string (everything else is forwarded path-only). */
@@ -149,6 +153,12 @@ final class ManagementRuntimeProxy {
         if (path.equals("/v1/management/heptabase/connect/start")
                 || path.equals("/v1/management/heptabase/disconnect")
                 || path.equals("/v1/management/heptabase/oauth/import")) return 30_000;
+        // Mac bridge: /health runs the Heptabase CLI on the Mac (R1 waits up to 15 s); the test
+        // entry waits up to 5 s for delivery.
+        if (path.equals("/v1/management/heptabase/bridge")
+                || path.equals("/v1/management/heptabase/bridge/check")) return 25_000;
+        if (path.equals("/v1/management/heptabase/test-entry")) return 15_000;
+        if (path.equals("/v1/management/heptabase/bridge/disconnect")) return 8_000;
         if (path.endsWith("/finalize")) return 65_000;
         if (path.equals("/v1/management/memory/reindex")) return 35_000;
         if (path.equals("/v1/management/t3/connect")) return 20_000;

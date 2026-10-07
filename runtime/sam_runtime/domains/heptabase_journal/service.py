@@ -17,10 +17,12 @@ from sam_runtime.storage.database import RuntimeDatabase
 from sam_runtime.tools.definitions import ToolInvocationContext
 
 from .activity import activity_lines
+from .bridge import BridgeStore, MacBridgeClient, normalize_bridge_url, valid_bridge_token
 from .client import HeptabaseMcpClient, HttpTransport
 from .errors import AuthorizationError, HeptabaseError, NotConnected, ReconnectRequired, ToolFailure
 from .format import (SessionLine, clean_words, fingerprint, journal_contains, journal_plain_text,
-                     match_key, render_note, render_session, scrub_secrets, session_header, unescape_markdown)
+                     match_key, render_activity, render_note, render_session, scrub_secrets, session_header,
+                     unescape_markdown)
 from .localtime import (DEFAULT_TIMEZONE, UnknownTimezone, clock_label, iso_utc, journal_date, parse_iso_epoch,
                         resolve_zone, zone_source)
 from .oauth import (DEVICE_CALLBACK_PATH, HEPTABASE_CONNECTION_ID, LOOPBACK_REDIRECT_URI, HeptabaseEndpoints,
@@ -41,6 +43,9 @@ READ_LIMIT_BYTES = 4096
 _PAUSE_RETENTION_SECONDS = 86400
 _PURGE_INTERVAL_SECONDS = 3600
 _UNKNOWN_TOOL_FAILURE_LIMIT = 5
+MAC = "mac"
+OAUTH = "oauth"
+TEST_LINES = {MAC: "R1 journal connected through the Mac", OAUTH: "R1 journal connected"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +65,7 @@ class HeptabaseJournalService:
         connections: object | None = None,
         endpoints: HeptabaseEndpoints = HeptabaseEndpoints(),
         transport: HttpTransport | None = None,
+        bridge_transport: HttpTransport | None = None,
         clock: Callable[[], float] = time.time,
         deliver_timeout: float = 5.0,
         idle_seconds: float = 15.0,
@@ -80,6 +86,9 @@ class HeptabaseJournalService:
             on_reconnect_required=self._on_reconnect_required,
         )
         self._mcp = HeptabaseMcpClient(self._transport, endpoints.mcp, self._oauth)
+        # Preferred transport when configured: the Heptabase CLI on the user's Mac.
+        self._bridge_store = BridgeStore(database, credentials, envelopes)
+        self._bridge = MacBridgeClient(self._bridge_store, bridge_transport, clock=clock)
         self._worker = JournalWorker(self._step, idle_seconds=idle_seconds)
         self._send_lock = threading.Lock()
         self._solo: set[str] = set()
@@ -106,11 +115,29 @@ class HeptabaseJournalService:
     # ------------------------------------------------------------------ state views
 
     def connected(self) -> bool:
-        """A grant exists (possibly needing reconnect: notes still queue)."""
+        """The Mac bridge is configured, or a grant exists (possibly needing reconnect: notes still queue)."""
+        return self.mode() is not None
+
+    def bridge_active(self) -> bool:
         try:
-            return self._settings.state().has_grant
+            return self._bridge_store.config() is not None
         except sqlite3.Error:
             return False
+
+    def mode(self) -> str | None:
+        """``"mac"`` (Heptabase CLI through the Mac bridge, preferred), ``"oauth"``, or None."""
+        if self.bridge_active():
+            return MAC
+        try:
+            return OAUTH if self._settings.state().has_grant else None
+        except sqlite3.Error:
+            return None
+
+    def _deliverable(self) -> bool:
+        return self.bridge_active() or self._settings.state().state == CONNECTED
+
+    def _journal(self) -> HeptabaseMcpClient | MacBridgeClient:
+        return self._bridge if self.bridge_active() else self._mcp
 
     def settings(self) -> JournalSettings:
         return self._settings.settings()
@@ -125,13 +152,15 @@ class HeptabaseJournalService:
         counts = self._outbox.counts()
         today = journal_date(self._clock(), self._zone(settings))
         day = self._outbox.counts_for_date(today)
+        mode = self.mode()
         return {
-            "connected": state.has_grant,
+            "connected": mode is not None,
+            "mode": mode,
             "autoSessions": settings.auto_sessions,
             "pending": counts["pending"] + counts["sending"] + counts["uncertain"] + counts["held"],
             "failed": counts["failed"],
             "lastSentAt": state.last_sent_at,
-            "needsReconnect": state.state == RECONNECT_REQUIRED,
+            "needsReconnect": mode == OAUTH and state.state == RECONNECT_REQUIRED,
             # Additive (wave 2, Cards board): today's entries in the user's journal timezone.
             "today": {
                 "date": today,
@@ -146,10 +175,12 @@ class HeptabaseJournalService:
         settings = self._settings.settings()
         counts = self._outbox.counts()
         waiting = counts["pending"] + counts["sending"] + counts["uncertain"]
+        mode = self.mode()
         return {
-            "connected": state.has_grant,
-            "state": state.state,
-            "needsReconnect": state.state == RECONNECT_REQUIRED,
+            "connected": mode is not None,
+            "mode": mode,
+            "state": CONNECTED if mode == MAC else state.state,
+            "needsReconnect": mode == OAUTH and state.state == RECONNECT_REQUIRED,
             "scope": state.scope,
             "writeVerified": state.write_verified,
             "refreshAvailable": state.refresh_available,
@@ -163,12 +194,121 @@ class HeptabaseJournalService:
                 "held": counts["held"],
                 "failed": counts["failed"],
                 "sent": counts["sent"],
-                "paused": state.state != CONNECTED and waiting > 0,
+                "paused": not self._deliverable() and waiting > 0,
             },
             "settings": settings.view(),
             "timezoneSource": zone_source(settings.timezone),
             "loopbackRedirectUri": LOOPBACK_REDIRECT_URI,
+            "bridge": self._bridge_view(),
+            "oauth": {"connected": state.has_grant, "state": state.state},
         }
+
+    def _bridge_view(self) -> dict[str, object]:
+        config = self._bridge_store.config()
+        if config is None:
+            return {"configured": False, "url": None}
+        status = self._bridge_store.status()
+        return {
+            "configured": True,
+            "url": config.url,
+            "configuredAt": config.configured_at,
+            "reachable": status.get("reachable"),
+            "appReachable": status.get("appReachable"),
+            "cliVersion": status.get("cliVersion"),
+            "lastOkAt": status.get("lastOkAt"),
+            "lastError": status.get("lastError"),
+            "checkedAt": status.get("checkedAt"),
+        }
+
+    # ------------------------------------------------------------------ Mac bridge
+
+    def configure_bridge(self, bridge_url: object, token: object) -> dict[str, object]:
+        """Validate a Mac bridge (``/health`` with that token), seal the token, prefer the bridge."""
+        url = normalize_bridge_url(bridge_url)
+        secret = valid_bridge_token(token)
+        health = self._probe_bridge(url, secret)
+        self._bridge_store.save(url, secret)
+        self._record_health(health)
+        self._register_connection("ready", None)
+        self._outbox.expedite()
+        self._worker.wake()
+        _LOG.info("heptabase.bridge.configured", extra={"appReachable": self._bridge_store.status().get("appReachable")})
+        return self.management_view()
+
+    def check_bridge(self) -> dict[str, object]:
+        config = self._bridge_store.config()
+        if config is None:
+            raise AuthorizationError("bridge_not_configured", "The Mac bridge is not connected.", status=409)
+        token = self._bridge_store.token(config.url)
+        if token is None:
+            raise AuthorizationError("bridge_token_unavailable",
+                                     "The R1 cannot read its Mac bridge token. Connect the Mac bridge again.",
+                                     status=409)
+        try:
+            health = self._bridge.health(config.url, token)
+        except HeptabaseError as error:
+            reachable = error.code != "bridge_unreachable"
+            self._bridge_store.record_status(force=True, reachable=reachable, lastError=error.code)
+            return self.management_view()
+        self._record_health(health, force=True)
+        if self._bridge_store.status().get("appReachable"):
+            self._outbox.expedite()
+            self._worker.wake()
+        return self.management_view()
+
+    def disconnect_bridge(self) -> dict[str, object]:
+        """Forget the bridge (queued entries stay); the OAuth grant, if any, takes over."""
+        self._bridge_store.clear()
+        self._sync_connection_row()
+        self._worker.wake()
+        _LOG.info("heptabase.bridge.disconnected")
+        return self.management_view()
+
+    def _probe_bridge(self, url: str, token: str) -> dict[str, object]:
+        try:
+            return self._bridge.health(url, token)
+        except HeptabaseError as error:
+            if error.code == "bridge_unauthorized":
+                raise AuthorizationError("bridge_unauthorized",
+                                         "The Mac bridge rejected that token. Copy it again from "
+                                         "~/.config/samrabbit/bridge-token on the Mac.") from None
+            if error.code == "not_a_bridge":
+                raise AuthorizationError("not_a_bridge", str(error)) from None
+            raise AuthorizationError("bridge_unreachable",
+                                     "The R1 could not reach the Mac bridge at that address. Check that install.sh "
+                                     "ran on the Mac and both are on the same network.", status=502) from None
+
+    def _record_health(self, health: dict[str, object], *, force: bool = False) -> None:
+        cli = health.get("cli") if isinstance(health.get("cli"), dict) else {}
+        app = health.get("app") if isinstance(health.get("app"), dict) else {}
+        reachable = app.get("reachable") is True
+        version = cli.get("version")
+        detail = app.get("detail")
+        self._bridge_store.record_status(
+            force=force, reachable=True, appReachable=reachable,
+            cliVersion=str(version)[:32] if isinstance(version, str) else None,
+            lastError=None if reachable else (str(detail)[:64] if detail else "heptabase_app_unavailable"),
+        )
+
+    def write_test_entry(self) -> dict[str, object]:
+        """One fixed, factual activity line for today, at most once per day and transport."""
+        mode = self.mode()
+        if mode is None:
+            raise NotConnected()
+        text = TEST_LINES[mode]
+        zone = self._zone()
+        now = self._clock()
+        day = journal_date(now, zone)
+        rendered = render_activity(clock_label(now, zone), text)
+        entry, created = self._outbox.enqueue(NewEntry(
+            journal_date=day, kind="activity", content=rendered.content, plain_content=rendered.plain_content,
+            fingerprint=fingerprint(rendered.plain_content), event_at=now, source_ref=f"test:{day}:{mode}",
+        ))
+        self._worker.wake()
+        _LOG.info("heptabase.test_entry.queued", extra={"newEntry": created, "mode": mode})
+        state = self._await_delivery(entry.entry_id) if created else self._public_state(entry.entry_id)
+        return {"recorded": True, "state": state, "date": entry.journal_date, "entryId": entry.entry_id,
+                "text": text, "mode": mode, "duplicate": not created}
 
     # ------------------------------------------------------------------ OAuth
 
@@ -237,7 +377,7 @@ class HeptabaseJournalService:
         self._oauth.revoke()
         self._oauth.forget()
         self._settings.set_disconnected()
-        self._unregister_connection()
+        self._sync_connection_row()
         _LOG.info("heptabase.disconnected")
         return self.management_view()
 
@@ -277,18 +417,30 @@ class HeptabaseJournalService:
                                                        "refresh": bool(record.get("refresh_token"))})
 
     def _on_reconnect_required(self, detail: str) -> None:
-        self._register_connection("failed", detail)
+        if not self.bridge_active():  # the bridge keeps journaling; the grant is only a fallback
+            self._register_connection("failed", detail)
 
     def _ensure_paused(self, error: Exception) -> None:
         """Every refusal of the grant must flip the connection gate, or the worker would retry hot."""
         if self._settings.state().state == CONNECTED:
             self._oauth.mark_reconnect_required(str(error) or "Reconnect Heptabase to keep journaling.")
 
+    def _sync_connection_row(self) -> None:
+        mode = self.mode()
+        if mode == MAC:
+            self._register_connection("ready", None)
+        elif mode == OAUTH:
+            state = self._settings.state()
+            self._register_connection("ready" if state.state == CONNECTED else "failed", state.last_error)
+        else:
+            self._unregister_connection()
+
     def _register_connection(self, health: str, detail: str | None) -> None:
         if self._connections is None:
             return
+        label = "Heptabase journal (Mac)" if self.bridge_active() else "Heptabase journal"
         try:
-            self._connections.save(connection_id=HEPTABASE_CONNECTION_ID, kind="heptabase", label="Heptabase journal",
+            self._connections.save(connection_id=HEPTABASE_CONNECTION_ID, kind="heptabase", label=label,
                                    enabled=True, health_state=health, health_detail=detail,
                                    source_owner="heptabase_journal")
         except sqlite3.Error:
@@ -337,6 +489,7 @@ class HeptabaseJournalService:
         ))
         if created:
             _LOG.info("heptabase.note.queued", extra={"date": entry.journal_date})
+            self._outbox.expedite(entry.journal_date)  # the user is active: retry a stalled day now
         self._worker.wake()
         state = self._await_delivery(entry.entry_id) if wait else self._public_state(entry.entry_id)
         return {"recorded": True, "state": state, "date": entry.journal_date, "entryId": entry.entry_id}
@@ -399,12 +552,15 @@ class HeptabaseJournalService:
             raise NotConnected()
         zone = self._zone()
         target = _resolve_day(day, self._clock(), zone)
-        try:
-            raw = self._mcp.read_journal_range(target, target)
-        except ReconnectRequired as error:
-            self._ensure_paused(error)
-            raise
-        text = unescape_markdown(journal_plain_text(raw))
+        if self.bridge_active():
+            text = str(self._bridge.read_day(target)["text"])  # already plain text from the Mac
+        else:
+            try:
+                raw = self._mcp.read_journal_range(target, target)
+            except ReconnectRequired as error:
+                self._ensure_paused(error)
+                raise
+            text = unescape_markdown(journal_plain_text(raw))
         text = "\n".join(line.rstrip() for line in text.splitlines() if line.strip())
         text = scrub_secrets(_strip_tags(text))
         encoded = text.encode("utf-8")
@@ -569,7 +725,7 @@ class HeptabaseJournalService:
     # ------------------------------------------------------------------ delivery
 
     def _await_delivery(self, entry_id: str) -> str:
-        if self._settings.state().state != CONNECTED:
+        if not self._deliverable():
             return "queued"
 
         def settled() -> bool:
@@ -591,7 +747,7 @@ class HeptabaseJournalService:
             if now - self._last_purge > _PURGE_INTERVAL_SECONDS:
                 self._last_purge = now
                 self._outbox.purge()
-            if self._settings.state().state != CONNECTED:
+            if not self._deliverable():
                 return False
             work = next_work(self._outbox.queue(), iso_utc(now), self._solo)
             if work is None:
@@ -610,7 +766,7 @@ class HeptabaseJournalService:
         self._outbox.mark_sending(ids)
         now = self._clock()
         try:
-            self._mcp.append_to_journal(work.journal_date, content)
+            self._journal().append_to_journal(work.journal_date, content)
         except (ReconnectRequired, NotConnected) as error:
             # Not written. Keep the entries; the connection gate pauses delivery.
             self._outbox.mark_retry(ids, error.code, now)
@@ -668,7 +824,7 @@ class HeptabaseJournalService:
         attempts = max(entry.attempts for entry in work.entries)
         now = self._clock()
         try:
-            journal = self._mcp.read_journal_range(work.journal_date, work.journal_date)
+            journal = self._journal().read_journal_range(work.journal_date, work.journal_date)
         except (ReconnectRequired, NotConnected) as error:
             self._outbox.mark_uncertain(ids, error.code, now)
             self._ensure_paused(error)

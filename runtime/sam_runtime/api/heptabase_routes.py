@@ -1,7 +1,9 @@
 """Heptabase journal routes.
 
 * Device (bearer only, never proxied to the LAN): ``/v1/journal/status``, ``/v1/journal/notes``.
-* Management (paired browser session + CSRF): ``/v1/management/heptabase[...]``.
+* Management (paired browser session + CSRF): ``/v1/management/heptabase[...]``, including the
+  Mac bridge (``/bridge``, ``/bridge/check``, ``/bridge/disconnect``) and ``/test-entry``, which writes
+  one fixed factual line ("R1 journal connected through the Mac") to verify the path end to end.
 * OAuth callback ``/v1/heptabase/oauth/callback`` (GET query or POST JSON): authenticated
   by the single-use ``state`` alone, because the SameSite=Strict session cookie is not
   sent on the cross-site redirect back from Heptabase. It is proxied by :8443.
@@ -107,11 +109,25 @@ class HeptabaseRoutes:
                 result = self._service.retry_failed()
             elif path == _BASE + "/oauth/import":
                 result = self._service.import_tokens(payload)
+            elif path == _BASE + "/bridge":
+                unknown = sorted(set(payload) - {"bridgeUrl", "token"})
+                if unknown:
+                    raise ValueError(f"Unknown field: {unknown[0]}.")
+                result = self._service.configure_bridge(payload.get("bridgeUrl"), payload.get("token"))
+            elif path == _BASE + "/bridge/check":
+                result = self._service.check_bridge()
+            elif path == _BASE + "/bridge/disconnect":
+                result = self._service.disconnect_bridge()
+            elif path == _BASE + "/test-entry":
+                result = self._service.write_test_entry()
             else:
                 _error(request, 404, "not_found", "Not found.")
                 return True
         except AuthorizationError as error:
             _error(request, error.status or 400, error.code, str(error))
+            return True
+        except NotConnected as error:
+            _error(request, 409, error.code, str(error))
             return True
         except HeptabaseError as error:
             _error(request, 502, error.code, str(error))
