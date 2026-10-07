@@ -251,13 +251,18 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
         sessionState.connecting();
         invalidate();
         runtimeClient = new RuntimeVoiceClient();
+        // Peer callbacks are posted to the UI thread. One still queued when stopSession()/fail()
+        // closes this peer must not revive the page: a late response.created/response.done would
+        // flip IDLE back to RESPONDING/LIVE with no peer, and the next toggle would only "stop".
+        final NativeVoicePeer[] self = new NativeVoicePeer[1];
         peer = new NativeVoicePeer(activity, new NativeVoicePeer.Listener() {
             @Override public void onOffer(String sdp) {
-                activity.runOnUiThread(() -> requestAnswer(sdp));
+                activity.runOnUiThread(() -> { if (peer == self[0]) requestAnswer(sdp); });
             }
 
             @Override public void onLive() {
                 activity.runOnUiThread(() -> {
+                    if (peer != self[0]) return;
                     sessionState.live();
                     transcript = "I’m listening";
                     if (pendingConnectGreeting != null && peer != null) {
@@ -270,13 +275,14 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
             }
 
             @Override public void onRealtimeEvent(String json) {
-                activity.runOnUiThread(() -> handleRealtimeEvent(json));
+                activity.runOnUiThread(() -> { if (peer == self[0]) handleRealtimeEvent(json); });
             }
 
             @Override public void onFailure(String reason) {
-                activity.runOnUiThread(() -> fail(reason));
+                activity.runOnUiThread(() -> { if (peer == self[0]) fail(reason); });
             }
         });
+        self[0] = peer;
         peer.setMicrophoneMuted(micMuted);
         peer.setSpeakerMuted(speakerMuted);
         peer.createOffer();
