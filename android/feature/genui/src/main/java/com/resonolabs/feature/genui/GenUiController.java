@@ -181,6 +181,13 @@ public final class GenUiController implements GenCardStore.Listener, AutoCloseab
             lastTranscriptLine = "";
             return error(missing(id));
         }
+        if (hasHostAction(card)) {
+            // An app-built card with trusted buttons (T3 Approve/Deny): the model must not be
+            // able to change what the user reads next to a button that acts on the real request.
+            lastTranscriptLine = "";
+            return error("Card " + card.id + " is managed by the R1 and cannot be updated; "
+                    + "dismiss it or show a new card.");
+        }
         GenCardParser.UpdateResult result = GenCardParser.applyUpdate(card, json, now);
         if (!result.ok) return error(result.error);
         if (registry != null && card.isTimer()) registry.onTimerChanged(card);
@@ -372,6 +379,13 @@ public final class GenUiController implements GenCardStore.Listener, AutoCloseab
         }
         String text = out.toString();
         return text.length() > 200 ? text.substring(0, 199) + "…" : text;
+    }
+
+    private static boolean hasHostAction(GenCard card) {
+        for (GenAction action : card.actions) {
+            if (action.kind == GenAction.Kind.HOST) return true;
+        }
+        return false;
     }
 
     private static String error(String message) {

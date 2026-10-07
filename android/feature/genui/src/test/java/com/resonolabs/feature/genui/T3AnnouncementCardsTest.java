@@ -166,6 +166,26 @@ public class T3AnnouncementCardsTest {
         assertTrue(parsed.card.actions.isEmpty());
     }
 
+    @Test public void modelCannotRewriteACardWithTrustedButtons() throws Exception {
+        GenCard card = controller.showHostCard(T3AnnouncementCards.cardJson(announcement(
+                T3AnnouncementCards.NEEDS_APPROVAL, payload("needs-approval").put("requestId", "r1")
+                        .put("detail", "rm -rf build")), null));
+        String out = controller.execute(GenUiTools.UPDATE_CARD, "{\"id\":\"" + card.id
+                + "\",\"title\":\"Run the unit tests\",\"body\":[{\"type\":\"text\",\"text\":\"Safe\"}]}",
+                clock.elapsed());
+        assertTrue(out, out.startsWith("{\"ok\":false"));
+        GenCard shown = controller.findLiveCard(LiveBinding.Type.T3_THREAD, THREAD);
+        assertEquals("Fix login redirect", shown.title);
+        assertEquals("rm -rf build", shown.body.get(0).text);
+        assertEquals(GenAction.Kind.HOST, shown.actions.get(2).kind);
+        // Cards without host buttons (e.g. a finished thread) stay editable.
+        GenCard done = controller.showHostCard(T3AnnouncementCards.cardJson(
+                announcement(T3AnnouncementCards.FINISHED, payload("done")), card.id));
+        String ok = controller.execute(GenUiTools.UPDATE_CARD, "{\"id\":\"" + done.id + "\",\"title\":\"Login fix\"}",
+                clock.elapsed());
+        assertTrue(ok, ok.startsWith("{\"ok\":true"));
+    }
+
     @Test public void hostActionTapReachesTheHost() throws Exception {
         GenCard card = controller.showHostCard(T3AnnouncementCards.cardJson(announcement(
                 T3AnnouncementCards.NEEDS_APPROVAL, payload("needs-approval").put("requestId", "r9")), null));
