@@ -10,4 +10,8 @@
     <!-- The emergency gesture intercepts the second consecutive tap while the screen is on and
          also resets the detector. -->
     <bool name="config_emergencyGestureEnabled">false</bool>
+    <!-- No navigation bar: SamRabbit is a full-screen HOME with its own Back (left-edge swipe and
+         on-screen buttons). Without this, a swipe up from the bottom reveals the bars, starts
+         Launcher3's home/recents gesture and reads as a status-bar pull that opens Control Center. -->
+    <bool name="config_showNavigationBar">false</bool>
 </resources>

@@ -43,6 +43,8 @@ final class ProductRootView extends FrameLayout {
     private float gestureDownY;
     private boolean horizontalGesture;
     private boolean pullGesture;
+    /** Swipe right from the left edge = Back (Android's own gestures and nav bar are switched off). */
+    private boolean edgeBackGesture;
 
     ProductRootView(
             Activity activity,
@@ -291,14 +293,24 @@ final class ProductRootView extends FrameLayout {
     }
 
     @Override public boolean onInterceptTouchEvent(MotionEvent event) {
-        if (controlCenter.isOpen() || settingsOpen || runnerOpen || creationImportOpen) return false;
-        switch (event.getActionMasked()) {
-            case MotionEvent.ACTION_DOWN -> {
-                gestureDownX = event.getX();
-                gestureDownY = event.getY();
-                horizontalGesture = false;
-                pullGesture = false;
+        int action = event.getActionMasked();
+        if (action == MotionEvent.ACTION_DOWN) {
+            gestureDownX = event.getX();
+            gestureDownY = event.getY();
+            horizontalGesture = false;
+            pullGesture = false;
+            edgeBackGesture = false;
+        }
+        if (action == MotionEvent.ACTION_MOVE && gestureDownX <= 24f * getWidth() / 480f) {
+            float dx = event.getX() - gestureDownX;
+            float dy = event.getY() - gestureDownY;
+            if (dx >= 36f * getWidth() / 480f && dx > Math.abs(dy) * 1.2f) {
+                edgeBackGesture = true;
+                return true;
             }
+        }
+        if (controlCenter.isOpen() || settingsOpen || runnerOpen || creationImportOpen) return false;
+        switch (action) {
             case MotionEvent.ACTION_MOVE -> {
                 float dx = event.getX() - gestureDownX;
                 float dy = event.getY() - gestureDownY;
@@ -319,6 +331,15 @@ final class ProductRootView extends FrameLayout {
     }
 
     @Override public boolean onTouchEvent(MotionEvent event) {
+        if (edgeBackGesture) {
+            int action = event.getActionMasked();
+            if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                edgeBackGesture = false;
+                if (action == MotionEvent.ACTION_UP
+                        && event.getX() - gestureDownX >= 72f * getWidth() / 480f) navigateBack();
+            }
+            return true;
+        }
         if (pullGesture) {
             if (event.getActionMasked() == MotionEvent.ACTION_MOVE) {
                 pullGesture = false;
