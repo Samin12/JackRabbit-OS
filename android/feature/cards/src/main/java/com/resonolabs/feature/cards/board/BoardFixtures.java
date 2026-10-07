@@ -160,20 +160,31 @@ public final class BoardFixtures {
             timed(events, "fx-review", "Design review", review, review.plusMinutes(60), "Studio B", "Work",
                     "Walk through the widget board with the team.", "alex@example.com");
             ZonedDateTime lunch = five.plusMinutes(70);
-            timed(events, "fx-coffee", "Coffee with Priya", lunch, lunch.plusMinutes(60), "Tartine Bakery", "Personal",
-                    null, null);
-            ZonedDateTime oneOnOne = lunch.plusMinutes(150);
-            timed(events, "fx-alex", "1:1 with Alex", oneOnOne, oneOnOne.plusMinutes(30), "Zoom", "Work",
-                    "Roadmap and hiring.", "alex@example.com");
-            ZonedDateTime errand = oneOnOne.plusMinutes(120);
+            timed(events, "fx-coffee", "Coffee with Priya", lunch, lunch.plusMinutes(60),
+                    "Tartine Bakery, 600 Guerrero St, San Francisco, CA 94110, USA", "Personal", null, null);
+            // Real feeds: a raw Zoom link as the location, the same invite on two calendars, a long title.
+            ZonedDateTime mastermind = lunch.plusMinutes(90);
+            timed(events, "fx-mastermind", "\uD83D\uDE80 7FCEO Mastermind Session: quarterly planning and hot seats",
+                    mastermind, mastermind.plusMinutes(60), "https://us02web.zoom.us/j/8681235900", "Work", null, null);
+            timed(events, "fx-mastermind-copy", "\uD83D\uDE80 7FCEO Mastermind Session: quarterly planning and hot seats",
+                    mastermind, mastermind.plusMinutes(60), "https://us02web.zoom.us/j/8681235900", "Personal", null, null);
+            ZonedDateTime oneOnOne = mastermind.plusMinutes(90);
+            timed(events, "fx-alex", "1:1 with Alex", oneOnOne, oneOnOne.plusMinutes(30),
+                    "Google Meet (instructions in description)", "Work", "Roadmap and hiring.", "alex@example.com");
+            ZonedDateTime errand = oneOnOne.plusMinutes(90);
             timed(events, "fx-cleaning", "Pick up dry cleaning", errand, errand.plusMinutes(20), null, "Personal",
                     null, null);
             ZonedDateTime tomorrow = today.plusDays(1).atStartOfDay(zone);
-            timed(events, "fx-gym", "Gym", tomorrow.plusHours(7), tomorrow.plusHours(8), "Equinox", "Health", null, null);
+            timed(events, "fx-morning", "\u2600\uFE0F Morning Check", tomorrow.plusHours(7), tomorrow.plusHours(10), null,
+                    "Personal", null, null);
             timed(events, "fx-standup", "Team standup", tomorrow.plusHours(9).plusMinutes(30),
-                    tomorrow.plusHours(9).plusMinutes(45), "Zoom", "Work", null, null);
+                    tomorrow.plusHours(9).plusMinutes(45), null, "Work",
+                    "Join with Google Meet: https://meet.google.com/abc-defg-hij", null);
+            timed(events, "fx-gym", "Gym", tomorrow.plusHours(12), tomorrow.plusHours(13), "Equinox", "Health", null, null);
             timed(events, "fx-dentist", "Dentist", tomorrow.plusHours(15), tomorrow.plusHours(16),
                     "Dr. Lee · 12 Main St", "Personal", "Bring the insurance card.", null);
+            timed(events, "fx-evening", "\uD83C\uDF19 Evening Routine", tomorrow.plusHours(20).plusMinutes(45),
+                    tomorrow.plusHours(22).plusMinutes(30), null, "Personal", null, null);
         }
         JSONObject value = new JSONObject();
         put(value, "events", events);

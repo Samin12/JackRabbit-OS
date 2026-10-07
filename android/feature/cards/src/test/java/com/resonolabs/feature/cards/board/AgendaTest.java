@@ -183,4 +183,46 @@ public class AgendaTest {
         AgendaEvent offset = timed("o", "2026-10-07T10:00:00-04:00", null);
         assertEquals(zulu.start, offset.start);
     }
+
+    @Test public void tomorrowKeepsItsReservedRowsWhenTodayIsBusy() {
+        List<AgendaEvent> events = new ArrayList<>();
+        for (int hour = 15; hour <= 20; hour++) {
+            events.add(timed("t" + hour, "2026-10-07T" + hour + ":00:00Z", "2026-10-07T" + hour + ":30:00Z"));
+        }
+        for (int hour = 12; hour <= 15; hour++) {
+            events.add(timed("m" + hour, "2026-10-08T" + hour + ":00:00Z", "2026-10-08T" + hour + ":30:00Z"));
+        }
+        Agenda agenda = Agenda.build(events, NOW, 7, 3);
+        assertEquals(2, agenda.sections.size());
+        assertEquals(4, agenda.sections.get(0).rows.size());
+        assertEquals(List.of("UPCOMING:m12", "UPCOMING:m13", "UPCOMING:m14"), ids(agenda.sections.get(1)));
+        assertEquals(3, agenda.hidden);
+        assertEquals("6 today · 4 tomorrow", agenda.summary());
+
+        // A quiet today hands its unused rows to tomorrow.
+        Agenda quiet = Agenda.build(events.subList(5, events.size()), NOW, 7, 3);
+        assertEquals(List.of("UPCOMING:t20"), ids(quiet.sections.get(0)));
+        assertEquals(4, quiet.sections.get(1).rows.size());
+        assertEquals(0, quiet.hidden);
+    }
+
+    @Test public void theSameEventOnTwoCalendarsShowsOnce() {
+        AgendaEvent work = AgendaEvent.of("w", "Mastermind", "2026-10-07T16:00:00Z", "2026-10-07T17:00:00Z", false,
+                "Zoom", "Work", NEW_YORK);
+        AgendaEvent personal = AgendaEvent.of("p", " mastermind ", "2026-10-07T16:00:00Z", "2026-10-07T17:00:00Z", false,
+                "Zoom", "Personal", NEW_YORK);
+        AgendaEvent moved = AgendaEvent.of("m", "Mastermind", "2026-10-07T18:00:00Z", "2026-10-07T19:00:00Z", false,
+                "Zoom", "Personal", NEW_YORK);
+        Agenda agenda = Agenda.build(List.of(work, personal, moved), NOW, 7, 3);
+        assertEquals(List.of("UPCOMING:w", "UPCOMING:m"), ids(agenda.sections.get(0)));
+        assertEquals(2, agenda.todayCount);
+    }
+
+    @Test public void summaryNamesTodayAndTomorrow() {
+        assertEquals("Free", Agenda.build(List.of(), NOW, 7, 3).summary());
+        assertEquals("Free today · 1 tomorrow", Agenda.build(List.of(
+                timed("gym", "2026-10-08T11:00:00Z", "2026-10-08T12:00:00Z")), NOW, 7, 3).summary());
+        assertEquals("1 today", Agenda.build(List.of(
+                timed("lunch", "2026-10-07T16:00:00Z", "2026-10-07T17:00:00Z")), NOW, 7, 3).summary());
+    }
 }

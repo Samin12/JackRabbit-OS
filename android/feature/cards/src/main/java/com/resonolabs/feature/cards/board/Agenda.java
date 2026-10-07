@@ -17,6 +17,9 @@ import java.util.List;
  *   <li>All-day events of a day collapse into one compact {@link Kind#ALL_DAY} row shown first.</li>
  *   <li>A multi-day all-day event appears on the first visible day only.</li>
  *   <li>When today and tomorrow are empty, {@link #later} is the next event after that.</li>
+ *   <li>The same event on two calendars (same title, start and end) is shown once.</li>
+ *   <li>A busy today leaves {@code tomorrowReserve} rows for tomorrow, so tomorrow never vanishes
+ *       behind "+N more".</li>
  * </ul>
  * Pure Java; the device time zone is whatever {@code now} carries.
  */
@@ -73,7 +76,26 @@ public final class Agenda {
 
     public boolean todayEmpty() { return todayCount == 0; }
 
+    /** Header summary: "3 today · 2 tomorrow", "3 today", "Free today · 2 tomorrow", "Free". */
+    public String summary() {
+        String today = todayCount > 0 ? todayCount + " today" : "";
+        String next = tomorrowCount > 0 ? tomorrowCount + " tomorrow" : "";
+        if (!today.isEmpty() && !next.isEmpty()) return today + " · " + next;
+        if (!today.isEmpty()) return today;
+        if (!next.isEmpty()) return "Free today · " + next;
+        return "Free";
+    }
+
     public static Agenda build(List<AgendaEvent> events, ZonedDateTime now, int maxRows) {
+        return build(events, now, maxRows, 0);
+    }
+
+    /**
+     * Up to {@code maxRows} rows; when tomorrow has events, today gets at most
+     * {@code maxRows - min(tomorrowRows, tomorrowReserve)} of them and tomorrow the rest.
+     */
+    public static Agenda build(List<AgendaEvent> input, ZonedDateTime now, int maxRows, int tomorrowReserve) {
+        List<AgendaEvent> events = dedupe(input);
         ZoneId zone = now.getZone();
         Instant instant = now.toInstant();
         LocalDate today = now.toLocalDate();
@@ -118,11 +140,13 @@ public final class Agenda {
         if (!tomorrowAllDay.isEmpty()) tomorrowRows.add(new Row(Kind.ALL_DAY, false, tomorrow, tomorrowAllDay));
         for (AgendaEvent event : tomorrowTimed) tomorrowRows.add(new Row(Kind.UPCOMING, false, tomorrow, List.of(event)));
 
-        int budget = Math.max(1, maxRows);
+        int total = Math.max(1, maxRows);
+        int reserve = Math.min(tomorrowRows.size(), Math.max(0, Math.min(tomorrowReserve, total - 1)));
         int hidden = 0;
         List<Section> sections = new ArrayList<>();
         for (int pass = 0; pass < 2; pass++) {
             List<Row> source = pass == 0 ? todayRows : tomorrowRows;
+            int budget = pass == 0 ? total - reserve : total - visibleRows(sections);
             List<Row> visible = new ArrayList<>();
             for (Row row : source) {
                 if (budget > 0) { visible.add(row); budget--; }
@@ -134,6 +158,29 @@ public final class Agenda {
         int tomorrowCount = tomorrowAllDay.size() + tomorrowTimed.size();
         return new Agenda(sections, todayCount, tomorrowCount, hidden,
                 todayCount == 0 && tomorrowCount == 0 ? later : null);
+    }
+
+    private static int visibleRows(List<Section> sections) {
+        int rows = 0;
+        for (Section section : sections) rows += section.rows.size();
+        return rows;
+    }
+
+    /**
+     * Drops repeats of one event shown by several calendars (an invite on the work and the
+     * personal calendar): same title (ignoring case and spacing), all-day flag, start and end.
+     * The first copy wins, so the input order (the runtime's start order) decides its calendar.
+     */
+    static List<AgendaEvent> dedupe(List<AgendaEvent> events) {
+        List<AgendaEvent> out = new ArrayList<>();
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        for (AgendaEvent event : events) {
+            if (event == null) continue;
+            String key = event.title.trim().replaceAll("\\s+", " ").toLowerCase(java.util.Locale.ROOT) + "|" + event.allDay
+                    + "|" + event.start.toEpochMilli() + "|" + event.end.toEpochMilli();
+            if (seen.add(key)) out.add(event);
+        }
+        return out;
     }
 
     /** Fraction of a running event that has elapsed, clamped to [0, 1]. */
