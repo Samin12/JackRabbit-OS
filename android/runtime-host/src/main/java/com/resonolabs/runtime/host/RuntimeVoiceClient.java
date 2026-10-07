@@ -6,6 +6,7 @@ import android.util.Log;
 import android.os.Handler;
 import android.os.Looper;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.InputStream;
@@ -20,6 +21,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public final class RuntimeVoiceClient implements AutoCloseable {
     private static final String MCP_VERSION = "2025-11-25";
     private static final String LOG_TAG = "RuntimeVoiceClient";
+    static final int MAX_MCP_RESPONSE_BYTES = 1_048_576;
 
     public interface Callback {
         void onAnswer(String sdp, String sessionId, JSONObject connectGreetingEvent);
@@ -152,10 +154,30 @@ public final class RuntimeVoiceClient implements AutoCloseable {
             }
             JSONObject sessionUpdate = result.optJSONObject("samSessionUpdate");
             result.remove("samSessionUpdate");
+            compactForModel(result);
             JSONObject finalSessionUpdate = sessionUpdate;
             if (!closed.get()) main.post(() -> callback.onResult(result.toString(), finalSessionUpdate));
         } catch (Exception ignored) {
             deliverToolFailure(callback, "mcp-unavailable");
+        }
+    }
+
+    /**
+     * The Realtime model reads a tool result as text. MCP results carry the same data twice
+     * (the JSON text in {@code content} and again as {@code structuredContent}); drop the copy
+     * when a text block is present so large results (e.g. a calendar with long descriptions)
+     * cost half the tokens.
+     */
+    static void compactForModel(JSONObject result) {
+        if (result == null || !result.has("structuredContent")) return;
+        JSONArray content = result.optJSONArray("content");
+        if (content == null) return;
+        for (int index = 0; index < content.length(); index++) {
+            JSONObject block = content.optJSONObject(index);
+            if (block != null && "text".equals(block.optString("type")) && !block.optString("text").isEmpty()) {
+                result.remove("structuredContent");
+                return;
+            }
         }
     }
 
@@ -213,7 +235,9 @@ public final class RuntimeVoiceClient implements AutoCloseable {
             int status = connection.getResponseCode();
             String returnedSession = connection.getHeaderField("Mcp-Session-Id");
             InputStream source = status >= 400 ? connection.getErrorStream() : connection.getInputStream();
-            byte[] bytes = source == null ? new byte[0] : source.readNBytes(65_536);
+            // Tool results are JSON twice over (text + structuredContent): 64 KB truncated a real
+            // calendar listing mid-JSON, which surfaced as "mcp-unavailable".
+            byte[] bytes = source == null ? new byte[0] : source.readNBytes(MAX_MCP_RESPONSE_BYTES);
             if (status >= 400) throw new IllegalStateException("MCP HTTP " + status);
             if (bytes.length == 0 && allowEmpty) return new McpResponse(new JSONObject(), returnedSession);
             JSONObject payload = new JSONObject(new String(bytes, StandardCharsets.UTF_8));
