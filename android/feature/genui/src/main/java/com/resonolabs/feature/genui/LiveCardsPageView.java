@@ -123,15 +123,15 @@ public final class LiveCardsPageView extends View implements GenCardStore.Listen
         boolean first = true;
         for (GenCard card : cards) {
             if (!recent && live != (card.live != null)) continue;
+            Entry entry = new Entry();
+            entry.card = card;
+            entry.recent = recent;
+            // Only the first card of a section carries its label (a third card used to repeat it).
+            entry.section = first ? name : "";
             if (first) {
                 y += SECTION;
                 first = false;
             }
-            Entry entry = new Entry();
-            entry.card = card;
-            entry.recent = recent;
-            entry.section = entries.isEmpty() || !entries.get(entries.size() - 1).section.equals(name) ? name : null;
-            if (entry.section == null) entry.section = "";
             entry.top = y;
             entries.add(entry);
             y += ROW + ROW_GAP;
