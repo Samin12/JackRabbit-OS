@@ -32,6 +32,7 @@ from sam_runtime.storage.database import RuntimeDatabase
 
 from .client import HttpResponse, HttpTransport
 from .errors import AuthorizationError, HeptabaseError, ToolFailure, TransportError
+from .format import cli_markdown
 
 BRIDGE_CONNECTION_ID = str(uuid5(NAMESPACE_URL, "sam:heptabase-mac-bridge"))
 BRIDGE_SERVICE = "samrabbit-bridge"
@@ -265,7 +266,7 @@ class MacBridgeClient:
 
     def append_to_journal(self, journal_date: str, content: str) -> dict[str, object]:
         url, token = self._credentials()
-        body = json.dumps({"date": journal_date, "content": content}, separators=(",", ":"),
+        body = json.dumps({"date": journal_date, "content": cli_markdown(content)}, separators=(",", ":"),
                           ensure_ascii=False).encode("utf-8")
         response = self._request("POST", url, "/v1/heptabase/journal/append", token, body=body,
                                  timeout=APPEND_TIMEOUT_SECONDS, writing=True)

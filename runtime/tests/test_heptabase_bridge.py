@@ -28,6 +28,8 @@ from sam_runtime.domains.heptabase_journal import (AuthorizationError, BRIDGE_CO
                                                    is_private_host, normalize_bridge_url, register_journal_tools)
 from sam_runtime.domains.heptabase_journal.bridge import valid_bridge_token
 from sam_runtime.domains.heptabase_journal.client import HttpTransport
+from sam_runtime.domains.heptabase_journal.format import (SessionLine, cli_markdown, render_activity, render_note,
+                                                          render_session)
 from sam_runtime.security.credentials import ConnectionCredentialEnvelopes
 from sam_runtime.security.pairing import PairingAuthority
 from sam_runtime.storage.lifecycle_repository import LifecycleRepository
@@ -81,6 +83,24 @@ class BridgeUrlTest(unittest.TestCase):
                     valid_bridge_token(value)
 
 
+class CliMarkdownTest(unittest.TestCase):
+    def test_gray_spans_become_italic_and_nothing_else_changes(self) -> None:
+        session = render_session("R1 voice · 13:40–13:46", [
+            SessionLine(1.0, "13:40", "user", 'say <hepta-color type="text" color="gray">x</hepta-color> *a*'),
+            SessionLine(2.0, "13:41", "activity", 'Task added: "Call Devin"'),
+            SessionLine(3.0, "13:42", "assistant", "Done"),
+        ])[0].content
+        self.assertEqual(
+            "**R1 voice · 13:40–13:46**\n\n"
+            '- 13:40 say \\<hepta-color type="text" color="gray"\\>x\\</hepta-color\\> \\*a\\*\n\n'
+            '- 13:41 *↳ Task added: "Call Devin"*\n\n'
+            "- 13:42 *R1: Done*",
+            cli_markdown(session), "user text that looks like a tag stays escaped")
+        self.assertEqual("**13:42** plain note", cli_markdown(render_note("13:42", "plain note").content))
+        self.assertEqual("- 18:00 *↳ R1 journal connected through the Mac*",
+                         cli_markdown(render_activity("18:00", "R1 journal connected through the Mac").content))
+
+
 class BridgeTransportTest(unittest.TestCase):
     def setUp(self) -> None:
         self.h = _harness()
@@ -92,6 +112,9 @@ class BridgeTransportTest(unittest.TestCase):
         logger = logging.getLogger("sam-runtime")
         logger.addHandler(handler)
         self.addCleanup(logger.removeHandler, handler)
+        level = logger.level
+        logger.setLevel(logging.INFO)  # as on the device: every extra= key must be a legal LogRecord field
+        self.addCleanup(logger.setLevel, level)
 
     def connect(self) -> dict[str, object]:
         return self.h.service.configure_bridge(self.bridge.url, self.bridge.token)
@@ -302,9 +325,8 @@ class BridgeTransportTest(unittest.TestCase):
                          {key: first[key] for key in ("recorded", "state", "date", "mode", "text", "duplicate")})
         again = self.h.service.write_test_entry()
         self.assertEqual((True, first["entryId"]), (again["duplicate"], again["entryId"]))
-        self.assertEqual([("2026-10-07", '- 17:42 <hepta-color type="text" color="gray">'
-                                         "↳ R1 journal connected through the Mac</hepta-color>")],
-                         self.bridge.appends())
+        self.assertEqual([("2026-10-07", "- 17:42 *↳ R1 journal connected through the Mac*")],
+                         self.bridge.appends(), "the CLI does not parse <hepta-color>: gray becomes italic")
         self.assertIn("17:42 ↳ R1 journal connected through the Mac", self.h.service.read_journal()["text"])
 
 
@@ -460,8 +482,7 @@ class RealCompanionBridgeTest(unittest.TestCase):
                                                   view["bridge"]["cliVersion"]))
         self.assertEqual("sent", self.h.service.write_test_entry()["state"])
         journal = json.loads((self.state / "journal.json").read_text())
-        self.assertEqual({"2026-10-07": ['- 17:42 <hepta-color type="text" color="gray">'
-                                         "↳ R1 journal connected through the Mac</hepta-color>"]}, journal)
+        self.assertEqual({"2026-10-07": ["- 17:42 *↳ R1 journal connected through the Mac*"]}, journal)
         (self.state / "mode").write_text("down")
         self.assertEqual("queued", self.h.service.record_note("while the app is closed")["state"])
         self.assertEqual("heptabase_app_unavailable", self.h.service.management_view()["bridge"]["lastError"])

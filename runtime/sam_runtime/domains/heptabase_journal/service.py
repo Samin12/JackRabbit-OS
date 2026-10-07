@@ -295,7 +295,7 @@ class HeptabaseJournalService:
             fingerprint=fingerprint(rendered.plain_content), event_at=now, source_ref=f"test:{day}:{mode}",
         ))
         self._worker.wake()
-        _LOG.info("heptabase.test_entry.queued", extra={"created": created, "mode": mode})
+        _LOG.info("heptabase.test_entry.queued", extra={"newEntry": created, "mode": mode})
         state = self._await_delivery(entry.entry_id) if created else self._public_state(entry.entry_id)
         return {"recorded": True, "state": state, "date": entry.journal_date, "entryId": entry.entry_id,
                 "text": text, "mode": mode, "duplicate": not created}

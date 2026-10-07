@@ -134,6 +134,20 @@ class SessionLine:
     text: str
 
 
+_GRAY_SPAN = re.compile(r'(?<!\\)<hepta-color type="text" color="gray">(.*?)(?<!\\)</hepta-color>', re.DOTALL)
+
+
+def cli_markdown(content: str) -> str:
+    """Hepta Markdown -> the plain Markdown the desktop CLI accepts (Mac bridge).
+
+    ``heptabase journal append`` parses CommonMark plus Heptabase's list/mention
+    extensions but not ``<hepta-color>``; it would keep the tag as literal text.
+    Gray action lines become italic instead. Inner text is already escaped, so
+    the ``*`` delimiters cannot be closed early by the user's words.
+    """
+    return _GRAY_SPAN.sub(lambda match: f"*{match.group(1)}*" if match.group(1).strip() else "", content)
+
+
 def _gray(text: str) -> str:
     return f'<hepta-color type="text" color="gray">{text}</hepta-color>'
 

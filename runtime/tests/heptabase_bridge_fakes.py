@@ -1,7 +1,8 @@
 """In-process stand-in for the SamRabbit Mac bridge (companion/mac-bridge) with scripted failures.
 
-The journal store keeps the appended Hepta Markdown; ``read`` returns it as the plain text
-the real bridge produces from Heptabase's ProseMirror (marks, tags, escapes and bullets gone).
+The journal store keeps the appended markdown; ``read`` returns it as the plain text the real
+bridge produces from Heptabase's ProseMirror (bold/italic marks and escapes gone). A literal
+``<hepta-color>`` tag would survive, as it does in the real CLI.
 """
 
 from __future__ import annotations
@@ -14,14 +15,14 @@ import secrets
 import threading
 from urllib.parse import parse_qs, urlsplit
 
-_TAG = re.compile(r"</?hepta-[a-z-]+[^>]*>")
 _ESCAPE = re.compile(r"\\([!-/:-@\[-`{-~])")
+_EMPHASIS = re.compile(r"(?<!\\)\*")
 
 
 def plain_text(markdown: str) -> str:
     lines = []
     for block in markdown.split("\n"):
-        text = _ESCAPE.sub(r"\1", _TAG.sub("", block.replace("**", "")))
+        text = _ESCAPE.sub(r"\1", _EMPHASIS.sub("", block))
         if text.startswith("- "):
             text = "- " + text[2:]
         if text.strip():
