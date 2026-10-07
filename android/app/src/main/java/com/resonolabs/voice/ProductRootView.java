@@ -735,9 +735,12 @@ final class ProductRootView extends FrameLayout {
 
     void close() {
         removeCallbacks(flushDeferred);
+        // Voice first: ending its session turns deferred T3 updates into notifications and
+        // acks them; the announcement client then closes and still sends those queued acks
+        // (an unacked item would be replayed when HOME starts again).
+        voice.close();
         announcements.close();
         t3Actions.close();
-        voice.close();
         cards.close();
         t3.close();
         camera.close();

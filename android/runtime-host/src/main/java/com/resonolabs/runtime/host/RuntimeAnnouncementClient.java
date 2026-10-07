@@ -87,7 +87,9 @@ public final class RuntimeAnnouncementClient implements AutoCloseable {
             sleeper.notifyAll();
         }
         thread.interrupt();
-        acks.shutdownNow();
+        // Acks already queued still go out (short timeouts, daemon thread): dropping one would
+        // make the runtime replay an item the user already got when HOME starts again.
+        acks.shutdown();
     }
 
     // ------------------------------------------------------------------ poll loop
