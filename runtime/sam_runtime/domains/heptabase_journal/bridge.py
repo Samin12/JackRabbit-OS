@@ -213,14 +213,18 @@ class BridgeStore:
             value = {}
         return value if isinstance(value, dict) else {}
 
-    def record_status(self, **changes: object) -> None:
-        """Merge non-secret reachability facts (codes and times only, never content)."""
+    def record_status(self, *, force: bool = False, **changes: object) -> None:
+        """Merge non-secret reachability facts (codes and times only, never content).
+
+        Routine calls skip the write when nothing changed; an explicit check (``force``)
+        always stamps ``checkedAt``."""
         if self.config() is None:
             return
         current = self.status()
         merged = {**current, **changes, "checkedAt": _now()}
-        if {k: v for k, v in merged.items() if k != "checkedAt"} == \
-                {k: v for k, v in current.items() if k != "checkedAt"} and "lastOkAt" not in changes:
+        if not force and "lastOkAt" not in changes and \
+                {k: v for k, v in merged.items() if k != "checkedAt"} == \
+                {k: v for k, v in current.items() if k != "checkedAt"}:
             return  # unchanged: skip the write
         with self._database.connect() as connection:
             connection.execute(

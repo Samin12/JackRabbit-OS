@@ -238,9 +238,9 @@ class HeptabaseJournalService:
             health = self._bridge.health(config.url, token)
         except HeptabaseError as error:
             reachable = error.code != "bridge_unreachable"
-            self._bridge_store.record_status(reachable=reachable, lastError=error.code)
+            self._bridge_store.record_status(force=True, reachable=reachable, lastError=error.code)
             return self.management_view()
-        self._record_health(health)
+        self._record_health(health, force=True)
         if self._bridge_store.status().get("appReachable"):
             self._outbox.expedite()
             self._worker.wake()
@@ -268,14 +268,14 @@ class HeptabaseJournalService:
                                      "The R1 could not reach the Mac bridge at that address. Check that install.sh "
                                      "ran on the Mac and both are on the same network.", status=502) from None
 
-    def _record_health(self, health: dict[str, object]) -> None:
+    def _record_health(self, health: dict[str, object], *, force: bool = False) -> None:
         cli = health.get("cli") if isinstance(health.get("cli"), dict) else {}
         app = health.get("app") if isinstance(health.get("app"), dict) else {}
         reachable = app.get("reachable") is True
         version = cli.get("version")
         detail = app.get("detail")
         self._bridge_store.record_status(
-            reachable=True, appReachable=reachable,
+            force=force, reachable=True, appReachable=reachable,
             cliVersion=str(version)[:32] if isinstance(version, str) else None,
             lastError=None if reachable else (str(detail)[:64] if detail else "heptabase_app_unavailable"),
         )

@@ -275,6 +275,14 @@ class BridgeTransportTest(unittest.TestCase):
         view = self.h.service.check_bridge()
         self.assertEqual((True, False), (view["bridge"]["reachable"], view["bridge"]["appReachable"]))
         self.assertEqual(["pending"], self.states())
+        stamped = view["bridge"]["checkedAt"]
+        with self.h.database.connect() as connection:  # age the stamp so a fresh check is visible
+            connection.execute("UPDATE provider_settings SET setting_value = replace(setting_value, ?, ?) "
+                               "WHERE setting_key = 'heptabase.bridge.status'", (stamped, "2000-01-01T00:00:00Z"))
+            connection.commit()
+        again = self.h.service.check_bridge()["bridge"]
+        self.assertEqual(False, again["appReachable"])
+        self.assertNotEqual("2000-01-01T00:00:00Z", again["checkedAt"], "an unchanged check still stamps checkedAt")
         self.bridge.app_reachable = True
         self.h.service.check_bridge()
         self.h.service.drain()
