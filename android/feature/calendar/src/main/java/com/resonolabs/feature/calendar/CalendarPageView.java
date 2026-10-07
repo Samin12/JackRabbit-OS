@@ -84,7 +84,7 @@ public final class CalendarPageView extends View implements AutoCloseable {
             dateBadge(c,item,54,top+42,focused);
             drawLine(c,item.optString("title","Untitled event"),96,top+38,24,444,focused,28,true);
             String secondary=timeOnly(item);
-            String location=item.optString("location","");
+            String location=str(item,"location");
             if(!location.isBlank())secondary=secondary.isEmpty()?location:secondary+" · "+location;
             drawLine(c,secondary,96,top+64,17,444,focused,34,false);
         }
@@ -112,10 +112,10 @@ public final class CalendarPageView extends View implements AutoCloseable {
         y=wrapped(c,item.optString("title","Untitled event"),38,y,28,36,400,SamTheme.INK,true)+14;
         y=field(c,"Starts",friendly(item,"startsAt"),y);
         y=field(c,"Ends",friendly(item,"endsAt"),y);
-        y=field(c,"Location",item.optString("location"),y);
-        y=field(c,"Calendar",item.optString("calendar"),y);
-        y=field(c,"Organizer",item.optString("organizer"),y);
-        y=field(c,"Notes",item.optString("description"),y);
+        y=field(c,"Location",str(item,"location"),y);
+        y=field(c,"Calendar",str(item,"calendar"),y);
+        y=field(c,"Organizer",str(item,"organizer"),y);
+        y=field(c,"Notes",str(item,"description"),y);
         maxDetailScroll=Math.max(0,y+detailScroll-contentBottom+24);detailScroll=Math.min(detailScroll,maxDetailScroll);
         c.restore();
         if(maxDetailScroll>0){
@@ -140,10 +140,12 @@ public final class CalendarPageView extends View implements AutoCloseable {
      * Times are stored as UTC instants: show them in the device time zone. All-day events are stored as UTC
      * midnight of a floating date (end exclusive): show that date, never a converted time.
      */
-    private String timeOnly(JSONObject item){String value=item.optString("startsAt");if(value.isBlank())return "";if(item.optBoolean("allDay")){java.time.LocalDate date=localDate(item,"startsAt");return date==null?"All day":date.format(DateTimeFormatter.ofPattern("EEE"))+" · All day";}java.time.ZonedDateTime time=zoned(value);return time==null?value:time.format(DateTimeFormatter.ofPattern(timePattern("EEE · ")));}
-    private String friendly(JSONObject item,String key){String value=item.optString(key);if(value.isBlank())return "";if(item.optBoolean("allDay")){java.time.LocalDate date=localDate(item,key);if(date==null)return value;if("endsAt".equals(key)){java.time.LocalDate start=localDate(item,"startsAt");date=date.minusDays(1);if(start!=null&&!date.isAfter(start))return "";}return date.format(DateTimeFormatter.ofPattern("EEE, MMM d"))+("startsAt".equals(key)?" · All day":"");}java.time.ZonedDateTime time=zoned(value);return time==null?value:time.format(DateTimeFormatter.ofPattern(timePattern("EEE, MMM d · ")));}
+    private String timeOnly(JSONObject item){String value=str(item,"startsAt");if(value.isBlank())return "";if(item.optBoolean("allDay")){java.time.LocalDate date=localDate(item,"startsAt");return date==null?"All day":date.format(DateTimeFormatter.ofPattern("EEE"))+" · All day";}java.time.ZonedDateTime time=zoned(value);return time==null?value:time.format(DateTimeFormatter.ofPattern(timePattern("EEE · ")));}
+    private String friendly(JSONObject item,String key){String value=str(item,key);if(value.isBlank())return "";if(item.optBoolean("allDay")){java.time.LocalDate date=localDate(item,key);if(date==null)return value;if("endsAt".equals(key)){java.time.LocalDate start=localDate(item,"startsAt");date=date.minusDays(1);if(start!=null&&!date.isAfter(start))return "";}return date.format(DateTimeFormatter.ofPattern("EEE, MMM d"))+("startsAt".equals(key)?" · All day":"");}java.time.ZonedDateTime time=zoned(value);return time==null?value:time.format(DateTimeFormatter.ofPattern(timePattern("EEE, MMM d · ")));}
     private String timePattern(String prefix){return prefix+(android.text.format.DateFormat.is24HourFormat(getContext())?"H:mm":"h:mm a");}
     private static java.time.ZonedDateTime zoned(String value){try{return OffsetDateTime.parse(value.endsWith("Z")?value.substring(0,value.length()-1)+"+00:00":value).atZoneSameInstant(java.time.ZoneId.systemDefault());}catch(Exception ignored){return null;}}
-    private static java.time.LocalDate localDate(JSONObject item,String key){String value=item.optString(key);if(value.isBlank())return null;try{OffsetDateTime parsed=OffsetDateTime.parse(value.endsWith("Z")?value.substring(0,value.length()-1)+"+00:00":value);return item.optBoolean("allDay")?parsed.toLocalDate():parsed.atZoneSameInstant(java.time.ZoneId.systemDefault()).toLocalDate();}catch(Exception ignored){return null;}}
+    private static java.time.LocalDate localDate(JSONObject item,String key){String value=str(item,key);if(value.isBlank())return null;try{OffsetDateTime parsed=OffsetDateTime.parse(value.endsWith("Z")?value.substring(0,value.length()-1)+"+00:00":value);return item.optBoolean("allDay")?parsed.toLocalDate():parsed.atZoneSameInstant(java.time.ZoneId.systemDefault()).toLocalDate();}catch(Exception ignored){return null;}}
+    /** Absent fields arrive as JSON null, which Android's optString turns into the text "null". */
+    private static String str(JSONObject item,String key){return item.isNull(key)?"":item.optString(key);}
     @Override public void close(){stop();client.close();}
 }

@@ -61,7 +61,7 @@ public final class BoardFixtures {
             timed(events, "fx-alex", "1:1 with Alex", oneOnOne, oneOnOne.plusMinutes(30), "Zoom", "Work",
                     "Roadmap and hiring.", "alex@example.com");
             ZonedDateTime errand = oneOnOne.plusMinutes(120);
-            timed(events, "fx-cleaning", "Pick up dry cleaning", errand, errand.plusMinutes(20), "Main St", "Personal",
+            timed(events, "fx-cleaning", "Pick up dry cleaning", errand, errand.plusMinutes(20), null, "Personal",
                     null, null);
             ZonedDateTime tomorrow = today.plusDays(1).atStartOfDay(zone);
             timed(events, "fx-gym", "Gym", tomorrow.plusHours(7), tomorrow.plusHours(8), "Equinox", "Health", null, null);
@@ -148,10 +148,11 @@ public final class BoardFixtures {
         put(event, "calendarAccountId", "fixture");
         put(event, "title", title);
         put(event, "timezone", "UTC");
-        if (location != null) put(event, "location", location);
+        // Like the runtime, absent values are JSON null (not omitted).
+        put(event, "location", location == null ? JSONObject.NULL : location);
         put(event, "calendar", calendar);
-        if (organizer != null) put(event, "organizer", organizer);
-        if (notes != null) put(event, "description", notes);
+        put(event, "organizer", organizer == null ? JSONObject.NULL : organizer);
+        put(event, "description", notes == null ? JSONObject.NULL : notes);
         put(event, "editable", false);
         return event;
     }

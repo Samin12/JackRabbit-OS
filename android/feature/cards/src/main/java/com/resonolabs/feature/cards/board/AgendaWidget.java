@@ -124,9 +124,10 @@ public final class AgendaWidget implements BoardWidget {
         for (int i = 0; i < rawEvents.length(); i++) {
             JSONObject item = rawEvents.optJSONObject(i);
             if (item == null) continue;
-            AgendaEvent event = AgendaEvent.of(item.optString("eventId", "e" + i), item.optString("title"),
-                    item.optString("startsAt"), item.optString("endsAt"), item.optBoolean("allDay"),
-                    item.optString("location"), item.optString("calendar"), zone);
+            String id = jsonText(item, "eventId");
+            AgendaEvent event = AgendaEvent.of(id.isEmpty() ? "e" + i : id, jsonText(item, "title"),
+                    jsonText(item, "startsAt"), jsonText(item, "endsAt"), item.optBoolean("allDay"),
+                    jsonText(item, "location"), jsonText(item, "calendar"), zone);
             if (event == null) continue;
             raw.put(event.id, item);
             events.add(event);
@@ -198,6 +199,11 @@ public final class AgendaWidget implements BoardWidget {
         glass.size(width, y, 28f);
         headerOrb.set(31f, 30f, 7f, BoardPaint.CALENDAR_ACCENT, 2.6f);
         return y;
+    }
+
+    /** The runtime sends absent fields as JSON null, which Android's optString turns into "null". */
+    private static String jsonText(JSONObject item, String key) {
+        return item.isNull(key) ? "" : item.optString(key);
     }
 
     private Item row(Agenda.Row row, AgendaText text, ZonedDateTime now, float y, float width) {
