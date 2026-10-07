@@ -262,6 +262,7 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
     public boolean deliverHostUpdate(String text) {
         if (!isAvailable() || text == null || text.isBlank()) return false;
         if (!sendItem("user", text)) return false;
+        logTool("host update " + truncate(text, 240));
         responseCoordinator.requestDefault();
         invalidate();
         return true;
@@ -537,13 +538,16 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
                     reconnecting = false;
                     reconnectPolicy.onLive(SystemClock.elapsedRealtime());
                     transcript = "I’m listening";
-                    String screen = genUi.screenSummary();
+                    // Local clock (the instructions have none; calendar tools speak UTC) and
+                    // the cards on screen, as one host note.
+                    String context = VoiceHostNotes.onConnect(java.time.ZonedDateTime.now(),
+                            genUi.screenSummary());
                     if (resumed) {
                         // Same conversation, new provider session: no greeting, just context.
                         pendingConnectGreeting = null;
-                        sendItem("system", reconnectNote(screen));
-                    } else if (!screen.isEmpty()) {
-                        sendItem("system", screen);
+                        sendItem("system", reconnectNote(context));
+                    } else {
+                        sendItem("system", context);
                     }
                     if (pendingHostNote != null && peer != null) {
                         String note = pendingHostNote;
@@ -620,6 +624,7 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
             } else if ("conversation.item.input_audio_transcription.completed".equals(type)
                     || "conversation.item.input_audio_transcript.completed".equals(type)) {
                 String text = event.optString("transcript", "").trim();
+                if (!text.isEmpty()) logTool("heard " + truncate(text, 160));
                 lastUserUtterance = text;
                 if (!text.isEmpty()) userUtteranceId += 1;
                 recordTranscript("user", type, text);
@@ -649,6 +654,7 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
                     || "response.output_audio_transcript.done".equals(type)) {
                 String text = event.optString("transcript", assistantDraft.toString()).trim();
                 recordTranscript("assistant", type, text);
+                logTool("said " + truncate(text, 240));
                 assistantDraft.setLength(0);
                 if (!text.isEmpty()) {
                     transcript = text;
@@ -812,7 +818,7 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
     }
 
     /** "[Reconnected]" host note sent instead of the greeting after an automatic reconnect. */
-    private String reconnectNote(String screen) {
+    private String reconnectNote(String context) {
         StringBuilder note = new StringBuilder("[Reconnected] The voice connection dropped and came back "
                 + "automatically; this is the same conversation. Do not greet the user or mention the "
                 + "reconnect; wait for them to speak.");
@@ -828,7 +834,7 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
             if (user != null) note.append(" user said \u201c").append(truncate(user, 160)).append("\u201d.");
             if (assistant != null) note.append(" You said \u201c").append(truncate(assistant, 160)).append("\u201d.");
         }
-        if (screen != null && !screen.isEmpty()) note.append(' ').append(screen);
+        if (context != null && !context.isEmpty()) note.append('\n').append(context);
         return note.toString();
     }
 

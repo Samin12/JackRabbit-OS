@@ -178,6 +178,8 @@ public final class IdleGlance implements AutoCloseable {
 
             @Override public void onFailure() {
                 calendarInFlight = false;
+                // Runtime still starting (e.g. right after boot): retry on the next tick, not in a minute.
+                calendarFetchedAt = Long.MIN_VALUE / 2;
             }
         });
     }
