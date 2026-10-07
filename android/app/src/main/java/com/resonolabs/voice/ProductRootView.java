@@ -61,7 +61,7 @@ final class ProductRootView extends FrameLayout {
         voice = new VoicePageView(activity, this::openCameraHandoff);
         camera = new CameraHandoffPage(activity, motor, voice, this::returnFromCamera);
         camera.setVisibility(GONE);
-        cards = new CardsPageView(activity, this::openVoice, this::showCreation);
+        cards = new CardsPageView(activity, this::openVoiceFromCards, this::showCreation);
         cards.setVisibility(GONE);
         t3 = new T3PageView(activity, new T3PageView.Host() {
             @Override public void talkToThread(String threadId, String title) {
@@ -96,7 +96,7 @@ final class ProductRootView extends FrameLayout {
             @Override public void say(String text) { sayFromCard(text); }
             @Override public void openPage(String page) {
                 if ("runs".equals(page)) openRunner();
-                else if ("transcript".equals(page)) openVoice();
+                else if ("transcript".equals(page)) openVoiceFromCards();
             }
         });
         runner = new BackgroundRunPanelView(activity, backgroundRuns, chrome::showRuns,
@@ -147,15 +147,20 @@ final class ProductRootView extends FrameLayout {
     }
 
     private void closeRunner() {
-        runnerOpen = false; runner.setVisibility(GONE); chrome.setVisibility(VISIBLE);
+        runnerOpen = false; runner.setVisibility(GONE); chrome.setVisibility(cardPageShown() ? GONE : VISIBLE);
         restoreTab();
     }
 
     private void closeSettings() {
         settingsOpen = false;
         settings.setVisibility(GONE);
-        chrome.setVisibility(VISIBLE);
+        chrome.setVisibility(cardPageShown() ? GONE : VISIBLE);
         restoreTab();
+    }
+
+    /** A Cards page (Calendar, Tasks, Live, a creation) is up: it draws its own back button where the tabs sit. */
+    private boolean cardPageShown() {
+        return cardsOpen && cardContentOpen;
     }
 
     private void openCreationImport() {
@@ -217,7 +222,7 @@ final class ProductRootView extends FrameLayout {
 
     /** A card's "say" button on the Cards tab: continue in Voice with that request. */
     private void sayFromCard(String text) {
-        openVoice();
+        openVoiceFromCards();
         voice.startSessionWithNote("Host note (from a card on the R1's Cards tab): the user tapped a card button "
                 + "asking \u201c" + text.trim() + "\u201d. Treat it as their request and answer it.");
     }
@@ -293,6 +298,17 @@ final class ProductRootView extends FrameLayout {
         cards.setVisibility(VISIBLE);
         cards.start();
         cards.requestFocus();
+    }
+
+    /**
+     * Voice from inside the Cards tab (BACK on the board, a Calendar or Tasks page's Voice button,
+     * a card's say or transcript action). An open card page is closed first: it hides the tab bar
+     * and blocks tab swipes, so leaving it open behind Voice stranded the user on Voice without
+     * tabs. Unwinds like the side button does.
+     */
+    private void openVoiceFromCards() {
+        for (int depth = 0; depth < 4 && cardContentOpen; depth++) cards.onInput(UiInputIntent.BACK);
+        openVoice();
     }
 
     private void openVoice() {
