@@ -33,6 +33,9 @@ public final class GenUiController implements GenCardStore.Listener, AutoCloseab
 
         /** A live timer finished; the host may ask the model to mention it. */
         default void onTimerFinished(GenCard card) { }
+
+        /** A {@link GenAction.Kind#HOST} button on an app-built card was tapped. */
+        default void onHostAction(GenCard card, String action) { }
     }
 
     public static final int SHOWS_PER_RESPONSE = 2;
@@ -232,6 +235,32 @@ public final class GenUiController implements GenCardStore.Listener, AutoCloseab
         newIdCursor = (newIdCursor + 1) % newIdTimes.length;
     }
 
+    // ------------------------------------------------------------------ app-built cards
+
+    /**
+     * Shows (or replaces, by id) a card built by the app itself rather than the model, e.g. a
+     * T3 announcement card. Parsed as trusted, so it may carry {@code host} buttons and
+     * {@code open} targets the model cannot use; the model's show budgets are not touched.
+     * Returns the card now in the store, or null if the JSON did not validate.
+     */
+    public GenCard showHostCard(JSONObject json) {
+        GenCardParser.ParseResult parsed = GenCardParser.parseCard(json, store.now(), true);
+        if (!parsed.ok) return null;
+        GenCard card = parsed.card;
+        card.originSessionId = sessionId;
+        store.put(card);
+        return card;
+    }
+
+    /** The active card (stack or deck) following {@code type}/{@code threadId}, or null. */
+    public GenCard findLiveCard(LiveBinding.Type type, String threadId) {
+        if (type == null || threadId == null) return null;
+        for (GenCard card : store.activeCards()) {
+            if (card.live != null && card.live.type == type && threadId.equals(card.live.threadId)) return card;
+        }
+        return null;
+    }
+
     // ------------------------------------------------------------------ user actions
 
     /** A pill/button tap. */
@@ -241,6 +270,7 @@ public final class GenUiController implements GenCardStore.Listener, AutoCloseab
             case OPEN -> host.open(action.arg);
             case TIMER -> timerOp(card, action.arg);
             case DISMISS -> dismissByUser(card);
+            case HOST -> host.onHostAction(card, action.arg);
         }
         host.invalidateUi();
     }

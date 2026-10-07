@@ -118,6 +118,7 @@ public final class GenCardCodec {
                 case OPEN -> json.put("open", action.arg);
                 case TIMER -> json.put("timer", action.arg);
                 case DISMISS -> json.put("dismiss", true);
+                case HOST -> json.put("host", action.arg);
             }
         } catch (Exception ignored) { }
         return json;

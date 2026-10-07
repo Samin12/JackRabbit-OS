@@ -126,9 +126,9 @@ public final class GenCardLayout {
 
     // ---- actions ----
     int actionCount;
-    final float[] actionLeft = new float[GenSchema.ACTIONS];
-    final float[] actionRight = new float[GenSchema.ACTIONS];
-    final String[] actionLabel = new String[GenSchema.ACTIONS];
+    final float[] actionLeft = new float[GenSchema.HOST_ACTIONS];
+    final float[] actionRight = new float[GenSchema.HOST_ACTIONS];
+    final String[] actionLabel = new String[GenSchema.HOST_ACTIONS];
 
     // ---- pill ----
     String verb;
@@ -211,7 +211,7 @@ public final class GenCardLayout {
         bodyTop = y;
 
         // actions occupy the bottom
-        actionCount = card.actions.size();
+        actionCount = Math.min(card.actions.size(), GenSchema.HOST_ACTIONS);
         float actionsBlock = actionCount > 0 ? ACTIONS_TOP_GAP + ACTION_H : 0f;
         float limit;
         if (expanded) limit = Float.MAX_VALUE;

@@ -35,6 +35,7 @@ final class GenTestSupport {
         final List<String> opened = new ArrayList<>();
         final List<String> started = new ArrayList<>();
         final List<String> finished = new ArrayList<>();
+        final List<String> hostActions = new ArrayList<>();
         boolean live = true;
         boolean immersive;
         int invalidations;
@@ -68,6 +69,10 @@ final class GenTestSupport {
 
         @Override public void onTimerFinished(GenCard card) {
             finished.add(card.id);
+        }
+
+        @Override public void onHostAction(GenCard card, String action) {
+            hostActions.add(action);
         }
     }
 
