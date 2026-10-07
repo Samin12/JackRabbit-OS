@@ -177,6 +177,29 @@ class HeptabaseOAuthTest(unittest.TestCase):
         self.assertEqual(1, len(self.h.fake.appends()))
         self.assertIn("buy oat milk", self.h.fake.appends()[0][1])
 
+    def test_refresh_refusals_never_fail_queued_entries(self) -> None:
+        self.h.connect()
+        self.h.clock.advance(172_800 + 10)
+        self.h.fake.expire_all_access_tokens()
+        # A transient token-endpoint failure keeps the entries queued for a retry.
+        self.h.fake.refresh_failures.append("503")
+        self.h.service.record_note("first words for the journal", wait=False)
+        self.h.service.drain()
+        self.assertEqual(["pending"], [row["state"] for row in self.h.rows()])
+        self.assertEqual("connected", self.h.service.management_view()["state"])
+        # Any other refusal of the grant (here 400 server_error) needs a reconnect, not a failure.
+        self.h.clock.advance(60)
+        self.h.fake.refresh_failures.append("400")
+        self.h.service.record_note("second words for the journal", wait=False)
+        self.h.service.drain()
+        self.assertEqual(["pending", "pending"], [row["state"] for row in self.h.rows()])
+        view = self.h.service.management_view()
+        self.assertEqual("reconnect_required", view["state"])
+        self.assertEqual(0, view["queue"]["failed"])
+        self.h.connect()
+        self.h.service.drain()
+        self.assertEqual(["sent", "sent"], [row["state"] for row in self.h.rows()])
+
     def test_network_failure_during_refresh_keeps_a_still_valid_token(self) -> None:
         self.h.connect()
         oauth = self.h.service._oauth  # noqa: SLF001

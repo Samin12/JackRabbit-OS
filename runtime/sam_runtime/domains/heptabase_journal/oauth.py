@@ -311,9 +311,14 @@ class HeptabaseOAuth:
         payload = response.json()
         if response.status in (400, 401) and payload.get("error") in ("invalid_grant", "invalid_client", "unauthorized_client"):
             self._reconnect_required("Heptabase access expired or was revoked; reconnect to keep journaling.")
+        if 400 <= response.status < 500 and response.status not in (408, 429):
+            # Any other refusal of this grant needs a new one. It must never surface as a
+            # per-entry failure: the outbox would mark every queued entry 'failed'.
+            self._reconnect_required(
+                f"Heptabase refused to renew access (HTTP {response.status}); reconnect to keep journaling.")
         if response.status >= 400 or not isinstance(payload.get("access_token"), str):
             raise HeptabaseError("refresh_failed", f"Heptabase token refresh failed (HTTP {response.status}).",
-                                 status=response.status, retryable=response.status >= 500 or response.status == 429)
+                                 status=response.status, retryable=True)
         updated = self._record(payload, client_id=str(record.get("client_id", "")),
                                redirect_uri=record.get("redirect_uri"), previous=record)
         self._store.save(updated)  # persist the rotated refresh token before anyone uses the access token
