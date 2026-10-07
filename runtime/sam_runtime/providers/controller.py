@@ -50,6 +50,7 @@ class ProviderController:
         goal_intake_tools: Callable[[], tuple[dict[str, object], ...]] | None = None,
         voice_skill_instructions: Callable[[], str] | None = None,
         voice_modes: "VoiceModeService | None" = None,
+        t3_voice_context: Callable[[], str] | None = None,
     ) -> None:
         self._credentials = credentials
         self._settings = settings
@@ -65,6 +66,7 @@ class ProviderController:
         self._goal_intake_tools = goal_intake_tools
         self._voice_skill_instructions = voice_skill_instructions
         self._voice_modes = voice_modes
+        self._t3_voice_context = t3_voice_context
         self._models = ProviderModels((), ())
         self._log = runtime_logger()
         self._active_sessions: set[str] = set()
@@ -336,6 +338,17 @@ class ProviderController:
             if skill_instructions:
                 instructions_extra = "\n\n".join(
                     value for value in (instructions_extra, skill_instructions) if value
+                )
+        if self._t3_voice_context is not None:
+            # T3 Code guidance plus a live thread snapshot; part of the primary
+            # instructions so it also survives voice_mode_switch back to primary.
+            try:
+                t3_context = self._t3_voice_context()
+            except Exception:
+                t3_context = ""
+            if t3_context:
+                instructions_extra = "\n\n".join(
+                    value for value in (instructions_extra, t3_context) if value
                 )
         tool_definitions: tuple[dict[str, object], ...] | None = None
         extra_tools: tuple[dict[str, object], ...] = ()

@@ -19,7 +19,7 @@ PRIMARY_VOICE_INSTRUCTION = (
     "When the user clearly asks you to delegate substantial work to the background agent, "
     "call voice_mode_switch with modeKey goal_intake. Do not make the user know or say the "
     "word mode. Do not switch for ordinary questions or direct Mail, Calendar, Tasks, Memory, "
-    "Web Search, or installed Agent Skill requests. When the user asks to run, test, or use an "
+    "Web Search, T3 Code, or installed Agent Skill requests. When the user asks to run, test, or use an "
     "installed Skill, remain in Primary Voice and use load_agent_skill when its disclosure is "
     "relevant. The word test is never evidence of background-delegation intent. Switch only when "
     "the user explicitly requests substantial work by the background agent or explicitly asks to "
