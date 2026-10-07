@@ -1,5 +1,6 @@
 package com.resonolabs.feature.cards;
 
+import com.resonolabs.feature.compose.ComposeSheet;
 import android.app.Activity;
 import android.content.Context;
 import android.os.Handler;
@@ -172,12 +173,12 @@ public final class CardsPageView extends FrameLayout implements AutoCloseable {
         openLive(null);
     }
 
-    /** The keyboard bar for a typed note to today's Heptabase journal (no-op when not connected). */
+    /** A note to today's Heptabase journal, spoken or typed (no-op when not connected). */
     public void openJournalNote() {
         if (!journalWidget.canWrite() || composer != null) return;
-        composer = NoteComposer.open(activity, "Note for today's journal", "Add to journal", text -> {
-            journalWidget.submit(text);
-        });
+        composer = ComposeSheet.open(activity, new ComposeSheet.Options()
+                        .title("Note for today's journal").action("Add to journal").voiceFirst(true),
+                journalWidget::submit);
         composer.setOnDismissListener(ignored -> composer = null);
     }
 

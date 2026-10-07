@@ -662,7 +662,7 @@ final class ProductRootView extends FrameLayout {
 
     /** Horizontal swipes page through the tabs and wrap around: Voice → Cards → T3 → Voice. */
     private void cycleTab(int step) {
-        if (cardContentOpen) return;   // a card page (Calendar, a creation) keeps the swipe for itself
+        if (cardsOpen && cardContentOpen) return;   // a card page (Calendar, a creation) keeps the swipe
         int current = t3Open ? 2 : cardsOpen ? 1 : 0;
         switch (Math.floorMod(current + step, 3)) {
             case 1 -> openCards();
