@@ -139,7 +139,7 @@ public final class AgendaWidget implements BoardWidget {
             if (item == null) continue;
             String id = jsonText(item, "eventId");
             String place = AgendaPlace.label(jsonText(item, "location"), jsonText(item, "description"));
-            AgendaEvent event = AgendaEvent.of(id.isEmpty() ? "e" + i : id, jsonText(item, "title"),
+            AgendaEvent event = AgendaEvent.of(id.isEmpty() ? "e" + i : id, AgendaTitle.compact(jsonText(item, "title")),
                     jsonText(item, "startsAt"), jsonText(item, "endsAt"), item.optBoolean("allDay"),
                     place, jsonText(item, "calendar"), zone);
             if (event == null) continue;
