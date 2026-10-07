@@ -39,7 +39,16 @@ public final class MainActivity extends Activity {
     private boolean screenOffRegistered;
     private final BroadcastReceiver screenOff = new BroadcastReceiver() {
         @Override public void onReceive(Context context, Intent intent) {
-            if (root != null && root.stopVoiceForScreenOff()) {
+            if (root == null) return;
+            // SCREEN_OFF reaches HOME ~1 s after the panel goes off. If a press already woke the
+            // screen again (e.g. a quick double press that just started a new session) the mic
+            // is usable again: ending the session now would kill the one the user asked for.
+            PowerManager power = getSystemService(PowerManager.class);
+            if (power != null && power.isInteractive()) {
+                Log.i(SideButtonGesture.LOG_TAG, "screen off (stale: screen is on again) -> ignored");
+                return;
+            }
+            if (root.stopVoiceForScreenOff()) {
                 Log.i(SideButtonGesture.LOG_TAG, "screen off -> voice stopped");
             }
         }
