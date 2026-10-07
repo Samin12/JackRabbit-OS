@@ -392,7 +392,7 @@ final class ComposeSheetView extends FrameLayout implements DictationSession.Lis
         relayout();
         if (keyboard != null) keyboard.showSoftInput(field, InputMethodManager.SHOW_IMPLICIT);
         removeCallbacks(keyboardTimeout);
-        postDelayed(keyboardTimeout, 900L);
+        postDelayed(keyboardTimeout, 1500L);
     }
 
     private void hideKeyboard() {
@@ -536,7 +536,7 @@ final class ComposeSheetView extends FrameLayout implements DictationSession.Lis
         String raw = options.title;
         title = raw.isEmpty() ? "" : TextUtils.ellipsize(raw, textPaint(compact ? 15f : 17f), titleWidth,
                 TextUtils.TruncateAt.END).toString();
-        float size = compact ? 19f : 21f;
+        float size = compact ? 21f : 24f;
         if (size != fieldTextSize && getWidth() > 0) {
             fieldTextSize = size;
             field.setTextSize(TypedValue.COMPLEX_UNIT_PX, size * getWidth() / W);
