@@ -336,7 +336,7 @@ final class T3Model {
                     if (item == null) continue;
                     String role = text(item, "role");
                     if (!"user".equals(role) && !"assistant".equals(role)) continue;
-                    String body = item.optString("text", "");
+                    String body = raw(item, "text");
                     boolean streaming = item.optBoolean("streaming", false);
                     if (body.isBlank() && !streaming) continue;
                     String id = text(item, "id");
@@ -363,7 +363,7 @@ final class T3Model {
                             }
                         }
                         approvals.add(new Approval(text(item, "requestId"), text(item, "kind"),
-                                item.optString("detail", "").trim(), options));
+                                text(item, "detail"), options));
                     }
                 }
                 JSONArray inputItems = pending.optJSONArray("inputs");
@@ -390,7 +390,7 @@ final class T3Model {
                                 }
                                 String id = text(question, "id");
                                 questions.add(new Question(id.isEmpty() ? String.valueOf(q) : id,
-                                        text(question, "header"), question.optString("question", "").trim(),
+                                        text(question, "header"), text(question, "question"),
                                         options, question.optBoolean("allowCustom", true),
                                         question.optBoolean("multiSelect", false)));
                             }
@@ -442,10 +442,19 @@ final class T3Model {
         }
     }
 
-    /** {@code optString} that maps JSON null and missing keys to "". */
+    /**
+     * {@code optString} that maps JSON null and missing keys to "". Android's
+     * {@code optString(key, "")} returns the string "null" for a JSON null (the JVM reference
+     * jar used by the unit tests does not), so parsing never calls optString directly.
+     */
     static String text(JSONObject value, String key) {
+        return raw(value, key).trim();
+    }
+
+    /** Like {@link #text} but keeps surrounding whitespace (message bodies). */
+    static String raw(JSONObject value, String key) {
         if (value == null || value.isNull(key)) return "";
         Object raw = value.opt(key);
-        return raw == null ? "" : String.valueOf(raw).trim();
+        return raw == null ? "" : String.valueOf(raw);
     }
 }

@@ -14,12 +14,12 @@ import org.junit.Test;
 public final class T3ModelTest {
     private static final String SNAPSHOT = "{\"connected\":true,\"revision\":7,\"updatedAt\":\"2026-10-07T18:00:00Z\","
             + "\"counts\":{\"needsYou\":1,\"working\":1,\"done\":1,\"error\":0},"
-            + "\"projects\":[{\"id\":\"p1\",\"title\":\"Hermes\"},{\"id\":\"p2\",\"title\":\"Site\"}],"
+            + "\"projects\":[{\"id\":\"p1\",\"title\":\"Agents\"},{\"id\":\"p2\",\"title\":\"Site\"}],"
             + "\"threads\":["
             + "{\"id\":\"t1\",\"projectId\":\"p2\",\"projectTitle\":\"Site\",\"title\":\"Fix login\",\"status\":\"needs-approval\","
             + "\"statusLabel\":\"Needs approval\",\"updatedAt\":\"2026-10-07T17:58:00Z\",\"completedAt\":null,\"unread\":true,"
             + "\"model\":null,\"phase\":null,\"progress\":null},"
-            + "{\"id\":\"t2\",\"projectId\":\"p1\",\"projectTitle\":\"Hermes\",\"title\":\"\",\"status\":\"working\","
+            + "{\"id\":\"t2\",\"projectId\":\"p1\",\"projectTitle\":\"Agents\",\"title\":\"\",\"status\":\"working\","
             + "\"statusLabel\":\"Working\",\"updatedAt\":\"2026-10-07T17:59:30Z\",\"phase\":\"Running tests\",\"progress\":40},"
             + "{\"projectId\":\"p1\",\"title\":\"no id is skipped\"},"
             + "{\"id\":\"t3\",\"projectId\":\"p3\",\"projectTitle\":\"Orphan\",\"title\":\"Old\",\"status\":\"done\","
@@ -120,6 +120,20 @@ public final class T3ModelTest {
         T3Model.Detail c = T3Model.Detail.from(new JSONObject(DETAIL.replace("\"text\":\"hi\"", "\"text\":\"hey\"")));
         assertEquals(a.fingerprint(), b.fingerprint());
         assertNotEquals(a.fingerprint(), c.fingerprint());
+    }
+
+    @Test
+    public void nullApprovalDetailAndQuestionAreEmptyNotTheWordNull() throws Exception {
+        // The runtime sends "detail": null when T3 gave no detail (PendingApproval.detail is optional).
+        T3Model.Detail detail = T3Model.Detail.from(new JSONObject("{\"thread\":{\"id\":\"t1\"},"
+                + "\"messages\":[{\"id\":\"m1\",\"role\":\"assistant\",\"text\":null,\"streaming\":true}],"
+                + "\"pending\":{\"approvals\":[{\"requestId\":\"a1\",\"kind\":\"command\",\"detail\":null,\"options\":[]}],"
+                + "\"inputs\":[{\"requestId\":\"i1\",\"questions\":[{\"id\":\"q\",\"header\":null,\"question\":null,"
+                + "\"options\":[\"A\"]}]}]}}"));
+        assertEquals("", detail.approvals.get(0).detail);
+        assertEquals("", detail.inputs.get(0).questions.get(0).question);
+        assertEquals("", detail.inputs.get(0).questions.get(0).header);
+        assertEquals("", detail.messages.get(0).text);
     }
 
     @Test
