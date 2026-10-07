@@ -207,8 +207,8 @@ public final class SettingsPanelView extends View implements UiInputTarget {
         stepButtons(canvas);
     }
 
-    /** Redrawn every frame for the live orb preview, so nothing here allocates. */
     private void drawDisplayPage(Canvas canvas) {
+        // Redrawn every frame for the live orb preview, so nothing here allocates.
         if (displayValue == null) readDisplayBrightness();
         glassPainter.draw(canvas, paint, DISPLAY_BRIGHTNESS, 24f, false);
         SamTheme.text(canvas, paint, "Brightness", 240f, 134f, 16f, SamTheme.MUTED, Paint.Align.CENTER, false);
