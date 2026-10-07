@@ -235,8 +235,16 @@ public final class GenCardStore {
         stack.add(0, card);
         front = 0;
         ArrayList<String> evicted = new ArrayList<>();
+        enforceStackLimit(card, now, evicted);
+        notifyChanged();
+        notifyEvent(EVENT_SHOWN, card);
+        return new PutResult(stack.size(), evicted, notes);
+    }
+
+    /** Keeps the Voice stack at {@value #MAX_STACK} after {@code keep} was added at the front. */
+    private void enforceStackLimit(GenCard keep, long now, List<String> evicted) {
         while (stack.size() > MAX_STACK) {
-            GenCard victim = evictionVictim(card);
+            GenCard victim = evictionVictim(keep);
             if (victim == null) break;
             stack.remove(victim);
             if (victim.live != null && victim.isRunningLive() || victim.pinned) {
@@ -244,11 +252,9 @@ public final class GenCardStore {
             } else {
                 retire(victim, now);
             }
-            evicted.add(victim.id);
+            if (evicted != null) evicted.add(victim.id);
         }
-        notifyChanged();
-        notifyEvent(EVENT_SHOWN, card);
-        return new PutResult(stack.size(), evicted, notes);
+        bringToFront(keep);
     }
 
     private GenCard evictionVictim(GenCard keep) {
@@ -280,6 +286,7 @@ public final class GenCardStore {
                 stack.add(0, card);
                 front = 0;
                 card.arrivedAt = now;
+                enforceStackLimit(card, now, null);
             }
         }
         notifyChanged();
@@ -307,6 +314,7 @@ public final class GenCardStore {
         if (stash.remove(card)) {
             stack.add(0, card);
             front = 0;
+            enforceStackLimit(card, now, null);
         } else {
             bringToFront(card);
         }

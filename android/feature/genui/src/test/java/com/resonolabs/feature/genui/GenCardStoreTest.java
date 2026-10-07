@@ -279,4 +279,30 @@ public class GenCardStoreTest {
         disk.saved = "not json";
         assertEquals(0, new GenCardStore(clock, disk, null).stackSize());
     }
+
+    /** A deck-only card that comes back (update_card, or a timer ringing) still respects the 5-card stack. */
+    @Test public void returningDeckCardsKeepTheStackLimit() {
+        GenCard t1 = timer("t1");
+        timer("t2");
+        timer("t3");
+        timer("t4");
+        timer("t5");
+        timer("t6");
+        assertFalse(store.inStack(t1));
+        ephemeral("e1");
+        assertEquals(GenCardStore.MAX_STACK, store.stackSize());
+        store.changed(t1, true);
+        assertTrue(store.inStack(t1));
+        assertEquals(t1, store.front());
+        assertEquals(GenCardStore.MAX_STACK, store.stackSize());
+        assertEquals("e1", store.recent().get(0).id);
+
+        GenCard t2 = store.find("t2");
+        assertFalse(store.inStack(t2));
+        clock.advance(601_000L);
+        store.timerDone(t2);
+        assertTrue(store.inStack(t2));
+        assertEquals(t2, store.front());
+        assertEquals(GenCardStore.MAX_STACK, store.stackSize());
+    }
 }
