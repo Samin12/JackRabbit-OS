@@ -27,6 +27,7 @@ from .connection_routes import ConnectionRoutes
 from .background_agent_routes import BackgroundAgentRoutes
 from .t3_routes import T3Routes
 from .announcement_routes import AnnouncementRoutes
+from .heptabase_routes import HeptabaseRoutes
 
 if TYPE_CHECKING:
     from .http_server import HealthReader, RestartRequest
@@ -98,6 +99,7 @@ class RuntimeRoutes:
         background_agent: BackgroundAgentRoutes | None = None,
         t3: T3Routes | None = None,
         announcements: AnnouncementRoutes | None = None,
+        heptabase: HeptabaseRoutes | None = None,
     ) -> None:
         self._health = health
         self._lifecycle = lifecycle
@@ -123,6 +125,7 @@ class RuntimeRoutes:
         self._background_agent = background_agent
         self._t3 = t3
         self._announcements = announcements
+        self._heptabase = heptabase
 
     def handle_get(self, req: RouteRequest) -> None:
         path = req.path.split("?", 1)[0]
@@ -160,6 +163,7 @@ class RuntimeRoutes:
         if connections is not None and connections.handle_get(req, pairing): return
         if self._t3 is not None and self._t3.handle_get(req, pairing): return
         if self._announcements is not None and self._announcements.handle_get(req, pairing): return
+        if self._heptabase is not None and self._heptabase.handle_get(req, pairing): return
         if path == "/v1/health":
             req.respond_json(200, self._health())
             return
@@ -286,6 +290,7 @@ class RuntimeRoutes:
         if creations is not None and creations.handle_post(req, pairing): return
         if self._t3 is not None and self._t3.handle_post(req, pairing): return
         if self._announcements is not None and self._announcements.handle_post(req, pairing): return
+        if self._heptabase is not None and self._heptabase.handle_post(req, pairing): return
         if path == "/v1/mcp" and mcp is not None:
             payload = req.request_json(max_bytes=65_536)
             if payload is None:
@@ -351,6 +356,10 @@ class RuntimeRoutes:
                     appended += 1
                 except ValueError:
                     continue
+            # Journal the user's words before memory review so a reviewer or
+            # provider failure can never drop them (deduped by session id).
+            if self._heptabase is not None:
+                self._heptabase.voice_session_finalized(session_id, raw_entries)
             if appended == 0:
                 req.respond_json(409, {"error": {"code": "nothing_to_review", "message": "No transcript entries were captured."}})
                 return
@@ -605,6 +614,7 @@ class RuntimeRoutes:
             return
         if creations is not None and creations.handle_delete(req, pairing): return
         if self._t3 is not None and self._t3.handle_delete(req, pairing): return
+        if self._heptabase is not None and self._heptabase.handle_delete(req, pairing): return
         if path.startswith("/v1/management/memory/sessions/") and pairing is not None and memory is not None:
             if req.browser_session(pairing, mutation=True) is None:
                 return

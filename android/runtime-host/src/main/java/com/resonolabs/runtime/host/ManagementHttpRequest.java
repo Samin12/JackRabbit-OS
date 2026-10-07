@@ -8,9 +8,12 @@ import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
+import java.util.regex.Pattern;
 
-record ManagementHttpRequest(String method, String path, Map<String, String> headers, byte[] body) {
+record ManagementHttpRequest(
+        String method, String path, Map<String, String> headers, byte[] body, String query) {
     private static final int MAX_LINE = 4096;
+    private static final Pattern QUERY = Pattern.compile("[A-Za-z0-9._~%!$&'()*+,;=:@/?-]*");
     private static final int MAX_HEADERS = 50;
     private static final int MAX_BODY = 4096;
 
@@ -25,8 +28,11 @@ record ManagementHttpRequest(String method, String path, Map<String, String> hea
         if (!method.equals("GET") && !method.equals("POST") && !method.equals("DELETE")) {
             throw new IOException("unsupported method");
         }
-        String path = requestParts[1].split("\\?", 2)[0];
+        String[] target = requestParts[1].split("\\?", 2);
+        String path = target[0];
         if (!path.startsWith("/") || path.contains("..")) throw new IOException("invalid path");
+        // The query is kept separately; only routes that opt in receive it (see the proxy).
+        String query = target.length > 1 && QUERY.matcher(target[1]).matches() ? target[1] : "";
 
         Map<String, String> headers = new LinkedHashMap<>();
         for (int count = 0; count < MAX_HEADERS; count++) {
@@ -47,7 +53,8 @@ record ManagementHttpRequest(String method, String path, Map<String, String> hea
             throw new IOException("invalid content length");
         }
         if (contentLength < 0 || contentLength > MAX_BODY) throw new IOException("body too large");
-        return new ManagementHttpRequest(method, path, Map.copyOf(headers), input.readNBytes(contentLength));
+        return new ManagementHttpRequest(
+                method, path, Map.copyOf(headers), input.readNBytes(contentLength), query);
     }
 
     String header(String name) {

@@ -749,7 +749,8 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
             recordedEntries.put(new JSONObject()
                     .put("role", role)
                     .put("eventType", eventType)
-                    .put("text", text));
+                    .put("text", text)
+                    .put("at", System.currentTimeMillis()));
         } catch (Exception ignored) {
             // Keep event handling robust on malformed event payloads.
         }

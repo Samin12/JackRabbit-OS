@@ -87,6 +87,8 @@ from .domains.t3 import T3Repository, T3Service, T3SyncWorker
 from .domains.t3.tools import T3_TOOL_SET, register_t3_tools
 from .domains.t3.voice import T3VoiceContext
 from .api.t3_routes import T3Routes
+from .domains.heptabase_journal import JOURNAL_TOOL_SET, HeptabaseJournalService, register_journal_tools
+from .api.heptabase_routes import HeptabaseRoutes
 
 
 class RuntimeApplication:
@@ -176,6 +178,15 @@ class RuntimeApplication:
         TasksToolPackage(self._task_service).register(self._tools)
         self._connections = ConnectionRepository(self._database)
         self._connection_routes = ConnectionRoutes(self._connections)
+        self._heptabase_journal = HeptabaseJournalService(
+            database=self._database,
+            credentials=ConnectionCredentialRepository(self._database),
+            envelopes=connection_envelopes,
+            sessions=self._sessions,
+            connections=self._connections,
+        )
+        self._heptabase_routes = HeptabaseRoutes(self._heptabase_journal)
+        register_journal_tools(self._tools, self._heptabase_journal)
         register_mail_tools(self._tools, self._mail_repository, self._mail_service)
         register_web_search(self._tools, OpenAIWebSearch(credentials, provider_settings, self._subscription))
         self._announcements = AnnouncementRepository(
@@ -418,6 +429,13 @@ class RuntimeApplication:
                 changed_by="runtime-bootstrap",
                 reason="enable built-in T3 Code orchestration for Voice",
             )
+        if self._audience_router.binding_for(JOURNAL_TOOL_SET) is None:
+            self._audience_router.set_audience(
+                JOURNAL_TOOL_SET,
+                AgentAudience.VOICE,
+                changed_by="runtime-bootstrap",
+                reason="enable the built-in Heptabase journal for Voice (shown only when connected)",
+            )
         self._catalog.bootstrap_defaults()
         self._skill_lifecycle.recover()
         self._instruction_documents.recover()
@@ -461,12 +479,14 @@ class RuntimeApplication:
             background_agent=self._background_agent_routes,
             t3=self._t3_routes,
             announcements=self._announcement_routes,
+            heptabase=self._heptabase_routes,
         )
         self._server.start()
         self._background_agent.start()
         self._mail_scheduler.start()
         self._calendar_scheduler.start()
         self._t3_sync.start()
+        self._heptabase_journal.start()
         self._events.publish(
             "runtime.ready",
             {"status": "ready", "startCount": int(record.value)},
@@ -479,6 +499,7 @@ class RuntimeApplication:
         self._mail_scheduler.stop()
         self._calendar_scheduler.stop()
         self._t3_sync.stop()
+        self._heptabase_journal.stop()
         if self._server is not None:
             self._server.stop()
             self._server = None

@@ -33,6 +33,9 @@ chaquopy {
             install("jsonschema==4.25.1")
             install("PyYAML==6.0.3")
             install("openai-agents==0.18.3")
+            // IANA zone data for zoneinfo (Android has no /usr/share/zoneinfo); journal dates
+            // are computed in the user's zone. The runtime falls back to a fixed US Eastern rule.
+            install("tzdata==2025.2")
         }
     }
     sourceSets.getByName("main") {

@@ -14,7 +14,8 @@ final class ManagementAssetStore {
             "/management/app.js", "management/app.js",
             "/management/build07.js", "management/build07.js",
             "/management/background-agent.js", "management/background-agent.js",
-            "/management/t3.js", "management/t3.js");
+            "/management/t3.js", "management/t3.js",
+            "/management/heptabase.js", "management/heptabase.js");
     private final AssetManager assets;
 
     ManagementAssetStore(AssetManager assets) {

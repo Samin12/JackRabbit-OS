@@ -55,7 +55,17 @@ final class ManagementRuntimeProxy {
             "/v1/management/memory/sessions",
             "/v1/management/t3",
             "/v1/management/t3/connect",
-            "/v1/management/t3/disconnect");
+            "/v1/management/t3/disconnect",
+            "/v1/management/heptabase",
+            "/v1/management/heptabase/connect/start",
+            "/v1/management/heptabase/settings",
+            "/v1/management/heptabase/disconnect",
+            "/v1/management/heptabase/retry",
+            "/v1/management/heptabase/oauth/import",
+            // OAuth redirect target: authenticated by its single-use state, not by a session.
+            "/v1/heptabase/oauth/callback");
+    /** Routes that receive the request query string (everything else is forwarded path-only). */
+    private static final Set<String> QUERY_ROUTES = Set.of("/v1/heptabase/oauth/callback");
     private static final Set<String> ROUTE_PREFIXES = Set.of(
             "/v1/management/mail/accounts/",
             "/v1/management/calendar/accounts/",
@@ -81,8 +91,11 @@ final class ManagementRuntimeProxy {
         }
         HttpURLConnection connection = null;
         try {
+            String target = QUERY_ROUTES.contains(request.path()) && !request.query().isEmpty()
+                    ? request.path() + "?" + request.query()
+                    : request.path();
             connection = (HttpURLConnection) new URL(
-                    "http://127.0.0.1:8765" + request.path()).openConnection();
+                    "http://127.0.0.1:8765" + target).openConnection();
             connection.setRequestMethod(request.method());
             connection.setConnectTimeout(1000);
             connection.setReadTimeout(readTimeoutMillis(request.path()));
@@ -121,7 +134,7 @@ final class ManagementRuntimeProxy {
         }
     }
 
-    private static boolean isAllowed(String path) {
+    static boolean isAllowed(String path) {
         if (ROUTES.contains(path)) return true;
         if (path.length() <= "/v1/management/memory/".length()) return false;
         for (String prefix : ROUTE_PREFIXES) {
@@ -130,8 +143,12 @@ final class ManagementRuntimeProxy {
         return false;
     }
 
-    private static int readTimeoutMillis(String path) {
+    static int readTimeoutMillis(String path) {
         if (path.equals("/v1/management/text/turns")) return 65_000;
+        if (path.equals("/v1/heptabase/oauth/callback")) return 45_000;
+        if (path.equals("/v1/management/heptabase/connect/start")
+                || path.equals("/v1/management/heptabase/disconnect")
+                || path.equals("/v1/management/heptabase/oauth/import")) return 30_000;
         if (path.endsWith("/finalize")) return 65_000;
         if (path.equals("/v1/management/memory/reindex")) return 35_000;
         if (path.equals("/v1/management/t3/connect")) return 20_000;
