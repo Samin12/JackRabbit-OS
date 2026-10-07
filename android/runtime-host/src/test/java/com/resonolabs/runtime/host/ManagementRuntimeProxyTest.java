@@ -18,6 +18,19 @@ public final class ManagementRuntimeProxyTest {
     }
 
     @Test
+    public void macBridgeRoutesAreForwardedWithRoomForTheMacToAnswer() {
+        assertTrue(ManagementRuntimeProxy.isAllowed("/v1/management/heptabase/bridge"));
+        assertTrue(ManagementRuntimeProxy.isAllowed("/v1/management/heptabase/bridge/check"));
+        assertTrue(ManagementRuntimeProxy.isAllowed("/v1/management/heptabase/bridge/disconnect"));
+        assertTrue(ManagementRuntimeProxy.isAllowed("/v1/management/heptabase/test-entry"));
+        assertFalse(ManagementRuntimeProxy.isAllowed("/v1/management/heptabase/bridge/other"));
+        assertEquals(25_000, ManagementRuntimeProxy.readTimeoutMillis("/v1/management/heptabase/bridge"));
+        assertEquals(25_000, ManagementRuntimeProxy.readTimeoutMillis("/v1/management/heptabase/bridge/check"));
+        assertEquals(15_000, ManagementRuntimeProxy.readTimeoutMillis("/v1/management/heptabase/test-entry"));
+        assertEquals(8_000, ManagementRuntimeProxy.readTimeoutMillis("/v1/management/heptabase/bridge/disconnect"));
+    }
+
+    @Test
     public void deviceJournalRoutesStayLoopbackOnly() {
         assertFalse(ManagementRuntimeProxy.isAllowed("/v1/journal/status"));
         assertFalse(ManagementRuntimeProxy.isAllowed("/v1/journal/notes"));
