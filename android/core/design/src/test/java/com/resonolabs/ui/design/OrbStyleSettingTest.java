@@ -44,7 +44,7 @@ public final class OrbStyleSettingTest {
         assertEquals(OrbStyle.FLUID, OrbStyle.parse(null));
         assertEquals(OrbStyle.FLUID, OrbStyle.parse(""));
         assertEquals(OrbStyle.FLUID, OrbStyle.parse("PIXEL_HEAD"));
-        assertEquals(OrbStyle.FLUID, OrbStyle.parse("hermes"));
+        assertEquals(OrbStyle.FLUID, OrbStyle.parse("rainbow"));
     }
 
     @Test public void keysAndLabelsAreStable() {
