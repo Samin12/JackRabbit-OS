@@ -353,16 +353,32 @@ final class ProductRootView extends FrameLayout {
         if (!horizontalGesture) return true;
         if (event.getActionMasked() == MotionEvent.ACTION_UP) {
             float dx = event.getX() - gestureDownX;
-            if (dx <= -72f && !cameraOpen) openCamera();
-            else if (dx >= 72f && cameraOpen) {
-                camera.stop();
-                returnFromCamera();
+            if (cameraOpen) {
+                if (dx >= 72f) {
+                    camera.stop();
+                    returnFromCamera();
+                }
+            } else if (dx <= -72f) {
+                cycleTab(1);
+            } else if (dx >= 72f) {
+                cycleTab(-1);
             }
             horizontalGesture = false;
         } else if (event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
             horizontalGesture = false;
         }
         return true;
+    }
+
+    /** Horizontal swipes page through the tabs and wrap around: Voice → Cards → T3 → Voice. */
+    private void cycleTab(int step) {
+        if (cardContentOpen) return;   // a card page (Calendar, a creation) keeps the swipe for itself
+        int current = t3Open ? 2 : cardsOpen ? 1 : 0;
+        switch (Math.floorMod(current + step, 3)) {
+            case 1 -> openCards();
+            case 2 -> openT3();
+            default -> openVoice();
+        }
     }
 
     boolean onHardwareKey(KeyEvent event) {
