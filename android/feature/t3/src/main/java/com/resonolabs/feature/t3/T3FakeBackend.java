@@ -19,7 +19,7 @@ final class T3FakeBackend {
     private static final long MINUTE = 60_000L;
     private static final String SAM = "p-samrabbit";
     private static final String WEB = "p-bookedin";
-    private static final String HERMES = "p-agents";
+    private static final String AGENTS = "p-agents";
 
     private final Map<String, FakeThread> threads = new LinkedHashMap<>();
     private final Map<String, String> projects = new LinkedHashMap<>();
@@ -57,7 +57,7 @@ final class T3FakeBackend {
     T3FakeBackend(long now, boolean withThreads) {
         projects.put(SAM, "SamRabbit");
         projects.put(WEB, "bookedin-web");
-        projects.put(HERMES, "Agent Club");
+        projects.put(AGENTS, "Agent Club");
         if (withThreads) seed(now);
     }
 
@@ -311,7 +311,7 @@ final class T3FakeBackend {
                 now - 4 * MINUTE);
         login.finishAt = Long.MAX_VALUE; // Keeps "working" until the user interacts.
 
-        FakeThread journal = put("fake-journal", HERMES, "Summarize this week's Heptabase journal",
+        FakeThread journal = put("fake-journal", AGENTS, "Summarize this week's Heptabase journal",
                 T3Status.WORKING, "Working", "Reading notes", now - 3 * MINUTE, false);
         addMessage(journal, true, "Give me a short summary of what I worked on this week.", now - 5 * MINUTE);
         journal.finishAt = Long.MAX_VALUE;
@@ -363,7 +363,7 @@ final class T3FakeBackend {
         addMessage(wifi, false, "The driver powers down in deep sleep and the supplicant takes ~4s to reassociate. "
                 + "Nothing to fix in SamRabbit; the runtime already retries.", now - 26 * 60 * MINUTE);
 
-        FakeThread readme = put("fake-readme", HERMES, "Clean up the README badges",
+        FakeThread readme = put("fake-readme", AGENTS, "Clean up the README badges",
                 T3Status.DONE, "Done", null, now - 3 * 24 * 60 * MINUTE, false);
         addMessage(readme, true, "Remove the broken badges from the README.", now - 3 * 24 * 60 * MINUTE - MINUTE);
         addMessage(readme, false, "Removed 3 dead badges and fixed the CI badge URL.", now - 3 * 24 * 60 * MINUTE);
