@@ -29,6 +29,7 @@ include(
     ":feature:camera",
     ":feature:creation-import",
     ":feature:background-run",
+    ":feature:t3",
     ":runtime-host",
     ":system:motor-service",
 )
