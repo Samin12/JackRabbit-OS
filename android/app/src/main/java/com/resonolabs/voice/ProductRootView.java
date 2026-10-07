@@ -68,7 +68,7 @@ final class ProductRootView extends FrameLayout {
         addView(camera, match());
         addView(runner, match());
         addView(creationImport, match());
-        LayoutParams chromeParams = new LayoutParams(LayoutParams.MATCH_PARENT, 142);
+        LayoutParams chromeParams = new LayoutParams(LayoutParams.MATCH_PARENT, (int) ProductChromeView.HEIGHT);
         addView(chrome, chromeParams);
         addView(settings, match());
         setFocusable(true);

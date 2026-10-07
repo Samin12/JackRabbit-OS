@@ -12,6 +12,7 @@ import android.view.View;
 import org.json.JSONArray;
 
 import com.resonolabs.runtime.host.RuntimeVoiceClient;
+import com.resonolabs.ui.design.FluidOrb;
 import com.resonolabs.ui.design.ReSonoTheme;
 import com.resonolabs.ui.input.UiInputIntent;
 
@@ -24,6 +25,8 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
     private static final float HEIGHT = 640f;
     private final Activity activity;
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final FluidOrb orb = new FluidOrb();
+    private float orbRadius = 92f;
     private final StringBuilder assistantDraft = new StringBuilder();
     private final JSONArray recordedEntries = new JSONArray();
     private final VoiceSessionStateTracker sessionState = new VoiceSessionStateTracker();
@@ -318,81 +321,87 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
     }
 
     @Override protected void onDraw(Canvas canvas) {
-        canvas.drawColor(ReSonoTheme.BACKGROUND);
         canvas.save();
         canvas.scale(getWidth() / WIDTH, getHeight() / HEIGHT);
         VoiceSessionStateTracker.State state = sessionState.state();
-        int accent = state == VoiceSessionStateTracker.State.ERROR ? ReSonoTheme.RED
-                : state == VoiceSessionStateTracker.State.CONNECTING ? ReSonoTheme.AMBER
-                : state == VoiceSessionStateTracker.State.LIVE
-                || state == VoiceSessionStateTracker.State.RESPONDING
-                ? ReSonoTheme.MINT : ReSonoTheme.CYAN;
-        paint.setStyle(Paint.Style.STROKE);
-        paint.setStrokeWidth(2.5f);
-        paint.setColor(accent);
-        canvas.drawCircle(240f, 300f, 72f, paint);
-        drawMicrophone(canvas, 240f, 300f, accent);
+        boolean error = state == VoiceSessionStateTracker.State.ERROR;
+        float targetRadius = switch (state) {
+            case IDLE -> 92f;
+            case CONNECTING -> 84f + 6f * (float) Math.sin(android.os.SystemClock.uptimeMillis() / 220.0);
+            case LIVE -> 104f;
+            case RESPONDING -> 112f;
+            case ERROR -> 86f;
+        };
+        orbRadius += (targetRadius - orbRadius) * 0.12f;
+        orb.setColor(error ? ReSonoTheme.RED : ReSonoTheme.ORB_BLUE)
+                .setEnergy(switch (state) {
+                    case IDLE -> 0.15f;
+                    case CONNECTING -> 0.4f;
+                    case LIVE -> 0.6f;
+                    case RESPONDING -> 1f;
+                    case ERROR -> 0.05f;
+                })
+                .setSpeed(switch (state) {
+                    case IDLE -> 0.6f;
+                    case CONNECTING -> 1.5f;
+                    case LIVE -> 1.1f;
+                    case RESPONDING -> 1.9f;
+                    case ERROR -> 0.3f;
+                });
+        float orbY = 292f + orb.bob(5f);
+        ReSonoTheme.background(canvas, paint, WIDTH, HEIGHT, 240f, orbY, 260f, orb.color());
+        orb.draw(canvas, 240f, orbY, orbRadius);
 
         String headline = switch (state) {
-            case IDLE -> "Touch to Start";
-            case CONNECTING -> "Opening voice session";
+            case IDLE -> "Tap to talk";
+            case CONNECTING -> "Connecting…";
             case LIVE -> "Listening";
-            case RESPONDING -> "Responding";
+            case RESPONDING -> "Speaking";
             case ERROR -> "Voice unavailable";
         };
-        ReSonoTheme.text(canvas, paint, headline, 240f, 410f, 29f,
-                ReSonoTheme.INK, Paint.Align.CENTER, false);
-        String sessionLabel = switch (state) {
-            case IDLE -> "SESSION: IDLE";
-            case CONNECTING -> "STATE: CONNECTING";
-            case LIVE -> "STATE: LIVE";
-            case RESPONDING -> "STATE: RESPONDING";
-            case ERROR -> "STATE: ERROR";
+        ReSonoTheme.text(canvas, paint, headline, 240f, 452f, 30f,
+                ReSonoTheme.INK, Paint.Align.CENTER, true);
+        String detail = switch (state) {
+            case IDLE -> "Tap the orb or press the side button";
+            case CONNECTING -> "Opening a voice session";
+            default -> transcript;
         };
-        ReSonoTheme.text(canvas, paint, sessionLabel, 240f, 440f, 12f,
-                state == VoiceSessionStateTracker.State.ERROR ? ReSonoTheme.RED : ReSonoTheme.MINT,
-                Paint.Align.CENTER, true);
-        String detail = state == VoiceSessionStateTracker.State.IDLE
-                ? "Press to start a voice session" : transcript;
-        drawWrapped(canvas, detail, 52f, 480f, 376f, 17f,
-                state == VoiceSessionStateTracker.State.ERROR ? ReSonoTheme.RED : ReSonoTheme.MUTED);
+        drawWrapped(canvas, detail, 240f, 488f, 400f, 18f,
+                error ? ReSonoTheme.RED : ReSonoTheme.MUTED, isAvailable() ? 2 : 3);
         if (isAvailable()) {
-            paint.setStyle(Paint.Style.STROKE); paint.setStrokeWidth(2f); paint.setColor(ReSonoTheme.LINE);
-            canvas.drawRoundRect(142f, 565f, 338f, 615f, 20f, 20f, paint);
-            ReSonoTheme.text(canvas, paint, "Hand to Voice", 240f, 597f, 17f,
-                    ReSonoTheme.MINT, Paint.Align.CENTER, true);
+            RectF pill = new RectF(150f, 566f, 330f, 614f);
+            ReSonoTheme.glass(canvas, paint, pill, 24f, false);
+            drawCameraGlyph(canvas, 190f, 590f);
+            ReSonoTheme.text(canvas, paint, "Show camera", 258f, 596f, 17f,
+                    ReSonoTheme.INK, Paint.Align.CENTER, true);
         }
         canvas.restore();
+        if (isShown()) postInvalidateDelayed(33L);
     }
 
-    private void drawMicrophone(Canvas canvas, float centerX, float centerY, int color) {
+    private void drawCameraGlyph(Canvas canvas, float cx, float cy) {
         paint.setStyle(Paint.Style.STROKE);
-        paint.setStrokeWidth(4f);
-        paint.setStrokeCap(Paint.Cap.ROUND);
-        paint.setColor(color);
-        RectF body = new RectF(centerX - 14f, centerY - 30f, centerX + 14f, centerY + 17f);
-        canvas.drawRoundRect(body, 14f, 14f, paint);
-        RectF arc = new RectF(centerX - 28f, centerY - 6f, centerX + 28f, centerY + 34f);
-        canvas.drawArc(arc, 0f, 180f, false, paint);
-        canvas.drawLine(centerX, centerY + 34f, centerX, centerY + 45f, paint);
-        canvas.drawLine(centerX - 9f, centerY + 45f, centerX + 9f, centerY + 45f, paint);
-        paint.setStrokeCap(Paint.Cap.BUTT);
+        paint.setStrokeWidth(2.2f);
+        paint.setColor(ReSonoTheme.ORB_PALE);
+        canvas.drawRoundRect(cx - 13f, cy - 9f, cx + 13f, cy + 10f, 4f, 4f, paint);
+        canvas.drawCircle(cx, cy + 0.5f, 5f, paint);
         paint.setStyle(Paint.Style.FILL);
     }
 
-    private void drawWrapped(Canvas canvas, String value, float x, float y, float width,
-                             float size, int color) {
+    private void drawWrapped(Canvas canvas, String value, float centerX, float y, float width,
+                             float size, int color, int maxLines) {
         paint.setTextSize(size);
         String remaining = value == null ? "" : value.trim();
-        for (int line = 0; line < 3 && !remaining.isEmpty(); line++) {
+        for (int line = 0; line < maxLines && !remaining.isEmpty(); line++) {
             int count = paint.breakText(remaining, true, width, null);
             if (count < remaining.length()) {
                 int space = remaining.lastIndexOf(' ', Math.max(0, count - 1));
                 if (space > 0) count = space;
             }
             String text = remaining.substring(0, Math.max(1, count)).trim();
-            if (line == 2 && count < remaining.length()) text = text + "…";
-            ReSonoTheme.text(canvas, paint, text, x, y + line * 26f, size, color, Paint.Align.LEFT, false);
+            if (line == maxLines - 1 && count < remaining.length()) text = text + "…";
+            ReSonoTheme.text(canvas, paint, text, centerX, y + line * 26f, size, color,
+                    Paint.Align.CENTER, false);
             remaining = remaining.substring(Math.min(remaining.length(), Math.max(1, count))).trim();
         }
     }
