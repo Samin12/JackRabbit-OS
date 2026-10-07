@@ -169,6 +169,28 @@ public final class LiveCardsPageView extends View implements GenCardStore.Listen
         return true;
     }
 
+    /**
+     * Opens one card full-height (a pill tapped on the Cards board). Returns false, leaving the
+     * list, when the card is no longer in the deck.
+     */
+    public boolean openCard(String id) {
+        rebuild();
+        for (int index = 0; index < entries.size(); index++) {
+            if (entries.get(index).card.id.equals(id)) {
+                select(index);
+                openDetail(entries.get(index));
+                invalidate();
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** True while one card is open full-height. */
+    public boolean detailOpen() {
+        return detail != null;
+    }
+
     private void select(int index) {
         selected = Math.max(0, Math.min(entries.size() - 1, index));
         Entry entry = entries.get(selected);
