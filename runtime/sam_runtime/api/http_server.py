@@ -29,6 +29,8 @@ from .tool_routes import ToolRoutes
 from .plugin_routes import PluginRoutes
 from .creation_routes import CreationRoutes
 from .background_agent_routes import BackgroundAgentRoutes
+from .t3_routes import T3Routes
+from .announcement_routes import AnnouncementRoutes
 
 
 HealthReader = Callable[[], dict[str, object]]
@@ -71,6 +73,8 @@ class RuntimeHttpServer:
         creations: CreationRoutes | None = None,
         connections: ConnectionRoutes | None = None,
         background_agent: BackgroundAgentRoutes | None = None,
+        t3: T3Routes | None = None,
+        announcements: AnnouncementRoutes | None = None,
     ) -> None:
         if host != "127.0.0.1":
             raise ValueError("private runtime API must bind to loopback")
@@ -97,6 +101,8 @@ class RuntimeHttpServer:
             creations=creations,
             connections=connections,
             background_agent=background_agent,
+            t3=t3,
+            announcements=announcements,
         )
         handler = _handler(token=token, events=events, routes=routes)
         self._server = ThreadingHTTPServer((host, port), handler)

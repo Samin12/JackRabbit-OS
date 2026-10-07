@@ -23,6 +23,7 @@ for required in \
     'assets/management/index.html' \
     'assets/management/app.js' \
     'assets/management/background-agent.js' \
+    'assets/management/t3.js' \
     'assets/management/management.css' \
     'assets/design/tokens.css' \
     'assets/design/base.css'; do

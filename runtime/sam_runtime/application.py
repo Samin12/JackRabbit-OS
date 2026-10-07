@@ -81,6 +81,12 @@ from .background_agent.workspace import RunWorkspaceRegistry
 from .storage.workspace import WorkspaceRepository
 from .workspace.service import DurableWorkspace
 from .workspace.tools import WORKSPACE_TOOL_SET, register_workspace_tools
+from .storage.announcements import AnnouncementRepository
+from .api.announcement_routes import AnnouncementRoutes
+from .domains.t3 import T3Repository, T3Service, T3SyncWorker
+from .domains.t3.tools import T3_TOOL_SET, register_t3_tools
+from .domains.t3.voice import T3VoiceContext
+from .api.t3_routes import T3Routes
 
 
 class RuntimeApplication:
@@ -172,6 +178,15 @@ class RuntimeApplication:
         self._connection_routes = ConnectionRoutes(self._connections)
         register_mail_tools(self._tools, self._mail_repository, self._mail_service)
         register_web_search(self._tools, OpenAIWebSearch(credentials, provider_settings, self._subscription))
+        self._announcements = AnnouncementRepository(
+            self._database,
+            on_publish=lambda item: self._events.publish(item.kind, item.view()),
+        )
+        self._announcement_routes = AnnouncementRoutes(self._announcements)
+        self._t3 = T3Service(T3Repository(self._database), connection_envelopes, announcements=self._announcements)
+        self._t3_sync = T3SyncWorker(self._t3)
+        self._t3_routes = T3Routes(self._t3)
+        register_t3_tools(self._tools, self._t3)
         self._background_agent_runs = AgentRunRepository(self._database)
         self._background_agent_settings = BackgroundAgentSettingsRepository(self._database)
         self._run_workspaces = RunWorkspaceRegistry(config.background_runs_path)
@@ -291,6 +306,7 @@ class RuntimeApplication:
             ),
             voice_skill_instructions=self._instruction_documents.voice_instructions,
             voice_modes=self._voice_modes,
+            t3_voice_context=T3VoiceContext(self._t3).render,
         )
         self._text_runner = AgentsSdkTextRunner(
             credentials=credentials,
@@ -395,6 +411,13 @@ class RuntimeApplication:
                 changed_by="runtime-bootstrap",
                 reason="enable read-only workspace access for Voice and bounded workspace access for Background Agent",
             )
+        if self._audience_router.binding_for(T3_TOOL_SET) is None:
+            self._audience_router.set_audience(
+                T3_TOOL_SET,
+                AgentAudience.VOICE,
+                changed_by="runtime-bootstrap",
+                reason="enable built-in T3 Code orchestration for Voice",
+            )
         self._catalog.bootstrap_defaults()
         self._skill_lifecycle.recover()
         self._instruction_documents.recover()
@@ -436,11 +459,14 @@ class RuntimeApplication:
             creations=self._creation_routes,
             connections=self._connection_routes,
             background_agent=self._background_agent_routes,
+            t3=self._t3_routes,
+            announcements=self._announcement_routes,
         )
         self._server.start()
         self._background_agent.start()
         self._mail_scheduler.start()
         self._calendar_scheduler.start()
+        self._t3_sync.start()
         self._events.publish(
             "runtime.ready",
             {"status": "ready", "startCount": int(record.value)},
@@ -452,6 +478,7 @@ class RuntimeApplication:
         self._background_agent.stop()
         self._mail_scheduler.stop()
         self._calendar_scheduler.stop()
+        self._t3_sync.stop()
         if self._server is not None:
             self._server.stop()
             self._server = None
