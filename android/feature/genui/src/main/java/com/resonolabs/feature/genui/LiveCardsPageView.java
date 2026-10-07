@@ -123,15 +123,15 @@ public final class LiveCardsPageView extends View implements GenCardStore.Listen
         boolean first = true;
         for (GenCard card : cards) {
             if (!recent && live != (card.live != null)) continue;
+            Entry entry = new Entry();
+            entry.card = card;
+            entry.recent = recent;
+            // Only the first card of a section carries its label (a third card used to repeat it).
+            entry.section = first ? name : "";
             if (first) {
                 y += SECTION;
                 first = false;
             }
-            Entry entry = new Entry();
-            entry.card = card;
-            entry.recent = recent;
-            entry.section = entries.isEmpty() || !entries.get(entries.size() - 1).section.equals(name) ? name : null;
-            if (entry.section == null) entry.section = "";
             entry.top = y;
             entries.add(entry);
             y += ROW + ROW_GAP;
@@ -167,6 +167,28 @@ public final class LiveCardsPageView extends View implements GenCardStore.Listen
         }
         invalidate();
         return true;
+    }
+
+    /**
+     * Opens one card full-height (a pill tapped on the Cards board). Returns false, leaving the
+     * list, when the card is no longer in the deck.
+     */
+    public boolean openCard(String id) {
+        rebuild();
+        for (int index = 0; index < entries.size(); index++) {
+            if (entries.get(index).card.id.equals(id)) {
+                select(index);
+                openDetail(entries.get(index));
+                invalidate();
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** True while one card is open full-height. */
+    public boolean detailOpen() {
+        return detail != null;
     }
 
     private void select(int index) {

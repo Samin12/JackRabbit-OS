@@ -42,6 +42,7 @@ from .commands import (
 from .matching import match_item
 from .repository import T3ConnectionRecord, T3Repository
 from .status import (
+    ACTIVITY_ACTIVE,
     DONE,
     ERROR,
     NEEDS_APPROVAL,
@@ -51,6 +52,7 @@ from .status import (
     PendingInput,
     PendingQuestion,
     PendingRequests,
+    activity_level,
     activity_time,
     condense,
     counts,
@@ -222,6 +224,21 @@ class T3Service:
     def has_active(self) -> bool:
         with self._lock:
             return any(item["status"] in NEEDS_YOU or item["status"] == WORKING for item in self._summaries)
+
+    def activity_level(self) -> str:
+        """Poll cadence tier from the last shell (see ``status.activity_level``).
+
+        A turn this R1 just requested counts as active until it shows up (or its grace ends),
+        so a new thread or message from the R1 is followed at the fast cadence even before T3
+        reports the session as starting.
+        """
+        with self._lock:
+            threads = dict(self._threads)
+            requested = list(self._turn_requests)
+        for thread_id in requested:
+            if self._awaiting_turn_start(thread_id, threads.get(thread_id, {})):
+                return ACTIVITY_ACTIVE
+        return activity_level(list(threads.values()))
 
     def status_view(self) -> dict[str, object]:
         record = self._current()

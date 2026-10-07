@@ -1,9 +1,14 @@
 """Background T3 shell poller.
 
-Polls every 2 s while any thread is working or needs the user, otherwise every
-5 s. Network failures back off (5, 10, 20, 40, 60 s). A rejected credential
-stops polling until the user pairs again. Any write or pairing wakes the
-poller immediately so screens see the change within a moment.
+Polls every 2 s while a turn runs, starts (including one this R1 just requested)
+or waits on the user; every 5 s while threads are only background-live (T3's
+"Background work": no running session, nothing pending, so nothing to announce);
+and every 15 s when nothing is working or pending. Each poll fetches and parses
+the whole shell, so the slower tiers matter for the R1's battery: a parent
+session with background tasks can stay background-live around the clock.
+Network failures back off (5, 10, 20, 40, 60 s). A rejected credential stops
+polling until the user pairs again. Any write or pairing wakes the poller
+immediately so screens see the change within a moment.
 """
 
 from __future__ import annotations
@@ -14,10 +19,12 @@ from sam_runtime.core.logging import runtime_logger
 
 from .client import T3Error
 from .service import T3NotConnected, T3ReauthRequired, T3Service
+from .status import ACTIVITY_ACTIVE, ACTIVITY_BACKGROUND
 
 
 ACTIVE_INTERVAL = 2.0
 IDLE_INTERVAL = 5.0
+QUIET_INTERVAL = 15.0
 MAX_BACKOFF = 60.0
 UNPAIRED_WAIT = 30.0
 
@@ -29,11 +36,13 @@ class T3SyncWorker:
         *,
         active_interval: float = ACTIVE_INTERVAL,
         idle_interval: float = IDLE_INTERVAL,
+        quiet_interval: float = QUIET_INTERVAL,
         max_backoff: float = MAX_BACKOFF,
     ) -> None:
         self._service = service
         self._active_interval = active_interval
         self._idle_interval = idle_interval
+        self._quiet_interval = quiet_interval
         self._max_backoff = max_backoff
         self._stop = threading.Event()
         self._wake = threading.Event()
@@ -72,7 +81,7 @@ class T3SyncWorker:
             self._failures = 0
             return UNPAIRED_WAIT
         try:
-            active = self._service.sync_once()
+            self._service.sync_once()
         except T3ReauthRequired:
             self._log.warning("t3.sync.reauth_required")
             return UNPAIRED_WAIT
@@ -88,4 +97,12 @@ class T3SyncWorker:
             self._log.exception("t3.sync.crashed")
             return min(self._max_backoff, 5.0 * (2 ** min(self._failures - 1, 6)))
         self._failures = 0
-        return self._active_interval if active else self._idle_interval
+        return self.interval_for(self._service.activity_level())
+
+    def interval_for(self, level: str) -> float:
+        """Seconds until the next poll for an activity level from ``T3Service.activity_level``."""
+        if level == ACTIVITY_ACTIVE:
+            return self._active_interval
+        if level == ACTIVITY_BACKGROUND:
+            return self._idle_interval
+        return self._quiet_interval

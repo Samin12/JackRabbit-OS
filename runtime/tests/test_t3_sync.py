@@ -168,7 +168,7 @@ class T3SyncWorkerTest(unittest.TestCase):
         self.service.connect(self.fake.url, PAIRING_CODE)
         self.assertEqual(2.0, self.worker.step())
         self.fake.set_threads([_done()])
-        self.assertEqual(5.0, self.worker.step())
+        self.assertEqual(15.0, self.worker.step())  # nothing working or pending: quiet cadence
         self.fake.revoke_all()
         self.assertEqual(30.0, self.worker.step())
         status = self.service.status_view()

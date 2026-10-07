@@ -15,8 +15,13 @@ import com.resonolabs.feature.cards.board.BoardWidget;
 import com.resonolabs.feature.cards.board.ClockWidget;
 import com.resonolabs.feature.cards.board.CreationIdentity;
 import com.resonolabs.feature.cards.board.CreationsWidget;
+import com.resonolabs.feature.cards.board.JournalWidget;
+import com.resonolabs.feature.cards.board.LiveWidget;
+import com.resonolabs.feature.cards.board.T3Widget;
 import com.resonolabs.feature.cards.board.TasksWidget;
 import com.resonolabs.feature.cards.board.WidgetBoardView;
+import com.resonolabs.feature.genui.GenUiController;
+import com.resonolabs.feature.genui.LiveCardsPageView;
 import com.resonolabs.feature.tasks.TaskPageView;
 import com.resonolabs.runtime.host.CreationCatalogClient;
 import com.resonolabs.ui.input.UiInputIntent;
@@ -28,11 +33,30 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * The Cards tab: a glanceable widget board (clock, Up next, Tasks, Creations). Full Calendar and
- * Tasks pages and Creations open on top of it with the CardsBackButton and the chrome hidden,
- * exactly as the old deck did.
+ * The Cards tab: a glanceable widget board (clock, Up next, T3, Tasks, Live, Journal,
+ * Creations). Full Calendar, Tasks and Live pages and Creations open on top of it with the
+ * CardsBackButton and the chrome hidden, exactly as the old deck did; T3 threads and Settings
+ * open through {@link Links} in the product shell.
  */
 public final class CardsPageView extends FrameLayout implements AutoCloseable {
+    /** Destinations outside the Cards tab, wired by the product shell (ProductRootView). */
+    public interface Links {
+        /** The T3 tab's thread list. */
+        void openT3();
+
+        /** The T3 tab opened into one thread; BACK from it should come back to the board. */
+        void openT3Thread(String threadId);
+
+        /** Settings (Management: calendar, Heptabase, T3 pairing). */
+        void openSettings();
+
+        /** A card button's "say" action: start (or continue) a Voice turn with this request. */
+        void say(String text);
+
+        /** Other pages a card can open ("runs", "transcript"). */
+        default void openPage(String page) { }
+    }
+
     private final Activity activity;
     private final Runnable openVoice;
     private final java.util.function.Consumer<Boolean> creationVisibility;
@@ -42,12 +66,22 @@ public final class CardsPageView extends FrameLayout implements AutoCloseable {
     private final AgendaWidget agenda;
     private final TasksWidget tasksWidget;
     private final CreationsWidget creations;
+    private final T3Widget t3Widget;
+    private final LiveWidget liveWidget;
+    private final JournalWidget journalWidget;
+    private final GenUiController genUi;
     private final CardsBackButton back;
     private final Host host = new Host();
+    private final java.util.Map<String, String> fixtureStates = new java.util.HashMap<>();
+    private Links links;
     private CreationWebViewHost creation;
     private CreationIdentity openCreation;
     private CalendarPageView calendar;
     private TaskPageView tasks;
+    private LiveCardsPageView live;
+    /** The Live page was opened on one card from a board pill: BACK returns to the board. */
+    private boolean liveFromPill;
+    private android.app.Dialog composer;
     private int generation = -1;
     private JSONObject lastCatalog = new JSONObject();
     private BoardFixtures.Mode fixtureMode = BoardFixtures.Mode.OFF;
@@ -60,17 +94,20 @@ public final class CardsPageView extends FrameLayout implements AutoCloseable {
         this.openVoice = openVoice;
         this.creationVisibility = creationVisibility;
         board = new WidgetBoardView(activity);
+        genUi = new GenUiController(activity, new CardsGenUiHost());
         agenda = new AgendaWidget(host);
+        t3Widget = new T3Widget(host);
         tasksWidget = new TasksWidget(host);
+        liveWidget = new LiveWidget(host, genUi);
+        journalWidget = new JournalWidget(host);
         creations = new CreationsWidget(host);
         List<BoardWidget> widgets = new ArrayList<>();
         widgets.add(new ClockWidget(host));
-        // TODO(wave2:LiveWidget): widgets.add(new LiveWidget(host)) — GenUI pinned/live cards from
-        //   GenCardStore.get(ctx).liveAndPinned(), each drawn with GenCardRenderer; tap -> host.openLiveCard(id).
         widgets.add(agenda);
-        // TODO(wave2:T3Widget): widgets.add(new T3Widget(host)) — "needs you" / "working" T3 threads from
-        //   GET /v1/t3/threads (use `revision` for cheap change detection, ~5 s cadence); tap -> host.openT3Thread(id).
+        widgets.add(t3Widget);      // hidden until T3 is paired
         widgets.add(tasksWidget);
+        widgets.add(liveWidget);    // hidden while there are no live, pinned or recent cards
+        widgets.add(journalWidget);
         widgets.add(creations);
         board.setWidgets(widgets);
         addView(board, match());
@@ -79,17 +116,24 @@ public final class CardsPageView extends FrameLayout implements AutoCloseable {
         addView(back, new LayoutParams(58, 82));
     }
 
+    /** Wires T3, Settings and Voice destinations (ProductRootView). */
+    public void setLinks(Links links) {
+        this.links = links;
+    }
+
     public void start() {
         BoardFixtures.Mode mode = BoardFixtures.mode(activity);
         if (mode != fixtureMode) {
             fixtureMode = mode;
             creations.setCatalog(lastCatalog);
         }
+        fixtureStates.clear();
         board.start();
         handler.removeCallbacks(refresh);
         handler.post(refresh);
         if (calendar != null) calendar.start();
         if (tasks != null) tasks.start();
+        if (live != null) live.start();
     }
 
     public void stop() {
@@ -97,12 +141,15 @@ public final class CardsPageView extends FrameLayout implements AutoCloseable {
         board.stop();
         if (calendar != null) calendar.stop();
         if (tasks != null) tasks.stop();
+        if (live != null) live.stop();
+        if (composer != null) { composer.dismiss(); composer = null; }
     }
 
     public boolean onInput(UiInputIntent input) {
         if (input == UiInputIntent.BACK) { navigateBack(); return true; }
         if (calendar != null) { boolean handled=calendar.onInput(input);if(input==UiInputIntent.BACK&&!handled)closeCalendar();return true; }
         if (tasks != null) { boolean handled=tasks.onInput(input);if(input==UiInputIntent.BACK&&!handled)closeTasks();return true; }
+        if (live != null) { live.onInput(input); return true; }
         if (creation != null) return creation.onInput(input);
         board.onInput(input);
         return true;
@@ -111,8 +158,51 @@ public final class CardsPageView extends FrameLayout implements AutoCloseable {
     private void navigateBack() {
         if (calendar != null) { if (!calendar.onInput(UiInputIntent.BACK)) closeCalendar(); return; }
         if (tasks != null) { if (!tasks.onInput(UiInputIntent.BACK)) closeTasks(); return; }
+        if (live != null) {
+            // A card opened from a board pill goes straight back to the board, like a Calendar event.
+            if ((liveFromPill && live.detailOpen()) || !live.onInput(UiInputIntent.BACK)) closeLive();
+            return;
+        }
         if (creation != null) { closeCreation(); return; }
         openVoice.run();
+    }
+
+    /** Cards &gt; Live: every live, pinned and recent GenUI card (e.g. from a notification or Voice). */
+    public void openLiveCards() {
+        openLive(null);
+    }
+
+    /** The keyboard bar for a typed note to today's Heptabase journal (no-op when not connected). */
+    public void openJournalNote() {
+        if (!journalWidget.canWrite() || composer != null) return;
+        composer = NoteComposer.open(activity, "Note for today's journal", "Add to journal", text -> {
+            journalWidget.submit(text);
+        });
+        composer.setOnDismissListener(ignored -> composer = null);
+    }
+
+    private void openLive(String cardId) {
+        if (live == null) {
+            if (calendar != null || tasks != null || creation != null) return;
+            live = new LiveCardsPageView(activity, genUi);
+            board.setVisibility(GONE);
+            addView(live, match());
+            back.setVisibility(VISIBLE);
+            back.bringToFront();
+            creationVisibility.accept(true);
+            live.start();
+            live.requestFocus();
+        }
+        liveFromPill = cardId != null && live.openCard(cardId);
+    }
+
+    private void closeLive() {
+        if (live == null) return;
+        removeView(live);
+        live.close();
+        live = null;
+        liveFromPill = false;
+        showBoard();
     }
 
     private final Runnable refresh = new Runnable() {
@@ -246,8 +336,37 @@ public final class CardsPageView extends FrameLayout implements AutoCloseable {
         closeCreation();
         closeCalendar();
         closeTasks();
+        closeLive();
         board.close();
         client.close();
+        genUi.close();
+    }
+
+    /** Card actions from the Live page and board pills; Voice turns go through {@link Links#say}. */
+    private final class CardsGenUiHost implements GenUiController.Host {
+        @Override public boolean sendUserText(String text) { return false; }
+
+        @Override public boolean sendSystemNote(String text, boolean respond) { return false; }
+
+        @Override public void open(String page) {
+            switch (page == null ? "" : page) {
+                case "calendar" -> { closeLive(); openCalendar(); }
+                case "tasks" -> { closeLive(); openTasks(); }
+                case "cards" -> closeLive();
+                default -> { if (links != null) links.openPage(page); }
+            }
+        }
+
+        @Override public void startSessionWith(String text) {
+            if (links != null && text != null && !text.isBlank()) links.say(text);
+        }
+
+        @Override public void invalidateUi() {
+            board.invalidate();
+            if (live != null) live.invalidate();
+        }
+
+        @Override public void setImmersive(boolean immersive) { }
     }
 
     /** The board's view of this page. */
@@ -260,5 +379,13 @@ public final class CardsPageView extends FrameLayout implements AutoCloseable {
         @Override public void openTasks() { CardsPageView.this.openTasks(); }
         @Override public void openTask(JSONObject task) { CardsPageView.this.openTask(task); }
         @Override public void openCreation(JSONObject item) { CardsPageView.this.openCreation(item); }
+        @Override public String fixtureState(String widgetId) {
+            return fixtureStates.computeIfAbsent(widgetId, id -> BoardFixtures.state(activity, id));
+        }
+        @Override public void openT3() { if (links != null) links.openT3(); }
+        @Override public void openT3Thread(String threadId) { if (links != null) links.openT3Thread(threadId); }
+        @Override public void openLiveCard(String cardId) { openLive(cardId); }
+        @Override public void openJournalNote() { CardsPageView.this.openJournalNote(); }
+        @Override public void openSettings() { if (links != null) links.openSettings(); }
     }
 }

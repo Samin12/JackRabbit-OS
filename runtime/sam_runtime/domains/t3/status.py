@@ -7,6 +7,7 @@ Settled threads are demoted: an error the user already settled reads as done.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -94,6 +95,41 @@ def raw_status(thread: dict[str, object]) -> str:
     if latest.get("state") == "error":
         return ERROR
     return DONE
+
+
+ACTIVITY_ACTIVE = "active"
+ACTIVITY_BACKGROUND = "background"
+ACTIVITY_IDLE = "idle"
+_LIVE_SESSION = frozenset({"running", "starting"})
+_BACKGROUND_LIVE = frozenset({"working", "monitoring"})
+
+
+def foreground_active(thread: dict[str, object]) -> bool:
+    """A turn is running or starting, or a request is waiting on the user."""
+    return (
+        thread.get("hasPendingApprovals") is True
+        or thread.get("hasPendingUserInput") is True
+        or _dict(thread.get("session")).get("status") in _LIVE_SESSION
+    )
+
+
+def activity_level(threads: Iterable[object]) -> str:
+    """How busy T3 is, for the shell poll cadence (not for display).
+
+    ``active``: some thread runs a turn or waits on the user. ``background``: threads are only
+    background-live (``backgroundLiveness`` working/monitoring with no running session and
+    nothing pending), e.g. the parent session of long background tasks, which shows as
+    "Background work" but produces no turn to announce. ``idle``: nothing working or pending.
+    """
+    level = ACTIVITY_IDLE
+    for thread in threads:
+        if not isinstance(thread, dict):
+            continue
+        if foreground_active(thread):
+            return ACTIVITY_ACTIVE
+        if thread.get("backgroundLiveness") in _BACKGROUND_LIVE:
+            level = ACTIVITY_BACKGROUND
+    return level
 
 
 def thread_status(thread: dict[str, object]) -> str:

@@ -32,6 +32,8 @@ final class ProductRootView extends FrameLayout {
     private final ControlCenterView controlCenter;
     private final T3PageView t3;
     private boolean t3Open;
+    /** The T3 tab was opened from a Cards board widget: BACK out of it returns to the board. */
+    private boolean t3ReturnsToCards;
     private boolean settingsOpen;
     private boolean cardsOpen;
     private boolean cameraOpen;
@@ -59,7 +61,7 @@ final class ProductRootView extends FrameLayout {
         voice = new VoicePageView(activity, this::openCameraHandoff);
         camera = new CameraHandoffPage(activity, motor, voice, this::returnFromCamera);
         camera.setVisibility(GONE);
-        cards = new CardsPageView(activity, this::openVoice, this::showCreation);
+        cards = new CardsPageView(activity, this::openVoiceFromCards, this::showCreation);
         cards.setVisibility(GONE);
         t3 = new T3PageView(activity, new T3PageView.Host() {
             @Override public void talkToThread(String threadId, String title) {
@@ -87,6 +89,16 @@ final class ProductRootView extends FrameLayout {
         t3.setVisibility(GONE);
         chrome = new ProductChromeView(activity, this::openSettings, this::openVoice,
                 this::openCards, this::openT3, this::openRunner);
+        cards.setLinks(new CardsPageView.Links() {
+            @Override public void openT3() { openT3FromCards(null); }
+            @Override public void openT3Thread(String threadId) { openT3FromCards(threadId); }
+            @Override public void openSettings() { ProductRootView.this.openSettings(); }
+            @Override public void say(String text) { sayFromCard(text); }
+            @Override public void openPage(String page) {
+                if ("runs".equals(page)) openRunner();
+                else if ("transcript".equals(page)) openVoiceFromCards();
+            }
+        });
         runner = new BackgroundRunPanelView(activity, backgroundRuns, chrome::showRuns,
                 this::closeRunner);
         runner.setVisibility(GONE);
@@ -135,15 +147,20 @@ final class ProductRootView extends FrameLayout {
     }
 
     private void closeRunner() {
-        runnerOpen = false; runner.setVisibility(GONE); chrome.setVisibility(VISIBLE);
+        runnerOpen = false; runner.setVisibility(GONE); chrome.setVisibility(cardPageShown() ? GONE : VISIBLE);
         restoreTab();
     }
 
     private void closeSettings() {
         settingsOpen = false;
         settings.setVisibility(GONE);
-        chrome.setVisibility(VISIBLE);
+        chrome.setVisibility(cardPageShown() ? GONE : VISIBLE);
         restoreTab();
+    }
+
+    /** A Cards page (Calendar, Tasks, Live, a creation) is up: it draws its own back button where the tabs sit. */
+    private boolean cardPageShown() {
+        return cardsOpen && cardContentOpen;
     }
 
     private void openCreationImport() {
@@ -163,6 +180,7 @@ final class ProductRootView extends FrameLayout {
     }
 
     private void openT3() {
+        t3ReturnsToCards = false;
         if (t3Open) return;
         if (cardsOpen) {
             cardsOpen = false;
@@ -176,11 +194,37 @@ final class ProductRootView extends FrameLayout {
     }
 
     private void closeT3() {
+        t3ReturnsToCards = false;
         if (!t3Open) return;
         t3Open = false;
         t3.stop();
         t3.setVisibility(GONE);
         chrome.setVisibility(VISIBLE);
+    }
+
+    /** A board widget opened the T3 tab, optionally straight into one thread. */
+    private void openT3FromCards(String threadId) {
+        openT3();
+        t3ReturnsToCards = true;
+        if (threadId != null && !threadId.isBlank()) t3.openThread(threadId);
+    }
+
+    /** BACK on the T3 tab: its own screens first, then the board if a widget opened it, else Voice. */
+    private void backFromT3() {
+        boolean wasDetail = t3.detailOpen();
+        boolean handled = t3.onInput(UiInputIntent.BACK);
+        boolean leftThread = wasDetail && !t3.detailOpen();
+        if (!handled || (t3ReturnsToCards && leftThread)) {
+            if (t3ReturnsToCards) openCards();
+            else openVoice();
+        }
+    }
+
+    /** A card's "say" button on the Cards tab: continue in Voice with that request. */
+    private void sayFromCard(String text) {
+        openVoiceFromCards();
+        voice.startSessionWithNote("Host note (from a card on the R1's Cards tab): the user tapped a card button "
+                + "asking \u201c" + text.trim() + "\u201d. Treat it as their request and answer it.");
     }
 
     /** Shows the selected T3 tab; the chrome stays hidden while a thread is open. */
@@ -254,6 +298,17 @@ final class ProductRootView extends FrameLayout {
         cards.setVisibility(VISIBLE);
         cards.start();
         cards.requestFocus();
+    }
+
+    /**
+     * Voice from inside the Cards tab (BACK on the board, a Calendar or Tasks page's Voice button,
+     * a card's say or transcript action). An open card page is closed first: it hides the tab bar
+     * and blocks tab swipes, so leaving it open behind Voice stranded the user on Voice without
+     * tabs. Unwinds like the side button does.
+     */
+    private void openVoiceFromCards() {
+        for (int depth = 0; depth < 4 && cardContentOpen; depth++) cards.onInput(UiInputIntent.BACK);
+        openVoice();
     }
 
     private void openVoice() {
@@ -426,7 +481,7 @@ final class ProductRootView extends FrameLayout {
         if (settingsOpen) return settings.onInput(UiInputIntent.BACK);
         if (cardsOpen) return cards.onInput(UiInputIntent.BACK);
         if (t3Open) {
-            if (!t3.onInput(UiInputIntent.BACK)) openVoice();
+            backFromT3();
             return true;
         }
         // Voice is the visible page: BACK closes its transcript, then ends a live session.
@@ -491,7 +546,8 @@ final class ProductRootView extends FrameLayout {
         else if (settingsOpen) settings.onInput(intent);
         else if (cardsOpen) cards.onInput(intent);
         else if (t3Open) {
-            if (!t3.onInput(intent) && intent == UiInputIntent.BACK) openVoice();
+            if (intent == UiInputIntent.BACK) backFromT3();
+            else t3.onInput(intent);
         }
         else voice.onInput(intent);
     }
