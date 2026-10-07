@@ -11,6 +11,12 @@ public interface BoardHost {
     /** Debug fixture data instead of the runtime (debug builds, {@code debug.sam.widgets.fake}). */
     BoardFixtures.Mode fixtureMode();
 
+    /**
+     * Debug-only forced state for one widget ({@code debug.sam.widgets.<id>}, e.g. t3=reauth,
+     * journal=reconnect), or "" for none. Read when the tab is shown.
+     */
+    String fixtureState(String widgetId);
+
     /** The widget's data or layout changed: re-measure and redraw. */
     void widgetChanged(BoardWidget widget);
 
@@ -29,6 +35,18 @@ public interface BoardHost {
     /** A catalog Creation (local_archive / plugin_card / rabbit_qr_link), opened as before. */
     void openCreation(JSONObject item);
 
-    // TODO(wave2:T3Widget): void openT3Thread(String threadId) -> ProductRootView T3 tab / thread detail.
-    // TODO(wave2:LiveWidget): void openLiveCard(String cardId) -> GenUI LiveCardsPageView expanded card.
+    /** The T3 tab's thread list. */
+    void openT3();
+
+    /** The T3 tab opened straight into one thread; BACK returns to the board. */
+    void openT3Thread(String threadId);
+
+    /** Cards &gt; Live (every live, pinned and recent GenUI card); {@code cardId} opens that card, null the list. */
+    void openLiveCard(String cardId);
+
+    /** The keyboard bar for a typed journal note (sent verbatim to today's Heptabase journal). */
+    void openJournalNote();
+
+    /** Settings (where Management lives: connect a calendar, Heptabase, pair T3). */
+    void openSettings();
 }
