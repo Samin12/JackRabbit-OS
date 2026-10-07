@@ -15,7 +15,7 @@ import android.util.Log;
 import java.io.File;
 
 public final class RuntimeService extends Service {
-    private static final String LOG_TAG = "ReSonoRuntime";
+    private static final String LOG_TAG = "SamRuntime";
     private static final String NOTIFICATION_CHANNEL = "resono_runtime";
     private static final int NOTIFICATION_ID = 4101;
     private final RuntimePythonHost python = new RuntimePythonHost();
@@ -89,7 +89,7 @@ public final class RuntimeService extends Service {
         NotificationManager notifications = getSystemService(NotificationManager.class);
         NotificationChannel channel = new NotificationChannel(
                 NOTIFICATION_CHANNEL,
-                "ReSono runtime",
+                "SAM runtime",
                 NotificationManager.IMPORTANCE_LOW);
         channel.setDescription("Keeps Voice and local R1 management available.");
         channel.setSound(null, null);
@@ -98,7 +98,7 @@ public final class RuntimeService extends Service {
         notifications.createNotificationChannel(channel);
         return new Notification.Builder(this, NOTIFICATION_CHANNEL)
                 .setSmallIcon(android.R.drawable.stat_notify_sync_noanim)
-                .setContentTitle("ReSono R1")
+                .setContentTitle("SAM R1")
                 .setContentText("Voice and device management are ready")
                 .setCategory(Notification.CATEGORY_SERVICE)
                 .setOngoing(true)

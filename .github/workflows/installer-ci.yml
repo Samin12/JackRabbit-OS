@@ -23,20 +23,20 @@ jobs:
         include:
           - runner: ubuntu-24.04
             platform: linux-x64
-            binary: cli/target/release/jackrabbit-installer-cli
-            packaged_binary: jackrabbit-installer
+            binary: cli/target/release/sam-installer-cli
+            packaged_binary: sam-installer
           - runner: windows-2025
             platform: windows-x64
-            binary: cli/target/release/jackrabbit-installer-cli.exe
-            packaged_binary: jackrabbit-installer.exe
+            binary: cli/target/release/sam-installer-cli.exe
+            packaged_binary: sam-installer.exe
           - runner: macos-15
             platform: macos-arm64
-            binary: cli/target/release/jackrabbit-installer-cli
-            packaged_binary: jackrabbit-installer
+            binary: cli/target/release/sam-installer-cli
+            packaged_binary: sam-installer
           - runner: macos-15-intel
             platform: macos-x64
-            binary: cli/target/release/jackrabbit-installer-cli
-            packaged_binary: jackrabbit-installer
+            binary: cli/target/release/sam-installer-cli
+            packaged_binary: sam-installer
     runs-on: ${{ matrix.runner }}
     defaults:
       run:
@@ -64,12 +64,12 @@ jobs:
       - name: Stage native executable
         shell: bash
         run: |
-          mkdir -p "native-output/jackrabbit-native-${{ matrix.platform }}"
-          cp "${{ matrix.binary }}" "native-output/jackrabbit-native-${{ matrix.platform }}/${{ matrix.packaged_binary }}"
+          mkdir -p "native-output/sam-native-${{ matrix.platform }}"
+          cp "${{ matrix.binary }}" "native-output/sam-native-${{ matrix.platform }}/${{ matrix.packaged_binary }}"
       - name: Retain native executable
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: jackrabbit-native-${{ matrix.platform }}
-          path: installer/native-output/jackrabbit-native-${{ matrix.platform }}
+          name: sam-native-${{ matrix.platform }}
+          path: installer/native-output/sam-native-${{ matrix.platform }}
           if-no-files-found: error
           retention-days: 14

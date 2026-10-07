@@ -46,19 +46,19 @@ unzip -p "$APK" assets/chaquopy/app.imy > "$CHECK_DIR/runtime-source.zip"
 unzip -l "$CHECK_DIR/runtime-source.zip" > "$CHECK_DIR/runtime-source.txt"
 unzip -q "$CHECK_DIR/runtime-source.zip" -d "$CHECK_DIR/runtime-source"
 
-RUNTIME_CHECK_PYTHON="${RESONO_BUILD_PYTHON:-/tmp/resono-python/cpython-3.13.2-linux-x86_64-gnu/bin/python3.13}"
+RUNTIME_CHECK_PYTHON="${SAM_BUILD_PYTHON:-/tmp/sam-python/cpython-3.13.2-linux-x86_64-gnu/bin/python3.13}"
 if [[ ! -x "$RUNTIME_CHECK_PYTHON" ]]; then
     echo "Python 3.13 runtime package checker not found: $RUNTIME_CHECK_PYTHON" >&2
     exit 1
 fi
 PYTHONDONTWRITEBYTECODE=1 "$RUNTIME_CHECK_PYTHON" -m compileall -q \
-    "$CHECK_DIR/runtime-source/resono_runtime"
+    "$CHECK_DIR/runtime-source/sam_runtime"
 
 for required_source in \
-    'resono_runtime/plugins/bundled/resono-mail/plugin.json' \
-    'resono_runtime/plugins/bundled/resono-mail/skills/voice-mail/SKILL.md' \
-    'resono_runtime/standards/agent_plugins/plugin.schema.json' \
-    'resono_runtime/standards/agent_plugins/mcp.schema.json'; do
+    'sam_runtime/plugins/bundled/resono-mail/plugin.json' \
+    'sam_runtime/plugins/bundled/resono-mail/skills/voice-mail/SKILL.md' \
+    'sam_runtime/standards/agent_plugins/plugin.schema.json' \
+    'sam_runtime/standards/agent_plugins/mcp.schema.json'; do
     if ! rg -Fq "$required_source" "$CHECK_DIR/runtime-source.txt"; then
         echo "required Build 7 standard artifact missing: $required_source" >&2
         exit 1

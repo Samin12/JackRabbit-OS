@@ -26,6 +26,9 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.STATUS_BAR" />
+    <uses-permission android:name="android.permission.EXPAND_STATUS_BAR" />
+    <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
 
     <uses-feature android:name="android.hardware.touchscreen" android:required="true" />
     <uses-feature android:name="android.hardware.camera.any" android:required="false" />
@@ -33,14 +36,14 @@
     <application
         android:allowBackup="false"
         android:directBootAware="true"
-        android:label="ReSono R1"
+        android:label="SAM R1"
         android:networkSecurityConfig="@xml/network_security_config"
         android:supportsRtl="true"
-        android:theme="@style/Theme.ReSonoVoice"
+        android:theme="@style/Theme.SamVoice"
         android:usesNonSdkApi="true">
 
         <receiver
-            android:name=".ReSonoBootReceiver"
+            android:name=".SamBootReceiver"
             android:directBootAware="true"
             android:enabled="true"
             android:exported="false">
@@ -49,6 +52,16 @@
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
+
+        <service
+            android:name=".NotificationFeed"
+            android:exported="true"
+            android:label="Control Center"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
 
         <activity
             android:name=".MainActivity"

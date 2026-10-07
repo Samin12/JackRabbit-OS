@@ -37,7 +37,7 @@ public final class MainActivity extends Activity {
         backgroundRuns = new RuntimeBackgroundRunClient();
         creationImports = new RuntimeCreationImportClient();
         runtimeHealth.checkUntilReady(this, health ->
-                android.util.Log.i("ReSonoRuntime", "HOME boundary status=" + health.status()));
+                android.util.Log.i("SamRuntime", "HOME boundary status=" + health.status()));
         setShowWhenLocked(true);
         setTurnScreenOn(true);
         root = new ProductRootView(
@@ -60,6 +60,13 @@ public final class MainActivity extends Activity {
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, 41);
         }
+        // Android 16 routes Back through OnBackInvokedDispatcher; without this the HOME
+        // activity is finished and recreated, dropping the user back on Voice.
+        getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+                android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT,
+                () -> { if (root != null) root.navigateBack(); });
+        NotificationFeed.ensureEnabled(this);
+        disableSystemShade();
         DisplayPolicy.apply(getWindow());
         installFullscreenPolicy();
         enterProductFullscreen();
@@ -77,11 +84,11 @@ public final class MainActivity extends Activity {
     private void confirmRestart() {
         new AlertDialog.Builder(this)
                 .setTitle("Restart R1?")
-                .setMessage("ReSono will restart and return to HOME.")
+                .setMessage("SAM will restart and return to HOME.")
                 .setNegativeButton("Cancel", null)
                 .setPositiveButton("Restart", (ignored, which) -> {
                     PowerManager power = getSystemService(PowerManager.class);
-                    if (power != null) power.reboot("resono-settings");
+                    if (power != null) power.reboot("sam-settings");
                 })
                 .show();
     }
@@ -133,10 +140,25 @@ public final class MainActivity extends Activity {
                         | View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
     }
 
+    /** The stock shade is unusable at 480x640; the HOME Control Center replaces it. */
+    private void disableSystemShade() {
+        try {
+            Object statusBar = getSystemService("statusbar");
+            int disableExpand = 0x00010000;
+            statusBar.getClass().getMethod("disable", int.class).invoke(statusBar, disableExpand);
+        } catch (ReflectiveOperationException | RuntimeException error) {
+            android.util.Log.w("SamChrome", "system shade stays enabled: " + (error.getCause() != null ? error.getCause() : error));
+        }
+    }
+
     private void installFullscreenPolicy() {
         View decor = getWindow().getDecorView();
         decor.setOnApplyWindowInsetsListener((view, insets) -> {
             int bars = WindowInsets.Type.statusBars() | WindowInsets.Type.navigationBars();
+            if (insets.isVisible(WindowInsets.Type.statusBars()) && root != null) {
+                // A swipe from the top edge revealed the system bar: answer with our Control Center.
+                view.post(root::openControlCenter);
+            }
             if (insets.isVisible(bars)) view.post(this::enterProductFullscreen);
             return insets;
         });

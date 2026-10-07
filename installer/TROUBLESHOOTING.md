@@ -1,4 +1,4 @@
-# JackRabbit installer troubleshooting
+# SAM Project installer troubleshooting
 
 Use the stable `JR-...` code printed at the beginning of the terminal error.
 Keep the complete code and message when reporting a problem.
@@ -28,7 +28,7 @@ intentionally silent and last for a stated number of seconds.
 - `Verifying 1/12: images/...` through `12/12` appears once per image as the
   package checks its recorded images against the signed release. No R1 is
   touched yet.
-- The `JackRabbit R1 setup ... Step N of 4` screens are preparation prompts.
+- The `SAM Project R1 setup ... Step N of 4` screens are preparation prompts.
   Nothing is written while you read them.
 - `Waiting up to 60 seconds for the R1. Connect it now.` is the connect window.
   It stays quiet while it watches for the preloader, FASTBOOT, or fastbootd;
@@ -67,9 +67,9 @@ processes so only this installer owns the USB device.
 ### Linux reports permission denied or `no permissions`
 
 Run the package's `./install.sh`, not the binary inside `bin/`. Allow it to
-install `drivers/51-jackrabbit-r1.rules`, then reconnect the R1 when prompted.
+install `drivers/51-sam-r1.rules`, then reconnect the R1 when prompted.
 The rule covers the preloader, bootloader FASTBOOT, and fastbootd USB identities.
-Do not run the JackRabbit installer binary with `sudo`.
+Do not run the SAM Project installer binary with `sudo`.
 
 ### Windows cannot see the R1 after its mode changes
 
@@ -143,6 +143,5 @@ Include:
 
 Do not publish the R1 serial number or account information.
 
-For community installation help, join the
-[JackRabbit Discord](https://discord.gg/HeKGmh5mC) and include the non-sensitive
-details listed above.
+When asking for installation help, include the non-sensitive details listed
+above.

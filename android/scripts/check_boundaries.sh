@@ -11,7 +11,7 @@ if rg -n "$PROHIBITED" "${SCAN_ROOTS[@]}" "$PRODUCT_ROOT/settings.gradle.kts"; t
     exit 1
 fi
 
-if rg -ni "$FUTURE_RUNTIME" "$PRODUCT_ROOT/runtime-host/src" "$PRODUCT_ROOT/../runtime/resono_runtime" "$PRODUCT_ROOT/../web/management"; then
+if rg -ni "$FUTURE_RUNTIME" "$PRODUCT_ROOT/runtime-host/src" "$PRODUCT_ROOT/../runtime/sam_runtime" "$PRODUCT_ROOT/../web/management"; then
     echo "future-slice runtime dependency found" >&2
     exit 1
 fi
@@ -66,7 +66,7 @@ if ! rg -q 'ManagementTlsKeyManager\(KEY_ALIAS' "$TLS_IDENTITY"; then
     exit 1
 fi
 
-if rg --files "$PRODUCT_ROOT/runtime-host/src" "$PRODUCT_ROOT/../runtime/resono_runtime" \
+if rg --files "$PRODUCT_ROOT/runtime-host/src" "$PRODUCT_ROOT/../runtime/sam_runtime" \
         | rg '/(utils?|helpers?|common|managers?)(\.|/)'; then
     echo "catch-all runtime module found" >&2
     exit 1

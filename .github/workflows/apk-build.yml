@@ -1,7 +1,7 @@
 name: Build debug APK
 
 # Builds a debug APK on push so a testable app artifact is always available
-# without a local Android toolchain. Runs inside the jackrabbit-apk-builder
+# without a local Android toolchain. Runs inside the sam-apk-builder
 # container (android/Dockerfile, published to GHCR by apk-builder-image.yml),
 # which mirrors the reference Linux build env in BUILDING.md.
 #
@@ -18,6 +18,7 @@ on:
     branches:
       - feature/telephony-bridge
       - feature/agent-model-provider
+      - sam-project
   workflow_dispatch:
 
 permissions:
@@ -29,7 +30,7 @@ permissions:
 env:
   # Immutable tag from apk-builder-image.yml. Owner is lowercased because
   # GHCR image names must be lowercase.
-  APK_BUILDER_IMAGE: ghcr.io/resono-labs/jackrabbit-apk-builder:v1
+  APK_BUILDER_IMAGE: ghcr.io/samin12/sam-apk-builder:v1
 
 jobs:
   build-apk:
@@ -48,12 +49,32 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Restore shared debug signing key
+      - name: Restore shared debug signing key (or generate a throwaway one)
+        # With the ANDROID_DEBUG_KEYSTORE_BASE64 secret set, restore the shared
+        # key so CI APKs upgrade in place over other shared-key builds. Without
+        # it (forks, new repos), generate a one-off debug keystore so the build
+        # still runs; that APK is signed by a random key and will not install
+        # over a shared-key build without uninstalling first.
         env:
           ANDROID_DEBUG_KEYSTORE_BASE64: ${{ secrets.ANDROID_DEBUG_KEYSTORE_BASE64 }}
         run: |
           mkdir -p "$HOME/.android"
-          printf "%s" "$ANDROID_DEBUG_KEYSTORE_BASE64" | base64 --decode > "$HOME/.android/debug.keystore"
+          if [ -n "$ANDROID_DEBUG_KEYSTORE_BASE64" ]; then
+            printf "%s" "$ANDROID_DEBUG_KEYSTORE_BASE64" | base64 --decode > "$HOME/.android/debug.keystore"
+          else
+            echo "::warning title=Throwaway debug signing key::ANDROID_DEBUG_KEYSTORE_BASE64 is not set; signing with a freshly generated debug key. This APK will not upgrade over builds signed with the shared debug key (uninstall first)."
+            docker run --rm \
+              -v "$HOME/.android":/root/.android \
+              "$APK_BUILDER_IMAGE" \
+              keytool -genkeypair -v \
+                -keystore /root/.android/debug.keystore \
+                -storetype PKCS12 \
+                -alias androiddebugkey \
+                -storepass android -keypass android \
+                -keyalg RSA -keysize 2048 -validity 10000 \
+                -dname "CN=Android Debug,O=Android,C=US"
+            sudo chown "$(id -u):$(id -g)" "$HOME/.android/debug.keystore"
+          fi
           chmod 600 "$HOME/.android/debug.keystore"
 
       - name: Show restored debug signing key (in builder container)

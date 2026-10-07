@@ -62,7 +62,7 @@ public final class Camera2Producer implements AutoCloseable {
         if (closed || !preview.isAvailable()) { fail("preview_unavailable"); return; }
         stopCamera();
         closeNotified = false;
-        thread = new HandlerThread("resono-camera2");
+        thread = new HandlerThread("sam-camera2");
         thread.start();
         cameraHandler = new Handler(thread.getLooper());
         try {

@@ -12,7 +12,7 @@ platforms=(linux-x64 macos-x64 macos-arm64 windows-x64)
 binary_for() {
   local platform="$1" suffix=""
   [[ "$platform" != windows-x64 ]] || suffix=".exe"
-  printf '%s/jackrabbit-native-%s/jackrabbit-installer%s\n' "$native_root" "$platform" "$suffix"
+  printf '%s/sam-native-%s/sam-installer%s\n' "$native_root" "$platform" "$suffix"
 }
 
 for platform in "${platforms[@]}"; do
@@ -38,7 +38,7 @@ for platform in "${platforms[@]}"; do
   else
     "$installer_root/scripts/stage-host-package.sh" "$platform" "$binary" "$release_root"
   fi
-  packaged_binary="$output/bin/jackrabbit-installer"
+  packaged_binary="$output/bin/sam-installer"
   [[ "$platform" != windows-x64 ]] || packaged_binary="$packaged_binary.exe"
   cmp -s "$binary" "$packaged_binary" || {
     printf 'JR-HOST-ASSEMBLY-BINARY: %s does not contain the CI-native executable\n' "$output" >&2

@@ -6,7 +6,7 @@ import android.graphics.Paint;
 import android.view.MotionEvent;
 import android.view.View;
 
-import com.resonolabs.ui.design.ReSonoTheme;
+import com.resonolabs.ui.design.SamTheme;
 
 /** One visible return control for every Cards-owned content surface. */
 final class CardsBackButton extends View {
@@ -21,8 +21,15 @@ final class CardsBackButton extends View {
     }
 
     @Override protected void onDraw(Canvas canvas) {
-        ReSonoTheme.text(canvas, paint, "‹", 25f, 53f, 43f,
-                ReSonoTheme.INK, Paint.Align.LEFT, false);
+        SamTheme.glass(canvas, paint, new android.graphics.RectF(10f, 22f, 54f, 66f), 22f, false);
+        paint.setStyle(Paint.Style.STROKE);
+        paint.setStrokeWidth(2.6f);
+        paint.setStrokeCap(Paint.Cap.ROUND);
+        paint.setColor(SamTheme.INK);
+        canvas.drawLine(36f, 34f, 27f, 44f, paint);
+        canvas.drawLine(27f, 44f, 36f, 54f, paint);
+        paint.setStrokeCap(Paint.Cap.BUTT);
+        paint.setStyle(Paint.Style.FILL);
     }
 
     @Override public boolean onTouchEvent(MotionEvent event) {

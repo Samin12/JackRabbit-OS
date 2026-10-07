@@ -1,4 +1,4 @@
-*{box-sizing:border-box}html{min-width:320px;background:var(--resono-bg-deep)}
-body{min-height:100vh;margin:0;color:var(--resono-text);background:radial-gradient(circle at 82% -10%,rgba(29,83,111,.32),transparent 32rem),linear-gradient(145deg,var(--resono-bg),var(--resono-bg-deep));font-family:var(--resono-font)}
+*{box-sizing:border-box}html{min-width:320px;background:var(--sam-bg-deep)}
+body{min-height:100vh;margin:0;color:var(--sam-text);background:radial-gradient(circle at 82% -10%,rgba(29,83,111,.32),transparent 32rem),linear-gradient(145deg,var(--sam-bg),var(--sam-bg-deep));font-family:var(--sam-font)}
 button,input,select,textarea{font:inherit}button,a,input,select,textarea{-webkit-tap-highlight-color:transparent}
-:focus-visible{outline:2px solid var(--resono-cyan);outline-offset:3px}[hidden]{display:none!important}
+:focus-visible{outline:2px solid var(--sam-cyan);outline-offset:3px}[hidden]{display:none!important}

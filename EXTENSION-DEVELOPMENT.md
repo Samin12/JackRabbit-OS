@@ -1,12 +1,12 @@
-# JackRabbit Extension Development Guide
+# SAM Project Extension Development Guide
 
-This is the authoritative contributor guide for JackRabbit instruction
+This is the authoritative contributor guide for SAM Project instruction
 documents, Agent Skills, Agent Plugins, MCP connections, built-in Tools,
 Creations, and Plugin-owned Cards. It describes the formats and behavior the
 current code accepts; it does not promise a marketplace or arbitrary plugin
 code execution.
 
-JackRabbit implements three open standards within their actual scope:
+SAM Project implements three open standards within their actual scope:
 
 - [Agent Skills](https://agentskills.io/specification) for portable
   `SKILL.md` instruction packages.
@@ -15,13 +15,13 @@ JackRabbit implements three open standards within their actual scope:
 - [Model Context Protocol](https://modelcontextprotocol.io/specification/2025-11-25)
   for model-facing tools and connection lifecycle.
 
-The JackRabbit Card extension and Rabbit Creation import are product-specific
-formats layered beside those standards. JackRabbit itself remains licensed as
+The SAM Project Card extension and Rabbit Creation import are product-specific
+formats layered beside those standards. SAM Project itself remains licensed as
 a source-available noncommercial project.
 
 ## Pick one owner before building
 
-| Need | Correct owner | Imported without rebuilding JackRabbit? |
+| Need | Correct owner | Imported without rebuilding SAM Project? |
 |---|---|---:|
 | Change instructions for one device owner | `SKILLS.MD` instruction document | Yes |
 | Package reusable agent instructions | Agent Skill inside a Plugin | Yes |
@@ -76,14 +76,14 @@ ability to override platform safety boundaries.
 
 Relevant implementation:
 
-- `runtime/resono_runtime/skills/documents.py`
-- `runtime/resono_runtime/api/skill_routes.py`
+- `runtime/sam_runtime/skills/documents.py`
+- `runtime/sam_runtime/api/skill_routes.py`
 - `web/management/build07.js`
 
 ## Agent Skills (`SKILL.md`)
 
 A standard Agent Skill is a directory whose name matches the `name` in its
-required `SKILL.md` frontmatter. JackRabbit currently activates standard Skills
+required `SKILL.md` frontmatter. SAM Project currently activates standard Skills
 when they are packaged under an Agent Plugin's `skills/` directory.
 
 ```text
@@ -96,7 +96,7 @@ calendar-summary/
 name: calendar-summary
 description: Summarize upcoming events when the user asks about their schedule.
 license: CC-BY-NC-4.0
-compatibility: Requires the JackRabbit Calendar tool set.
+compatibility: Requires the SAM Project Calendar tool set.
 metadata:
   author: example-author
 ---
@@ -107,7 +107,7 @@ Use the calendar tools only when a configured calendar is available. State the
 time zone when it could be ambiguous.
 ```
 
-JackRabbit validates:
+SAM Project validates:
 
 - UTF-8 YAML frontmatter closed by `---`;
 - a 1–64 character lowercase, digit, and hyphen `name` matching the directory;
@@ -116,7 +116,7 @@ JackRabbit validates:
   `metadata`, and `allowed-tools` string.
 
 `allowed-tools` is descriptive standard metadata. It does not grant access in
-JackRabbit. The selected audience and canonical Tool/MCP permission gates still
+SAM Project. The selected audience and canonical Tool/MCP permission gates still
 decide what the agent can invoke.
 
 The runtime discloses only the names and descriptions of relevant enabled
@@ -126,9 +126,9 @@ in relative files inside the same Skill directory.
 
 Relevant implementation:
 
-- `runtime/resono_runtime/skills/specification.py`
-- `runtime/resono_runtime/skills/activation.py`
-- `runtime/resono_runtime/plugins/bundled/resono-mail/skills/voice-mail/SKILL.md`
+- `runtime/sam_runtime/skills/specification.py`
+- `runtime/sam_runtime/skills/activation.py`
+- `runtime/sam_runtime/plugins/bundled/resono-mail/skills/voice-mail/SKILL.md`
 
 ## Agent Plugins
 
@@ -189,11 +189,11 @@ Skill or a Skill owned by another Plugin.
 
 Relevant implementation and pinned schemas:
 
-- `runtime/resono_runtime/plugins/archives.py`
-- `runtime/resono_runtime/plugins/lifecycle.py`
-- `runtime/resono_runtime/plugins/specification.py`
-- `runtime/resono_runtime/standards/agent_plugins/plugin.schema.json`
-- `runtime/resono_runtime/standards/agent_plugins/mcp.schema.json`
+- `runtime/sam_runtime/plugins/archives.py`
+- `runtime/sam_runtime/plugins/lifecycle.py`
+- `runtime/sam_runtime/plugins/specification.py`
+- `runtime/sam_runtime/standards/agent_plugins/plugin.schema.json`
+- `runtime/sam_runtime/standards/agent_plugins/mcp.schema.json`
 
 ## MCP connections
 
@@ -209,7 +209,7 @@ document:
       "type": "streamable-http",
       "url": "https://inference.example.net/mcp",
       "headers": {
-        "X-Client": "jackrabbit"
+        "X-Client": "sam"
       }
     }
   }
@@ -242,11 +242,11 @@ catalog.
 
 Relevant implementation:
 
-- `runtime/resono_runtime/mcp/imports.py`
-- `runtime/resono_runtime/mcp/connections.py`
-- `runtime/resono_runtime/mcp/client.py`
-- `runtime/resono_runtime/mcp/lifecycle.py`
-- `runtime/resono_runtime/mcp/tool_adapter.py`
+- `runtime/sam_runtime/mcp/imports.py`
+- `runtime/sam_runtime/mcp/connections.py`
+- `runtime/sam_runtime/mcp/client.py`
+- `runtime/sam_runtime/mcp/lifecycle.py`
+- `runtime/sam_runtime/mcp/tool_adapter.py`
 
 ## Built-in Tools
 
@@ -281,7 +281,7 @@ ToolDefinition(
 ```
 
 Keep schema/contracts, handlers, and package registration separate, following
-`runtime/resono_runtime/tools/calendar/` or `tools/tasks/`. Register the package
+`runtime/sam_runtime/tools/calendar/` or `tools/tasks/`. Register the package
 once in the application composition root. Do not add a second dispatcher: the
 single `ToolCatalog` validates input, applies audience and live-session gates,
 projects definitions to MCP and Realtime, and dispatches the handler.
@@ -291,11 +291,11 @@ and physical R1 acceptance for hardware or live-provider claims.
 
 Relevant implementation:
 
-- `runtime/resono_runtime/tools/definitions.py`
-- `runtime/resono_runtime/tools/catalog.py`
-- `runtime/resono_runtime/tools/builtins.py`
-- `runtime/resono_runtime/tools/calendar/`
-- `runtime/resono_runtime/tools/tasks/`
+- `runtime/sam_runtime/tools/definitions.py`
+- `runtime/sam_runtime/tools/catalog.py`
+- `runtime/sam_runtime/tools/builtins.py`
+- `runtime/sam_runtime/tools/calendar/`
+- `runtime/sam_runtime/tools/tasks/`
 
 ## Standalone Creations
 
@@ -353,28 +353,28 @@ window.addEventListener("scrollUp", () => window.scrollBy(0, -120));
 window.addEventListener("sideClick", () => document.activeElement?.click());
 ```
 
-There is currently no JavaScript bridge from a Creation to JackRabbit Tools or
+There is currently no JavaScript bridge from a Creation to SAM Project Tools or
 canonical domain data. Do not simulate that data in the Card. If real data is
 required, use an implemented product contract or propose the smallest new
 contract separately.
 
-Rabbit-compatible QR descriptors are a second Creation source. JackRabbit
+Rabbit-compatible QR descriptors are a second Creation source. SAM Project
 accepts `title`, public HTTPS `url`, optional `description`, public HTTPS
 `iconUrl`, and `themeColor` in `#RRGGBB` form. It tolerates and discards the
-Boondit compatibility fields `author` and `installConfirmUrl`; JackRabbit does
+Boondit compatibility fields `author` and `installConfirmUrl`; SAM Project does
 not call the analytics URL.
 
 Relevant implementation:
 
-- `runtime/resono_runtime/creations/archives.py`
-- `runtime/resono_runtime/creations/descriptors.py`
-- `runtime/resono_runtime/creations/lifecycle.py`
-- `runtime/resono_runtime/api/creation_routes.py`
+- `runtime/sam_runtime/creations/archives.py`
+- `runtime/sam_runtime/creations/descriptors.py`
+- `runtime/sam_runtime/creations/lifecycle.py`
+- `runtime/sam_runtime/api/creation_routes.py`
 - `android/feature/cards/src/main/java/com/resonolabs/feature/cards/CreationWebViewHost.java`
 
 ## Add a Card to a Plugin
 
-Agent Plugins standardizes Skills and MCP components. JackRabbit adds one
+Agent Plugins standardizes Skills and MCP components. SAM Project adds one
 client-specific Card extension using the standard's reverse-domain extension
 namespace mechanism. Put it at `com.resonolabs.cards/` inside the Plugin root.
 
@@ -418,9 +418,9 @@ a disabled state. A standalone Creation cannot replace a Plugin-owned Card.
 
 Relevant implementation and schema:
 
-- `runtime/resono_runtime/plugins/cards.py`
-- `runtime/resono_runtime/plugins/card_lifecycle.py`
-- `runtime/resono_runtime/standards/resono_cards/card.schema.json`
+- `runtime/sam_runtime/plugins/cards.py`
+- `runtime/sam_runtime/plugins/card_lifecycle.py`
+- `runtime/sam_runtime/standards/sam_cards/card.schema.json`
 - `tests/runtime/test_plugin_archives.py`
 - `tests/runtime/test_plugin_lifecycle.py`
 

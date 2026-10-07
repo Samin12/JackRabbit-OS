@@ -85,15 +85,15 @@ final class ManagementRuntimeProxy {
             connection.setReadTimeout(readTimeoutMillis(request.path()));
             connection.setInstanceFollowRedirects(false);
             connection.setRequestProperty("Authorization", "Bearer " + localApiToken);
-            connection.setRequestProperty("X-ReSono-Forwarded-Origin", "https://" + host);
+            connection.setRequestProperty("X-SAM-Forwarded-Origin", "https://" + host);
             copyRequestHeader(request, connection, "Origin");
             copyRequestHeader(request, connection, "Cookie");
             copyRequestHeader(request, connection, "Content-Type");
             copyRequestHeader(request, connection, "X-CSRF-Token");
-            copyRequestHeader(request, connection, "X-ReSono-Skill-Filename");
-            copyRequestHeader(request, connection, "X-ReSono-Plugin-Filename");
-            copyRequestHeader(request, connection, "X-ReSono-Creation-Filename");
-            copyRequestHeader(request, connection, "X-ReSono-Agent-Audience");
+            copyRequestHeader(request, connection, "X-SAM-Skill-Filename");
+            copyRequestHeader(request, connection, "X-SAM-Plugin-Filename");
+            copyRequestHeader(request, connection, "X-SAM-Creation-Filename");
+            copyRequestHeader(request, connection, "X-SAM-Agent-Audience");
             if (request.body().length > 0) {
                 connection.setDoOutput(true);
                 connection.getOutputStream().write(request.body());

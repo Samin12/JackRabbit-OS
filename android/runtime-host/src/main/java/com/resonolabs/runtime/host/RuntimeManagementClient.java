@@ -29,7 +29,7 @@ import java.util.function.Consumer;
 public final class RuntimeManagementClient implements AutoCloseable, ManagementOpenAiSource {
     private static final String BASE_URL = "http://127.0.0.1:8765";
     private final ExecutorService worker = Executors.newSingleThreadExecutor(runnable -> {
-        Thread thread = new Thread(runnable, "resono-runtime-management-client");
+        Thread thread = new Thread(runnable, "sam-runtime-management-client");
         thread.setDaemon(true);
         return thread;
     });
@@ -240,7 +240,7 @@ public final class RuntimeManagementClient implements AutoCloseable, ManagementO
             byte[] bytes = source == null ? new byte[0] : source.readAllBytes();
             return bytes.length == 0 ? new JSONObject() : new JSONObject(new String(bytes, StandardCharsets.UTF_8));
         } catch (Exception exception) {
-            Log.w("ReSonoRuntimeManagement", "openai settings request failed for " + path, exception);
+            Log.w("SamRuntimeManagement", "openai settings request failed for " + path, exception);
             return new JSONObject();
         } finally {
             if (connection != null) connection.disconnect();

@@ -28,6 +28,7 @@ final class ProductRootView extends FrameLayout {
     private final CameraHandoffPage camera;
     private final BackgroundRunPanelView runner;
     private final CreationImportView creationImport;
+    private final ControlCenterView controlCenter;
     private boolean settingsOpen;
     private boolean cardsOpen;
     private boolean cameraOpen;
@@ -37,6 +38,7 @@ final class ProductRootView extends FrameLayout {
     private float gestureDownX;
     private float gestureDownY;
     private boolean horizontalGesture;
+    private boolean pullGesture;
 
     ProductRootView(
             Activity activity,
@@ -68,12 +70,14 @@ final class ProductRootView extends FrameLayout {
         addView(camera, match());
         addView(runner, match());
         addView(creationImport, match());
-        LayoutParams chromeParams = new LayoutParams(LayoutParams.MATCH_PARENT, 142);
+        LayoutParams chromeParams = new LayoutParams(LayoutParams.MATCH_PARENT, (int) ProductChromeView.HEIGHT);
         addView(chrome, chromeParams);
         addView(settings, match());
+        controlCenter = new ControlCenterView(activity, this::openSettingsFromControls, this::controlCenterClosed);
+        addView(controlCenter, match());
         setFocusable(true);
         setFocusableInTouchMode(true);
-        setContentDescription("ReSono R1 HOME");
+        setContentDescription("SAM R1 HOME");
         runner.start();
     }
 
@@ -180,16 +184,23 @@ final class ProductRootView extends FrameLayout {
     }
 
     @Override public boolean onInterceptTouchEvent(MotionEvent event) {
-        if (settingsOpen || runnerOpen || creationImportOpen) return false;
+        if (controlCenter.isOpen() || settingsOpen || runnerOpen || creationImportOpen) return false;
         switch (event.getActionMasked()) {
             case MotionEvent.ACTION_DOWN -> {
                 gestureDownX = event.getX();
                 gestureDownY = event.getY();
                 horizontalGesture = false;
+                pullGesture = false;
             }
             case MotionEvent.ACTION_MOVE -> {
                 float dx = event.getX() - gestureDownX;
                 float dy = event.getY() - gestureDownY;
+                float scale = getHeight() / 640f;
+                if (!cameraOpen && gestureDownY <= 130f * scale && dy >= 48f * scale
+                        && dy > Math.abs(dx) * 1.4f) {
+                    pullGesture = true;
+                    return true;
+                }
                 if (Math.abs(dx) >= 42f && Math.abs(dx) > Math.abs(dy) * 1.4f) {
                     horizontalGesture = true;
                     return true;
@@ -201,6 +212,16 @@ final class ProductRootView extends FrameLayout {
     }
 
     @Override public boolean onTouchEvent(MotionEvent event) {
+        if (pullGesture) {
+            if (event.getActionMasked() == MotionEvent.ACTION_MOVE) {
+                pullGesture = false;
+                openControlCenter();
+            } else if (event.getActionMasked() == MotionEvent.ACTION_UP
+                    || event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
+                pullGesture = false;
+            }
+            return true;
+        }
         if (!horizontalGesture) return true;
         if (event.getActionMasked() == MotionEvent.ACTION_UP) {
             float dx = event.getX() - gestureDownX;
@@ -230,7 +251,26 @@ final class ProductRootView extends FrameLayout {
         return true;
     }
 
+    void openControlCenter() {
+        if (controlCenter.isOpen() || cameraOpen || creationImportOpen) return;
+        controlCenter.bringToFront();
+        controlCenter.show();
+    }
+
+    private void openSettingsFromControls() {
+        if (runnerOpen) closeRunner();
+        if (!settingsOpen) openSettings();
+    }
+
+    private void controlCenterClosed() {
+        if (settingsOpen) settings.requestFocus();
+        else if (runnerOpen) runner.requestFocus();
+        else if (cardsOpen) cards.requestFocus();
+        else voice.requestFocus();
+    }
+
     boolean navigateBack() {
+        if (controlCenter.isOpen()) return controlCenter.onInput(UiInputIntent.BACK);
         if (creationImportOpen) return creationImport.onInput(UiInputIntent.BACK);
         if (runnerOpen) return runner.onInput(UiInputIntent.BACK);
         if (cameraOpen) {
@@ -244,7 +284,8 @@ final class ProductRootView extends FrameLayout {
     }
 
     private void dispatch(UiInputIntent intent) {
-        if (creationImportOpen) creationImport.onInput(intent);
+        if (controlCenter.isOpen()) controlCenter.onInput(intent);
+        else if (creationImportOpen) creationImport.onInput(intent);
         else if (runnerOpen) runner.onInput(intent);
         else if (settingsOpen) settings.onInput(intent);
         else if (cardsOpen) cards.onInput(intent);

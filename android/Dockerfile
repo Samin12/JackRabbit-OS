@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 #
-# JackRabbit APK builder image.
+# SAM Project APK builder image.
 #
 # A pinned Linux toolchain for android/scripts/build_debug.sh: JDK 17,
 # Android SDK (API 36 + Build Tools 36.0.0), Gradle 9.5.0, and the Chaquopy
@@ -27,10 +27,10 @@ ARG PY_VERSION=3.13.2
 ARG PY_BUILD_DATE=20250212
 ARG IMAGE_VERSION=dev
 
-LABEL org.opencontainers.image.title="JackRabbit APK builder" \
+LABEL org.opencontainers.image.title="SAM Project APK builder" \
       org.opencontainers.image.description="Pinned Linux toolchain (JDK 17, Android SDK 36, Gradle 9.5.0, CPython 3.13.2) for android/scripts/build_debug.sh" \
       org.opencontainers.image.version="${IMAGE_VERSION}" \
-      org.opencontainers.image.source="https://github.com/ReSono-Labs/JackRabbit-OS"
+      org.opencontainers.image.source="https://github.com/Samin12/SAM-Project"
 
 # Base tools: curl/unzip for toolchain downloads, git, and ripgrep (required
 # by android/scripts/check_boundaries.sh / check_runtime_package.sh).
@@ -61,16 +61,16 @@ RUN PY_HOST="$(case "${TARGETARCH}" in amd64) echo x86_64;; arm64) echo aarch64;
  && PY_TRIPLET="${PY_HOST}-unknown-linux-gnu" \
  && curl -fsSL -o /tmp/cpython.tgz \
       "https://github.com/astral-sh/python-build-standalone/releases/download/${PY_BUILD_DATE}/cpython-${PY_VERSION}%2B${PY_BUILD_DATE}-${PY_TRIPLET}-install_only.tar.gz" \
- && mkdir -p /tmp/compile-python "/opt/resono-python/cpython-${PY_VERSION}-linux-${PY_HOST}-gnu" \
+ && mkdir -p /tmp/compile-python "/opt/sam-python/cpython-${PY_VERSION}-linux-${PY_HOST}-gnu" \
  && tar -xzf /tmp/cpython.tgz -C /tmp/compile-python \
- && cp -a /tmp/compile-python/python/. "/opt/resono-python/cpython-${PY_VERSION}-linux-${PY_HOST}-gnu/" \
+ && cp -a /tmp/compile-python/python/. "/opt/sam-python/cpython-${PY_VERSION}-linux-${PY_HOST}-gnu/" \
  && rm -rf /tmp/cpython.tgz /tmp/compile-python \
- && mkdir -p /tmp/resono-python \
- && ln -s "/opt/resono-python/cpython-${PY_VERSION}-linux-${PY_HOST}-gnu" \
-          "/tmp/resono-python/cpython-${PY_VERSION}-linux-x86_64-gnu"
+ && mkdir -p /tmp/sam-python \
+ && ln -s "/opt/sam-python/cpython-${PY_VERSION}-linux-${PY_HOST}-gnu" \
+          "/tmp/sam-python/cpython-${PY_VERSION}-linux-x86_64-gnu"
 
 # --- Reference /tmp layout that android/scripts/build_debug.sh hardcodes ---
-RUN mkdir -p /tmp/resono-python \
+RUN mkdir -p /tmp/sam-python \
  && ln -s /opt/java/openjdk /tmp/r1-jdk17 \
  && ln -s /opt/android-sdk /tmp/r1-android-sdk \
  && ln -s "/opt/gradle-${GRADLE_VERSION}" /tmp/gradle-9.5.0
@@ -83,7 +83,7 @@ ENV ANDROID_HOME=/opt/android-sdk \
 # --- Sanity-check the whole toolchain at build time ---
 RUN /tmp/r1-jdk17/bin/java -version \
  && /tmp/gradle-9.5.0/bin/gradle --version | head -5 \
- && /tmp/resono-python/cpython-3.13.2-linux-x86_64-gnu/bin/python3.13 --version \
+ && /tmp/sam-python/cpython-3.13.2-linux-x86_64-gnu/bin/python3.13 --version \
  && ls /opt/android-sdk/platform-tools/adb \
       /opt/android-sdk/platforms/android-36 \
       /opt/android-sdk/build-tools/36.0.0 \

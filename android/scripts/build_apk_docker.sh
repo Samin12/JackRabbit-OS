@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the debug APK inside the pinned jackrabbit-apk-builder container.
+# Build the debug APK inside the pinned sam-apk-builder container.
 #
 # This is the recommended way to build on any host (especially macOS, because
 # the project's reference build env is Linux): no local JDK / Android SDK /
@@ -7,18 +7,18 @@
 #
 # Signing: the container mounts ~/.android/debug.keystore read-only. If that
 # file is missing, a fresh local debug key is generated (with a warning: it
-# will NOT upgrade over APKs signed with the shared JackRabbit key).
+# will NOT upgrade over APKs signed with the shared SAM Project key).
 # See BUILDING.md -> "Debug signing" for the shared key.
 #
 # Usage:
 #   ./android/scripts/build_apk_docker.sh
 #
 # Env overrides:
-#   APK_BUILDER_IMAGE   image tag to use (default: ghcr.io/resono-labs/jackrabbit-apk-builder:latest)
+#   APK_BUILDER_IMAGE   image tag to use (default: ghcr.io/samin12/sam-apk-builder:latest)
 #
 set -euo pipefail
 
-IMAGE="${APK_BUILDER_IMAGE:-ghcr.io/resono-labs/jackrabbit-apk-builder:latest}"
+IMAGE="${APK_BUILDER_IMAGE:-ghcr.io/samin12/sam-apk-builder:latest}"
 PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 KEYSTORE="$HOME/.android/debug.keystore"
 
@@ -40,7 +40,7 @@ if [[ ! -f "$KEYSTORE" ]]; then
     fi
     mkdir -p "$HOME/.android"
     echo "Generating a fresh local debug key at $KEYSTORE." >&2
-    echo "WARNING: builds signed with this key will NOT upgrade over APKs signed with the shared JackRabbit key." >&2
+    echo "WARNING: builds signed with this key will NOT upgrade over APKs signed with the shared SAM Project key." >&2
     if [[ -n "$KEYTOOL" ]]; then
         "$KEYTOOL" -genkeypair -v -keystore "$KEYSTORE" -storepass android -keypass android \
             -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \

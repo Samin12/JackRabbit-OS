@@ -14,7 +14,7 @@
             android:stopWithTask="false">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="On-device ReSono runtime and paired local management server" />
+                android:value="On-device SAM runtime and paired local management server" />
         </service>
     </application>
 </manifest>

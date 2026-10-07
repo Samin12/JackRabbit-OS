@@ -26,7 +26,7 @@ import java.util.concurrent.Executors;
 
 /** Privileged CipherOS adapter. Raw motor values never cross this process. */
 public final class R1MotorService extends Service {
-    private static final String LOG_TAG = "ReSonoMotor";
+    private static final String LOG_TAG = "SamMotor";
     static final int POSITION_OUTWARD = 1;
     static final int POSITION_HOME = 2;
     static final int POSITION_INWARD = 3;
@@ -47,9 +47,12 @@ public final class R1MotorService extends Service {
     private static final String PRODUCTION_CLIENT = "com.resonolabs.voice";
     private static final String ENGINEERING_CERT_SHA256 =
             "a3390000a4b6c8bf43774cc235bd967e4c80a9dae30c0e8714c79c01a9b9836a";
+    // Samin12 fork: debug key used for locally built orb-ui HOME builds.
+    private static final String FORK_CERT_SHA256 =
+            "5c50802e8b2cea1647bc8e73576ac1124ef3c3da0d1eb04348762cd14269394d";
 
     private final ExecutorService moves = Executors.newSingleThreadExecutor(runnable -> {
-        Thread thread = new Thread(runnable, "resono-r1-motor");
+        Thread thread = new Thread(runnable, "sam-r1-motor");
         thread.setDaemon(true);
         return thread;
     });
@@ -87,8 +90,11 @@ public final class R1MotorService extends Service {
         String[] packages = getPackageManager().getPackagesForUid(callerUid);
         if (packages != null) {
             for (String packageName : packages) {
-                if ((ENGINEERING_CLIENT.equals(packageName) || PRODUCTION_CLIENT.equals(packageName))
-                        && ENGINEERING_CERT_SHA256.equals(packageCertificateSha256(packageName))) {
+                if (!ENGINEERING_CLIENT.equals(packageName) && !PRODUCTION_CLIENT.equals(packageName)) {
+                    continue;
+                }
+                String certificate = packageCertificateSha256(packageName);
+                if (ENGINEERING_CERT_SHA256.equals(certificate) || FORK_CERT_SHA256.equals(certificate)) {
                     return;
                 }
             }
