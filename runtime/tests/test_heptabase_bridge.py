@@ -100,6 +100,17 @@ class CliMarkdownTest(unittest.TestCase):
         self.assertEqual("- 18:00 *↳ R1 journal connected through the Mac*",
                          cli_markdown(render_activity("18:00", "R1 journal connected through the Mac").content))
 
+    def test_a_line_ending_in_a_backslash_keeps_its_own_italics(self) -> None:
+        self.assertEqual("- 18:00 *↳ Saved to C:\\\\*",
+                         cli_markdown(render_activity("18:00", "Saved to C:\\").content))
+        session = render_session("R1 voice", [
+            SessionLine(1.0, "18:00", "activity", "Opened C:\\"),
+            SessionLine(2.0, "18:01", "assistant", "Done"),
+        ])[0].content
+        converted = cli_markdown(session)
+        self.assertNotIn("hepta-color", converted)
+        self.assertEqual("**R1 voice**\n\n- 18:00 *↳ Opened C:\\\\*\n\n- 18:01 *R1: Done*", converted)
+
 
 class BridgeTransportTest(unittest.TestCase):
     def setUp(self) -> None:

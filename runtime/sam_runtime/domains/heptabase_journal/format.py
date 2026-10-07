@@ -134,7 +134,9 @@ class SessionLine:
     text: str
 
 
-_GRAY_SPAN = re.compile(r'(?<!\\)<hepta-color type="text" color="gray">(.*?)(?<!\\)</hepta-color>', re.DOTALL)
+# No look-behind for a backslash: escaped text always writes ``>`` as ``\>``, so it can never
+# form either tag, while a look-behind would skip a closing tag after text ending in ``\\``.
+_GRAY_SPAN = re.compile(r'<hepta-color type="text" color="gray">(.*?)</hepta-color>', re.DOTALL)
 
 
 def cli_markdown(content: str) -> str:
