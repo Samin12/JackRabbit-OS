@@ -48,6 +48,7 @@ public final class AgendaWidget implements BoardWidget {
     private float width;
     private String summary = "";
     private float summaryWidth;
+    private Map<String, Integer> calendarColors = new HashMap<>();
 
     private static final class Item {
         int type;
@@ -131,6 +132,9 @@ public final class AgendaWidget implements BoardWidget {
             events.add(event);
         }
 
+        List<String> calendars = new ArrayList<>();
+        for (AgendaEvent event : events) calendars.add(event.calendar);
+        calendarColors = BoardPaint.calendarColors(calendars);
         float y = 0f;
         Item header = add(HEADER, y, 58f);
         y += header.height;
@@ -200,7 +204,7 @@ public final class AgendaWidget implements BoardWidget {
         AgendaEvent event = row.event();
         if (row.kind == Agenda.Kind.ALL_DAY) {
             Item item = add(ALL_DAY, y, 56f);
-            item.color = BoardPaint.calendarColor(event.calendar);
+            item.color = BoardPaint.calendarColor(calendarColors, event.calendar);
             item.paleColor = OrbGlyph.pale(item.color);
             item.tag = "ALL DAY";
             item.tagWidth = BoardPaint.eyebrowWidth(paint, item.tag, 11f) + 18f;
@@ -212,7 +216,7 @@ public final class AgendaWidget implements BoardWidget {
         }
         if (row.kind == Agenda.Kind.NOW) {
             Item item = add(NOW, y, 126f);
-            item.color = BoardPaint.calendarColor(event.calendar);
+            item.color = BoardPaint.calendarColor(calendarColors, event.calendar);
             item.paleColor = OrbGlyph.pale(item.color);
             item.tag = "NOW";
             item.tagWidth = BoardPaint.eyebrowWidth(paint, item.tag, 12f) + 22f;
@@ -231,7 +235,7 @@ public final class AgendaWidget implements BoardWidget {
     }
 
     private void fillTimed(Item item, AgendaEvent event, AgendaText text, ZonedDateTime now, float width, String accent) {
-        item.color = BoardPaint.calendarColor(event.calendar);
+        item.color = BoardPaint.calendarColor(calendarColors, event.calendar);
         item.paleColor = OrbGlyph.pale(item.color);
         String[] clock = event.allDay ? new String[]{"All", "day"} : text.clock(event.start);
         item.time = clock[0];
@@ -374,9 +378,9 @@ public final class AgendaWidget implements BoardWidget {
         rect.set(PAD, top + 16f, PAD + item.tagWidth, top + 40f);
         paint.setShader(null);
         paint.setStyle(Paint.Style.FILL);
-        paint.setColor(SamTheme.withAlpha(item.color, 52));
+        paint.setColor(SamTheme.withAlpha(item.color, 78));
         canvas.drawRoundRect(rect, 12f, 12f, paint);
-        BoardPaint.eyebrow(canvas, paint, item.tag, rect.centerX() + 1f, top + 32f, 11f, item.paleColor, Paint.Align.CENTER);
+        BoardPaint.eyebrow(canvas, paint, item.tag, rect.centerX() + 1f, top + 32f, 11f, SamTheme.INK, Paint.Align.CENTER);
         BoardPaint.text(canvas, paint, item.title, rect.right + 12f, top + 34f, 18f, SamTheme.INK, Paint.Align.LEFT,
                 BoardPaint.MEDIUM);
     }

@@ -138,7 +138,20 @@ public final class CardsPageView extends FrameLayout implements AutoCloseable {
 
     private void openCreation(JSONObject item) {
         if (creation != null) closeCreation();
-        creation = new CreationWebViewHost(activity, client, item, this::closeCreation);
+        if (android.webkit.WebView.getCurrentWebViewPackage() == null) {
+            // No WebView provider is selected on this device: constructing one would crash HOME.
+            android.util.Log.w("SamCards", "Creation not opened: no WebView provider is available");
+            creations.showNotice("No web engine on this R1");
+            return;
+        }
+        try {
+            creation = new CreationWebViewHost(activity, client, item, this::closeCreation);
+        } catch (RuntimeException error) {
+            android.util.Log.w("SamCards", "Creation could not open: " + error.getClass().getSimpleName());
+            creation = null;
+            creations.showNotice("Couldn't open that");
+            return;
+        }
         openCreation = identity(item);
         board.setVisibility(GONE);
         float density = getResources().getDisplayMetrics().density;

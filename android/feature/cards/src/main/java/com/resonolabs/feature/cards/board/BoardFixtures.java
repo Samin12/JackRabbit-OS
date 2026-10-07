@@ -55,7 +55,7 @@ public final class BoardFixtures {
             timed(events, "fx-review", "Design review", review, review.plusMinutes(60), "Studio B", "Work",
                     "Walk through the widget board with the team.", "alex@example.com");
             ZonedDateTime lunch = five.plusMinutes(70);
-            timed(events, "fx-lunch", "Lunch with Priya", lunch, lunch.plusMinutes(60), "Tartine Bakery", "Personal",
+            timed(events, "fx-coffee", "Coffee with Priya", lunch, lunch.plusMinutes(60), "Tartine Bakery", "Personal",
                     null, null);
             ZonedDateTime oneOnOne = lunch.plusMinutes(150);
             timed(events, "fx-alex", "1:1 with Alex", oneOnOne, oneOnOne.plusMinutes(30), "Zoom", "Work",

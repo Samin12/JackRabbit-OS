@@ -89,6 +89,8 @@ public final class WidgetBoardView extends View {
     public WidgetBoardView(Context context) {
         super(context);
         setFocusable(true);
+        // The board draws its own wheel focus; the framework's grey keyboard-focus wash would dim it all.
+        setDefaultFocusHighlightEnabled(false);
         setContentDescription("Widgets: up next, tasks and creations");
         scroller = new OverScroller(context, new DecelerateInterpolator(1.6f));
         touchSlopPx = ViewConfiguration.get(context).getScaledTouchSlop();
@@ -132,6 +134,7 @@ public final class WidgetBoardView extends View {
     /** Tab shown: refresh everything now, then keep each widget's cadence. */
     public void start() {
         started = true;
+        clearFocus(false);
         handler.removeCallbacksAndMessages(null);
         for (int i = 0; i < widgets.size(); i++) widgets.get(i).onShow();
         for (int i = 0; i < refreshers.size(); i++) handler.post(refreshers.get(i));
@@ -204,6 +207,10 @@ public final class WidgetBoardView extends View {
         if (focusWidget >= 0 && (focusWidget >= widgets.size() || focusRow >= widgets.get(focusWidget).focusCount())) {
             clearFocus(false);
         }
+        if (pressWidget >= 0 && (pressWidget >= widgets.size() || pressRow >= widgets.get(pressWidget).focusCount())) {
+            pressWidget = -1;
+            pressRow = -1;
+        }
         layoutDirty = false;
     }
 
@@ -257,6 +264,7 @@ public final class WidgetBoardView extends View {
     }
 
     private void highlight(Canvas canvas, BoardWidget widget, int row, boolean focus) {
+        if (row >= widget.focusCount()) return;
         widget.focusBounds(row, rect);
         paint.setShader(null);
         paint.setStyle(Paint.Style.FILL);

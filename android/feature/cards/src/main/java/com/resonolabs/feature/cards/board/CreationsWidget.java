@@ -36,6 +36,10 @@ public final class CreationsWidget implements BoardWidget {
     private String count = "";
     private boolean changed = true;
     private float height;
+    private String notice = "";
+    private long noticeUntil;
+    private final android.os.Handler handler = new android.os.Handler(android.os.Looper.getMainLooper());
+    private final Runnable noticeExpired = this::noticeExpired;
 
     private static final class Tile {
         final JSONObject item;
@@ -45,6 +49,7 @@ public final class CreationsWidget implements BoardWidget {
         int accent;
         String kind = "";
         String[] title = new String[0];
+        String description = "";
 
         Tile(JSONObject item) { this.item = item; }
     }
@@ -89,6 +94,10 @@ public final class CreationsWidget implements BoardWidget {
             tile.kind = kindOf(tile.item);
             String title = tile.item.optString("title", "Creation").trim();
             tile.title = BoardPaint.wrap(paint, title.isEmpty() ? "Creation" : title, tileWidth - 36f, 2, 18f, BoardPaint.MEDIUM);
+            if (tile.title.length == 1) {
+                tile.description = BoardPaint.fit(paint, tile.item.optString("description", ""), tileWidth - 36f, 14f,
+                        BoardPaint.REGULAR);
+            }
             tile.orb.set(36f, 40f, 18f, tile.accent, 2.2f);
             tiles.add(tile);
             y = tile.top + TILE_H;
@@ -101,9 +110,22 @@ public final class CreationsWidget implements BoardWidget {
         return height;
     }
 
+    private void noticeExpired() { host.widgetChanged(this); }
+
+    /** A short message in the section header (e.g. the device cannot open web content). */
+    public void showNotice(String text) {
+        notice = text;
+        noticeUntil = android.os.SystemClock.uptimeMillis() + 5000L;
+        handler.removeCallbacks(noticeExpired);
+        handler.postDelayed(noticeExpired, 5100L);
+        host.widgetChanged(this);
+    }
+
     @Override public void draw(Canvas canvas, long nowMs) {
         BoardPaint.eyebrow(canvas, paint, "CREATIONS", 8f, 30f, 14f, SamTheme.withAlpha(SamTheme.INK, 200), Paint.Align.LEFT);
-        if (!count.isEmpty()) {
+        if (android.os.SystemClock.uptimeMillis() < noticeUntil) {
+            BoardPaint.text(canvas, paint, notice, width - 8f, 30f, 14f, SamTheme.AMBER, Paint.Align.RIGHT, BoardPaint.MEDIUM);
+        } else if (!count.isEmpty()) {
             BoardPaint.text(canvas, paint, count, width - 8f, 30f, 15f, SamTheme.MUTED, Paint.Align.RIGHT, BoardPaint.REGULAR);
         }
         if (tiles.isEmpty()) {
@@ -129,6 +151,10 @@ public final class CreationsWidget implements BoardWidget {
             for (int line = 0; line < tile.title.length; line++) {
                 BoardPaint.text(canvas, paint, tile.title[line], 18f, 90f + line * 23f, 18f, SamTheme.INK,
                         Paint.Align.LEFT, BoardPaint.MEDIUM);
+            }
+            if (!tile.description.isEmpty()) {
+                BoardPaint.text(canvas, paint, tile.description, 18f, 112f, 14f, SamTheme.MUTED, Paint.Align.LEFT,
+                        BoardPaint.REGULAR);
             }
             canvas.restore();
         }
@@ -169,6 +195,8 @@ public final class CreationsWidget implements BoardWidget {
         return ("rabbit_qr_link".equals(source) && entry.startsWith("https://"))
                 || (("local_archive".equals(source) || "plugin_card".equals(source)) && entry.startsWith("/v1/creations/"));
     }
+
+    @Override public void close() { handler.removeCallbacks(noticeExpired); }
 
     @Override public long refreshIntervalMs() { return 0L; }
     @Override public void refresh() { }

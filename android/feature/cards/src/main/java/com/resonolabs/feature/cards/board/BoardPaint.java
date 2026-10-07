@@ -28,11 +28,26 @@ public final class BoardPaint {
 
     private BoardPaint() {}
 
-    /** Stable color per calendar name (no color in the runtime projection yet). */
-    public static int calendarColor(String calendar) {
-        if (calendar == null || calendar.isBlank()) return SamTheme.ORB_PALE;
-        int hash = calendar.trim().toLowerCase(java.util.Locale.ROOT).hashCode();
-        return CALENDAR_COLORS[(hash & 0x7fffffff) % CALENDAR_COLORS.length];
+    /**
+     * Color per calendar (the runtime projection has no calendar color yet): distinct calendars get
+     * distinct palette colors in name order, so the assignment is stable while the set is stable.
+     */
+    public static java.util.Map<String, Integer> calendarColors(java.util.Collection<String> calendars) {
+        java.util.TreeSet<String> names = new java.util.TreeSet<>();
+        for (String name : calendars) names.add(key(name));
+        java.util.Map<String, Integer> colors = new java.util.HashMap<>();
+        int index = 0;
+        for (String name : names) colors.put(name, name.isEmpty() ? SamTheme.ORB_PALE : CALENDAR_COLORS[index++ % CALENDAR_COLORS.length]);
+        return colors;
+    }
+
+    public static int calendarColor(java.util.Map<String, Integer> colors, String calendar) {
+        Integer color = colors.get(key(calendar));
+        return color == null ? SamTheme.ORB_PALE : color;
+    }
+
+    private static String key(String calendar) {
+        return calendar == null ? "" : calendar.trim().toLowerCase(java.util.Locale.ROOT);
     }
 
     public static void text(Canvas canvas, Paint paint, String value, float x, float baseline, float size,
@@ -70,16 +85,16 @@ public final class BoardPaint {
         return width;
     }
 
-    /** Single line, ellipsized to {@code maxWidth}. Allocates: measure-time only. */
+    /** Single line, ellipsized to {@code maxWidth} (leading spaces kept). Allocates: measure-time only. */
     public static String fit(Paint paint, String value, float maxWidth, float size, Typeface face) {
-        String text = value == null ? "" : value.trim();
+        String text = value == null ? "" : value.stripTrailing();
         paint.setTextSize(size);
         paint.setTypeface(face);
         paint.setLetterSpacing(0f);
         if (text.isEmpty() || paint.measureText(text) <= maxWidth) return text;
         float ellipsis = paint.measureText("…");
         int count = paint.breakText(text, true, Math.max(0f, maxWidth - ellipsis), null);
-        return text.substring(0, Math.max(0, count)).trim() + "…";
+        return text.substring(0, Math.max(0, count)).stripTrailing() + "…";
     }
 
     /** Word-wrapped into at most {@code maxLines}; the last line is ellipsized. Measure-time only. */
