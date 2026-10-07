@@ -277,13 +277,14 @@ public final class GenCardRenderer {
         for (int slot = 0; slot < box.rows; slot++) {
             int row = box.firstRow + slot;
             GenRow item = block.items[row];
-            float rt = box.top + slot * box.rowHeight;
+            float rt = box.top + box.rowTops[slot];
+            float rowHeight = box.rowTops[slot + 1] - box.rowTops[slot];
             if (slot > 0) {
                 paint.setColor(GenColors.HAIRLINE);
                 canvas.drawRect(x, rt, x + inner, rt + 1f, paint);
             }
             boolean detail = box.rowDetail[row] != null;
-            float titleBaseline = detail ? rt + 23f : rt + box.rowHeight / 2f + 6f;
+            float titleBaseline = detail ? rt + 23f : rt + rowHeight / 2f + 6f;
             float left = x;
             if (item.status >= 0) {
                 int color = GenColors.status(item.status);
@@ -317,7 +318,7 @@ public final class GenCardRenderer {
     private void drawChecklist(Canvas canvas, GenCardLayout.Box box, GenBlock block, float x, float inner, int accent) {
         for (int row = 0; row < box.rows; row++) {
             GenRow item = block.items[row];
-            float rt = box.top + row * box.rowHeight;
+            float rt = box.top + box.rowTops[row];
             if (row > 0) {
                 paint.setColor(GenColors.HAIRLINE);
                 canvas.drawRect(x, rt, x + inner, rt + 1f, paint);

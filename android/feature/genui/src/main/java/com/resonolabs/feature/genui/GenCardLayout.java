@@ -45,8 +45,11 @@ public final class GenCardLayout {
         int rows;
         /** First visible row (live step lists keep their newest rows when trimmed). */
         int firstRow;
+        /** Smallest row height (overflow fitting); rows with a detail line are taller. */
         float rowHeight;
-        boolean rowsHaveDetail;
+        /** Per-row heights (all rows) and visible slot tops relative to {@link #top} (rows + 1). */
+        float[] rowHeights;
+        float[] rowTops;
         String[] rowTitle;
         String[] rowDetail;
         String[] rowTrailing;
@@ -241,18 +244,25 @@ public final class GenCardLayout {
             float room = limit - y - gap - MORE_H;
             if ((block.type == GenBlock.Type.LIST || block.type == GenBlock.Type.CHECKLIST)
                     && room >= box.rowHeight) {
-                int fit = (int) (room / box.rowHeight);
-                hiddenRows += box.rows - fit;
-                if (card.live != null && block.type == GenBlock.Type.LIST) {
-                    // Live progress lists: the newest (active) step matters most.
-                    box.firstRow = box.rows - fit;
-                    olderHidden = true;
+                int total = box.rows;
+                boolean tail = card.live != null && block.type == GenBlock.Type.LIST;
+                int fit = 0;
+                float used = 0f;
+                while (fit < total) {
+                    float next = box.rowHeights[tail ? total - 1 - fit : fit];
+                    if (used + next > room) break;
+                    used += next;
+                    fit++;
                 }
-                box.rows = fit;
-                box.height = fit * box.rowHeight;
-                box.top = y + gap;
-                y = box.top + box.height;
-                boxCount++;
+                hiddenRows += total - fit;
+                if (fit > 0) {
+                    // Live progress lists: the newest (active) steps matter most.
+                    if (tail) olderHidden = true;
+                    setVisibleRows(box, tail ? total - fit : 0, fit);
+                    box.top = y + gap;
+                    y = box.top + box.height;
+                    boxCount++;
+                }
             } else if (block.type == GenBlock.Type.TEXT && room >= box.lineHeight) {
                 int fit = Math.min(box.rows, (int) (room / box.lineHeight));
                 String[] all = box.lines;
@@ -431,10 +441,12 @@ public final class GenCardLayout {
             }
             case LIST, CHECKLIST -> {
                 boolean checklist = block.type == GenBlock.Type.CHECKLIST;
-                box.rowsHaveDetail = false;
-                if (!checklist) for (GenRow row : block.items) if (row.detail != null) box.rowsHaveDetail = true;
-                box.rowHeight = checklist ? 44f : box.rowsHaveDetail ? 52f : 44f;
+                box.rowHeight = 44f;
                 int count = block.items.length;
+                box.rowHeights = new float[count];
+                for (int index = 0; index < count; index++) {
+                    box.rowHeights[index] = !checklist && block.items[index].detail != null ? 52f : 44f;
+                }
                 box.rowTitle = new String[count];
                 box.rowDetail = new String[count];
                 box.rowTrailing = new String[count];
@@ -453,8 +465,7 @@ public final class GenCardLayout {
                         box.rowDetail[index] = GenText.ellipsize(row.detail, fonts.rowDetail, inner - left - trailingWidth);
                     }
                 }
-                box.rows = count;
-                box.height = count * box.rowHeight;
+                setVisibleRows(box, 0, count);
             }
             case PROGRESS -> {
                 box.label = block.label == null ? null
@@ -516,6 +527,20 @@ public final class GenCardLayout {
             }
             case DIVIDER -> box.height = 1f;
         }
+    }
+
+    /** Shows rows [first, first + count) and lays out their slot tops. */
+    static void setVisibleRows(Box box, int first, int count) {
+        box.firstRow = first;
+        box.rows = count;
+        if (box.rowTops == null || box.rowTops.length < count + 1) box.rowTops = new float[count + 1];
+        float y = 0f;
+        for (int slot = 0; slot < count; slot++) {
+            box.rowTops[slot] = y;
+            y += box.rowHeights[first + slot];
+        }
+        box.rowTops[count] = y;
+        box.height = y;
     }
 
     static boolean isCurrency(String unit) {
@@ -679,9 +704,11 @@ public final class GenCardLayout {
         for (int index = 0; index < boxCount; index++) {
             Box box = boxes[index];
             if (box.block.type != GenBlock.Type.CHECKLIST && box.block.type != GenBlock.Type.LIST) continue;
-            if (contentY >= box.top && contentY < box.top + box.rows * box.rowHeight) {
-                int row = (int) ((contentY - box.top) / box.rowHeight);
-                return index << 8 | (box.firstRow + Math.min(row, box.rows - 1));
+            if (contentY >= box.top && contentY < box.top + box.height) {
+                float local = contentY - box.top;
+                int slot = 0;
+                while (slot < box.rows - 1 && local >= box.rowTops[slot + 1]) slot++;
+                return index << 8 | (box.firstRow + slot);
             }
         }
         return -1;
