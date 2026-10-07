@@ -969,6 +969,14 @@ class T3Service:
         resolved = resolve_answers(request, answers)
         command = self._commands.user_input_respond(thread_id=thread_id, request_id=request_id, answers=resolved)
         self._dispatch_or_fail(record, client, command)
+        if request.dismissible:
+            # T3 sends an async ("message") answer to the agent as a new user turn.
+            with self._lock:
+                cached = self._threads.get(thread_id) or {}
+            session = cached.get("session") if isinstance(cached.get("session"), dict) else {}
+            if session.get("status") not in {"running", "starting"}:
+                latest = cached.get("latestTurn") if isinstance(cached.get("latestTurn"), dict) else {}
+                self._note_turn_requested(thread_id, latest.get("turnId"))
         self._invalidate(thread_id)
         self._wake()
         return {"ok": True, "threadId": thread_id, "requestId": request_id, "answers": resolved}

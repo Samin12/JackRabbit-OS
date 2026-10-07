@@ -224,6 +224,19 @@ class T3ServiceCommandTest(unittest.TestCase):
         live = self.service.live_view(created)
         self.assertEqual(("active", False), (live["status"], live["terminal"]))
 
+    def test_live_snapshot_stays_live_after_an_async_answer_starts_a_turn(self) -> None:
+        asking = thread("ask", "Ask", user_input=True, turn_id="turn-a")
+        self._connect([asking])
+        self.fake.set_detail("ask", detail(asking, activities=[input_requested("q-async", message_mode=True)]))
+        self.service.respond_input("ask", "q-async", {"0": "Use SQLite"})
+        answered = thread("ask", "Ask", turn_id="turn-a")
+        self.fake.set_threads([answered])
+        self.fake.set_detail("ask", detail(answered))
+        self.service.sync_once()
+        self.service._invalidate("ask")
+        live = self.service.live_view("ask")
+        self.assertEqual(("active", False), (live["status"], live["terminal"]))
+
     def test_answers_send_option_values_and_keep_the_users_own_words(self) -> None:
         shell_thread = thread("ask", "Ask", user_input=True)
         self._connect([shell_thread])
