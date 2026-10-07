@@ -23,7 +23,7 @@
 
 SamRabbit replaces the R1's home screen with its own app:
 
-- **Voice:** tap the orb or press the side button and talk. It works like ChatGPT Voice: live replies, a transcript, and mute, cancel, and end buttons.
+- **Voice:** tap the orb or double-press the side button and talk (double-press again to end). It works like ChatGPT Voice: live replies, a transcript, and mute, cancel, and end buttons.
 - **Cards:** swipe for Calendar, Tasks, and any Creations you install. Each card has its own colored orb.
 - **Control Center:** swipe down from the top for Wi-Fi, Bluetooth, Do Not Disturb, brightness, volume, and notifications.
 - **Your AI account:** sign in with your ChatGPT subscription, or use an OpenAI API key.

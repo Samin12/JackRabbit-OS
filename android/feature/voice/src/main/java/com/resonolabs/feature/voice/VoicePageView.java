@@ -95,7 +95,7 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
                     }
                 },
                 () -> fail("event-invalid"));
-        setContentDescription("SamRabbit Voice. Tap the center or press the side button to talk.");
+        setContentDescription("SamRabbit Voice. Tap the orb or double-press the side button to talk.");
         setFocusable(true);
         setFocusableInTouchMode(true);
     }
@@ -518,7 +518,7 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
             SamTheme.text(canvas, paint, status, 240f, 440f, 28f, SamTheme.INK,
                     Paint.Align.CENTER, true);
             String detail = switch (state) {
-                case IDLE -> "Tap the orb or press the side button";
+                case IDLE -> "Double-press the side button to talk";
                 case CONNECTING -> "Opening a voice session";
                 case RESPONDING -> "Tap the orb to stop it talking";
                 default -> transcript;
