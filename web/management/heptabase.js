@@ -39,6 +39,7 @@ function render(){
     if(!reconnect&&!auth)actions.append(el("button",{class:"secondary",text:"Reconnect",onclick:()=>start("loopback")}));
     actions.append(el("button",{class:"secondary danger",text:"Disconnect",onclick:disconnect}));
     card.append(actions);
+    if(auth&&!reconnect)card.append(authPanel());
     if(!view.refreshAvailable)card.append(message("Heptabase granted no refresh token, so access ends within 48 hours. Reconnect to restore it.","error"));
   }
   root.append(card,settingsForm());
