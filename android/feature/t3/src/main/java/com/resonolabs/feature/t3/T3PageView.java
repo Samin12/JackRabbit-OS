@@ -60,6 +60,9 @@ public final class T3PageView extends FrameLayout implements UiInputTarget, Auto
     private String connectionLabel = "";
     private long labelFetchedAt;
     private int lastNeedsYou = -1;
+    /** Last /v1/t3/status said healthState=failed (T3 Code unreachable). */
+    private boolean serverDown;
+    private String serverDownDetail = "";
 
     public T3PageView(Activity activity, Host host) {
         super(activity);
@@ -238,23 +241,36 @@ public final class T3PageView extends FrameLayout implements UiInputTarget, Auto
 
     private void applySnapshot(T3Model.Snapshot next) {
         if (!next.connected) {
+            // Disconnected or waiting for re-pairing (the runtime answers 200 connected:false):
+            // drop the old list and badge so nothing stale is shown or counted.
             revision = -1L;
+            snapshot = null;
+            if (lastNeedsYou != 0) {
+                lastNeedsYou = 0;
+                host.needsYou(0);
+            }
             refreshConnection(true);
             return;
         }
         snapshot = next;
         revision = next.revision;
-        list.showSnapshot(next, connectionLabel, repository.fakeMode());
+        // Before its first sync the runtime lists zero threads even when T3 Code is just
+        // unreachable; that is "can't reach", not "no active threads".
+        if (next.threads.isEmpty() && serverDown) list.showMode(T3ListView.Mode.FAILED, serverDownDetail);
+        else list.showSnapshot(next, connectionLabel, repository.fakeMode());
         if (next.counts.needsYou != lastNeedsYou) {
             lastNeedsYou = next.counts.needsYou;
             host.needsYou(lastNeedsYou);
         }
-        if (System.currentTimeMillis() - labelFetchedAt > 60_000L) refreshConnection(false);
+        if (next.threads.isEmpty() || System.currentTimeMillis() - labelFetchedAt > 60_000L) {
+            refreshConnection(false);
+        }
     }
 
     private void handleListFailure(T3Client.Failure failure) {
         if (failure.notConnected() || failure.routeMissing()) {
             revision = -1L;
+            snapshot = null;
             if (failure.routeMissing()) list.showMode(T3ListView.Mode.UNCONFIGURED, "");
             else refreshConnection(true);
             if (lastNeedsYou != 0) {
@@ -278,8 +294,13 @@ public final class T3PageView extends FrameLayout implements UiInputTarget, Auto
         repository.status(new T3Repository.Result<T3Model.Connection>() {
             @Override public void ok(T3Model.Connection connection) {
                 connectionLabel = connection.label;
+                serverDown = "failed".equals(connection.healthState);
+                serverDownDetail = connection.detail.isEmpty() ? connection.serverUrl : connection.detail;
                 if (!applyMode) {
-                    if (snapshot != null && list.mode() == T3ListView.Mode.READY) {
+                    if (snapshot == null) return;
+                    if (snapshot.threads.isEmpty() && serverDown) {
+                        list.showMode(T3ListView.Mode.FAILED, serverDownDetail);
+                    } else if (list.mode() == T3ListView.Mode.READY || list.mode() == T3ListView.Mode.FAILED) {
                         list.showSnapshot(snapshot, connectionLabel, repository.fakeMode());
                     }
                     return;
@@ -287,9 +308,8 @@ public final class T3PageView extends FrameLayout implements UiInputTarget, Auto
                 switch (connection.healthState) {
                     case "reauth" -> list.showMode(T3ListView.Mode.REAUTH, connection.detail);
                     case "failed" -> {
-                        String detail = connection.detail.isEmpty() ? connection.serverUrl : connection.detail;
                         if (list.hasThreads()) list.showStale("Can't reach T3 Code · retrying");
-                        else list.showMode(T3ListView.Mode.FAILED, detail);
+                        else list.showMode(T3ListView.Mode.FAILED, serverDownDetail);
                     }
                     case "ready" -> {
                         if (!connection.connected) list.showMode(T3ListView.Mode.UNCONFIGURED, "");
