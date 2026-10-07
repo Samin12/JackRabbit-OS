@@ -1402,12 +1402,8 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
     private void sendToolOutput(String callId, String output, boolean followUp) {
         if (peer == null) return;
         try {
-            boolean outputSent = peer.sendRealtimeEvent(new JSONObject()
-                    .put("type", "conversation.item.create")
-                    .put("item", new JSONObject()
-                            .put("type", "function_call_output")
-                            .put("call_id", callId)
-                            .put("output", output)));
+            // Bounded: an oversized data-channel message would close the channel and end the session.
+            boolean outputSent = peer.sendRealtimeEvent(RealtimeToolOutput.event(callId, output));
             if (!outputSent) {
                 fail("event-invalid");
                 return;

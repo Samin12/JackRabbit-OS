@@ -20,4 +20,6 @@ dependencies {
     implementation(project(":feature:genui"))
     implementation("io.github.webrtc-sdk:android:144.7559.09")
     testImplementation("junit:junit:4.13.2")
+    // android.jar only ships org.json stubs; JVM tests need the reference implementation.
+    testImplementation("org.json:json:20231013")
 }
