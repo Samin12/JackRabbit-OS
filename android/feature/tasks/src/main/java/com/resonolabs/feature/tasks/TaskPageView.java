@@ -30,6 +30,11 @@ public final class TaskPageView extends View implements AutoCloseable {
     private boolean detail;
     private float downX, downY, manualPan;
     private long focusAt = System.currentTimeMillis();
+    /** Debug fixture (Cards board fake mode) instead of the runtime. */
+    private JSONObject fixture;
+    /** Opened from a board row: keep this task's detail; BACK returns to the caller. */
+    private String pinnedTaskId;
+    private boolean detailOnly;
 
     public TaskPageView(Activity activity, Runnable openVoice) {
         super(activity); this.openVoice = openVoice; setFocusable(true);
@@ -39,23 +44,50 @@ public final class TaskPageView extends View implements AutoCloseable {
     public void stop() { handler.removeCallbacks(refresh); }
     private final Runnable refresh = new Runnable() {
         @Override public void run() {
-            client.loadActive(getContext(), new TaskClient.Callback() {
-                @Override public void onTasks(JSONObject value) {
-                    tasks = value.optJSONArray("tasks");
-                    if (tasks == null) tasks = new JSONArray();
-                    selected = Math.min(selected, Math.max(0, tasks.length() - 1));
-                    if (tasks.length() == 0) detail = false;
-                    invalidate();
-                }
+            if (fixture != null) apply(fixture);
+            else client.loadActive(getContext(), new TaskClient.Callback() {
+                @Override public void onTasks(JSONObject value) { apply(value); }
                 @Override public void onFailure() {}
             });
             handler.postDelayed(this, 2000);
         }
     };
 
+    private void apply(JSONObject value) {
+        JSONArray next = value.optJSONArray("tasks");
+        if (next == null) next = new JSONArray();
+        if (pinnedTaskId != null) {
+            int found = -1;
+            for (int i = 0; i < next.length(); i++) {
+                JSONObject item = next.optJSONObject(i);
+                if (item != null && pinnedTaskId.equals(item.optString("taskId"))) { found = i; break; }
+            }
+            if (found < 0) return;
+            selected = found;
+        }
+        tasks = next;
+        selected = Math.min(selected, Math.max(0, tasks.length() - 1));
+        if (tasks.length() == 0) detail = false;
+        invalidate();
+    }
+
+    /** Use a fixed active-task projection ({@code {"tasks":[...]}}) instead of polling the runtime. */
+    public void useFixture(JSONObject active) { fixture = active; if (active != null) apply(active); }
+
+    /** Opens straight into one task's detail (from a Cards board row); BACK closes the page. */
+    public void showTask(JSONObject task) {
+        if (task == null) return;
+        pinnedTaskId = task.optString("taskId", null);
+        detailOnly = true;
+        tasks = new JSONArray().put(task);
+        selected = 0;
+        detail = true;
+        invalidate();
+    }
+
     public boolean onInput(UiInputIntent input) {
         if (input == UiInputIntent.BACK) {
-            if (detail) { detail = false; invalidate(); return true; }
+            if (detail && !detailOnly) { detail = false; invalidate(); return true; }
             return false;
         }
         if (detail) { if (input == UiInputIntent.ACTIVATE) openVoice.run(); return true; }
@@ -80,7 +112,7 @@ public final class TaskPageView extends View implements AutoCloseable {
             manualPan = Math.max(0, manualPan-(x-downX)); downX=x; invalidate(); return true;
         }
         if (event.getActionMasked() != MotionEvent.ACTION_UP) return true;
-        if (detail) { if (y < 82) detail=false; else if (y >= 520) openVoice.run(); invalidate(); return true; }
+        if (detail) { if (y < 82 && !detailOnly) detail=false; else if (y >= 520) openVoice.run(); invalidate(); return true; }
         if (y >= 92 && y < 572 && tasks.length() > 0) {
             int next = Math.min(tasks.length()-1, (selected/5)*5+(int)((y-92)/96));
             if (next == selected) detail=true;
