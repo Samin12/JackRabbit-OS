@@ -59,6 +59,7 @@ final class DictationPeer {
     private AudioFocusRequest focus;
     private boolean offerDelivered;
     private boolean live;
+    private boolean captureStopped;
     private boolean closed;
     /** Smoothed microphone level 0..1, written on the audio thread. */
     private volatile float level;
@@ -135,6 +136,19 @@ final class DictationPeer {
         if (closed) return;
         if (audioTrack != null) audioTrack.setEnabled(false);
         level = 0f;
+    }
+
+    /**
+     * Releases the microphone itself (stops the OS capture) while the call stays open, so words
+     * already heard are still transcribed. A muted track keeps the capture running; this is for
+     * when someone else needs the microphone now (a voice session starting).
+     */
+    void stopCapture() {
+        if (closed || captureStopped) return;
+        captureStopped = true;
+        muteMicrophone();
+        if (peer != null) peer.setAudioRecording(false);
+        Log.i(LOG_TAG, "dictation capture stopped early; words in flight still arrive");
     }
 
     float level() {

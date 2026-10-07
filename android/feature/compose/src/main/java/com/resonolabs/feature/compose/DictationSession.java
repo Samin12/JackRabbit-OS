@@ -164,9 +164,14 @@ public final class DictationSession {
         if (!machine.active()) return;
         long now = SystemClock.elapsedRealtime();
         DictationMachine.Phase phase = machine.phase();
-        if ((phase == DictationMachine.Phase.CONNECTING || phase == DictationMachine.Phase.LISTENING)
-                && voiceSessionLive.getAsBoolean()) {
-            perform(machine.stop(now, DictationMachine.Stop.VOICE_SESSION));
+        if (voiceSessionLive.getAsBoolean()) {
+            if (phase == DictationMachine.Phase.CONNECTING || phase == DictationMachine.Phase.LISTENING) {
+                perform(machine.stop(now, DictationMachine.Stop.VOICE_SESSION));
+            }
+            // The voice session owns the microphone from now on: release the capture at once, even
+            // while the last words are still being transcribed (FINISHING keeps the call, not the mic).
+            // A side-button double press pauses the activity first, so FINISHING is the usual phase.
+            if (peer != null) peer.stopCapture();
         }
         DictationMachine.Action action = machine.tick(now, transcript.pending());
         if (action == DictationMachine.Action.CLOSE && machine.stopReason() == DictationMachine.Stop.FAILED
