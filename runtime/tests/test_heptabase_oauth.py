@@ -226,6 +226,24 @@ class HeptabaseOAuthTest(unittest.TestCase):
         self.assertIn(old_refresh, self.h.fake.revoked)
         self.assertEqual(1, len(self.h.fake.registrations), "loopback client id reused")
 
+    def test_reconnect_keeps_a_reused_grant_alive(self) -> None:
+        self.h.fake.oidc_grants = True
+        self.h.connect()
+        self.h.connect()  # same client and browser session: the issuer reuses the live grant
+        self.assertEqual(1, len(self.h.fake.grants))
+        self.assertEqual(0, len(self.h.fake.revoked), "revoking the old token would revoke the new connection")
+        self.assertEqual("sent", self.h.service.record_note("still connected after reconnecting")["state"])
+
+    def test_reconnect_with_a_new_grant_revokes_the_old_one(self) -> None:
+        self.h.fake.oidc_grants = True
+        self.h.connect()
+        old = self.h.fake.grants[0]
+        old.revoked = True  # the grant ended on Heptabase's side, so the next Allow creates a new one
+        self.h.connect()
+        self.assertEqual(2, len(self.h.fake.grants))
+        self.assertIn(old.refresh_token, self.h.fake.revoked)
+        self.assertEqual("sent", self.h.service.record_note("connected with the new grant")["state"])
+
     def test_no_refresh_token_is_surfaced(self) -> None:
         self.h.fake.issue_refresh = False
         view = self.h.connect()

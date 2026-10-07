@@ -24,7 +24,7 @@ from .format import (SessionLine, clean_words, fingerprint, journal_contains, jo
 from .localtime import (DEFAULT_TIMEZONE, UnknownTimezone, clock_label, iso_utc, journal_date, parse_iso_epoch,
                         resolve_zone, zone_source)
 from .oauth import (DEVICE_CALLBACK_PATH, HEPTABASE_CONNECTION_ID, LOOPBACK_REDIRECT_URI, HeptabaseEndpoints,
-                    HeptabaseOAuth, HeptabaseTokenStore)
+                    HeptabaseOAuth, HeptabaseTokenStore, same_grant)
 from .outbox import JournalOutboxRepository, JournalWorker, NewEntry, Work, backoff_seconds, next_work
 from .settings import CONNECTED, RECONNECT_REQUIRED, JournalSettings, JournalSettingsRepository
 from .verbatim import utterance_consumed, verify_words
@@ -189,7 +189,8 @@ class HeptabaseJournalService:
         previous = self._oauth.stored_record()
         record = self._oauth.complete(state=state, code=code, issuer=issuer, error=error)
         self._activate(record, source="authorization")
-        if previous and previous.get("refresh_token") and previous.get("refresh_token") != record.get("refresh_token"):
+        if previous and previous.get("refresh_token") and previous.get("refresh_token") != record.get("refresh_token") \
+                and not same_grant(previous, record):
             self._oauth.revoke(previous)  # the R1 holds exactly one grant
         return self.management_view()
 

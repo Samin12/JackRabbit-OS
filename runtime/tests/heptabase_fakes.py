@@ -65,6 +65,8 @@ class Grant:
     refresh_token: str
     revoked: bool = False
     old_refresh: set[str] = field(default_factory=set)
+    grant_id: str = field(default_factory=lambda: secrets.token_hex(8))
+    issued_refresh: set[str] = field(default_factory=set)  # older, still-valid tokens of a reused grant
 
 
 class FakeHeptabase:
@@ -84,6 +86,9 @@ class FakeHeptabase:
         self.expires_in = 172_800
         self.rotate = True
         self.issue_refresh = True
+        # node-oidc-provider semantics: JWT access tokens carry grant_id, a new authorization
+        # for the same client reuses the live grant, and revoking any token revokes the grant.
+        self.oidc_grants = False
         self.lock = threading.Lock()
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), _handler(self))
         self._server.daemon_threads = True
@@ -130,6 +135,9 @@ class FakeHeptabase:
 
     def _new_tokens(self, grant: Grant) -> dict[str, object]:
         access = "at-" + secrets.token_urlsafe(24)
+        if self.oidc_grants:
+            claims = json.dumps({"grant_id": grant.grant_id, "client_id": grant.client_id, "jti": access})
+            access = "eyJhbGciOiJSUzI1NiJ9." + base64.urlsafe_b64encode(claims.encode()).rstrip(b"=").decode() + ".sig"
         self.access[access] = grant
         payload: dict[str, object] = {"access_token": access, "token_type": "Bearer",
                                       "expires_in": self.expires_in, "scope": "space:read space:write offline_access"}
@@ -216,9 +224,11 @@ def _handler(fake: FakeHeptabase):
                 token = form.get("token", "")
                 fake.revoked.append(token)
                 with fake.lock:
-                    fake.access.pop(token, None)
+                    owner = fake.access.pop(token, None)
+                    if owner is not None and fake.oidc_grants:
+                        owner.revoked = True
                     for grant in fake.grants:
-                        if grant.refresh_token == token:
+                        if grant.refresh_token == token or token in grant.issued_refresh:
                             grant.revoked = True
                 self.send_response(200)
                 self.send_header("Content-Length", "0")
@@ -241,8 +251,14 @@ def _handler(fake: FakeHeptabase):
                         or code["redirect_uri"] != form.get("redirect_uri") or code["challenge"] != challenge):
                     self._json(400, {"error": "invalid_grant", "error_description": "grant request is invalid"})
                     return
-                grant = Grant(form["client_id"], "rt-" + secrets.token_urlsafe(24))
-                fake.grants.append(grant)
+                grant = next((item for item in fake.grants if fake.oidc_grants and not item.revoked
+                              and item.client_id == form["client_id"]), None)
+                if grant is None:
+                    grant = Grant(form["client_id"], "rt-" + secrets.token_urlsafe(24))
+                    fake.grants.append(grant)
+                else:
+                    grant.issued_refresh.add(grant.refresh_token)
+                    grant.refresh_token = "rt-" + secrets.token_urlsafe(24)
                 self._json(200, fake._new_tokens(grant))
                 return
             if form.get("grant_type") == "refresh_token":

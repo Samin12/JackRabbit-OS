@@ -398,6 +398,31 @@ class HeptabaseOAuth:
         return client_id
 
 
+def _grant_id(record: dict[str, object] | None) -> str | None:
+    """``grant_id`` claim of the record's access token (an RFC 9068 JWT), unverified."""
+    token = (record or {}).get("access_token")
+    if not isinstance(token, str) or token.count(".") != 2:
+        return None
+    segment = token.split(".")[1]
+    try:
+        claims = json.loads(base64.urlsafe_b64decode(segment + "=" * (-len(segment) % 4)))
+    except ValueError:  # binascii.Error and JSON errors are ValueErrors
+        return None
+    value = claims.get("grant_id") if isinstance(claims, dict) else None
+    return value if isinstance(value, str) and value else None
+
+
+def same_grant(first: dict[str, object] | None, second: dict[str, object] | None) -> bool:
+    """True when both records provably belong to one grant.
+
+    Heptabase's issuer (node-oidc-provider) reuses an existing grant for the same
+    client and browser session, and revoking any token of a grant revokes all of
+    it. Revoking the "previous" grant after such a reconnect would kill the new one.
+    """
+    first_id, second_id = _grant_id(first), _grant_id(second)
+    return first_id is not None and first_id == second_id
+
+
 def _opt_str(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
 
