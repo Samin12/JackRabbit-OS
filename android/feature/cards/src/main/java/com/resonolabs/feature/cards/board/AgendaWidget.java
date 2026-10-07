@@ -36,7 +36,9 @@ public final class AgendaWidget implements BoardWidget {
     private static final float PAD = 22f;
     private static final float HEADER_H = 52f;
     private static final float ROW_H = 56f;
-    private static final float ALL_DAY_H = 44f;
+    /** Rows that open something stay at least 48 px tall (the R1 touch-target floor). */
+    private static final float ALL_DAY_H = 48f;
+    private static final float FOOTER_H = 48f;
     private static final float NOW_H = 90f;
     private static final float SECTION_H = 34f;
     private static final float DOT_X = 90f;
@@ -203,7 +205,7 @@ public final class AgendaWidget implements BoardWidget {
                 y += later.height;
             }
             if (agenda.hidden > 0) {
-                Item footer = add(FOOTER, y, 46f);
+                Item footer = add(FOOTER, y, FOOTER_H);
                 footer.title = "+" + agenda.hidden + " more";
                 footer.separator = true;
                 y += footer.height;
@@ -339,11 +341,11 @@ public final class AgendaWidget implements BoardWidget {
                             Paint.Align.RIGHT, BoardPaint.REGULAR);
                 }
                 case FOOTER -> {
-                    BoardPaint.text(canvas, paint, item.title, PAD, item.top + 30f, 16f, SamTheme.ORB_PALE,
+                    BoardPaint.text(canvas, paint, item.title, PAD, item.top + 31f, 16f, SamTheme.ORB_PALE,
                             Paint.Align.LEFT, BoardPaint.MEDIUM);
-                    BoardPaint.text(canvas, paint, "Calendar", width - 42f, item.top + 30f, 15f, SamTheme.MUTED,
+                    BoardPaint.text(canvas, paint, "Calendar", width - 42f, item.top + 31f, 15f, SamTheme.MUTED,
                             Paint.Align.RIGHT, BoardPaint.REGULAR);
-                    chevron(canvas, width - 28f, item.top + 25f);
+                    chevron(canvas, width - 28f, item.top + 26f);
                 }
                 case EMPTY -> {
                     BoardPaint.text(canvas, paint, item.title, PAD, item.top + 27f, 17f, SamTheme.withAlpha(SamTheme.INK, 210),
@@ -431,13 +433,13 @@ public final class AgendaWidget implements BoardWidget {
 
     private void drawAllDay(Canvas canvas, Item item) {
         float top = item.top;
-        rect.set(PAD, top + 11f, PAD + item.tagWidth, top + 33f);
+        rect.set(PAD, top + 13f, PAD + item.tagWidth, top + 35f);
         paint.setShader(null);
         paint.setStyle(Paint.Style.FILL);
         paint.setColor(SamTheme.withAlpha(item.color, 78));
         canvas.drawRoundRect(rect, 11f, 11f, paint);
-        BoardPaint.eyebrow(canvas, paint, item.tag, rect.centerX() + 1f, top + 26f, 10.5f, SamTheme.INK, Paint.Align.CENTER);
-        BoardPaint.text(canvas, paint, item.title, rect.right + 12f, top + 28f, item.titleSize, SamTheme.INK,
+        BoardPaint.eyebrow(canvas, paint, item.tag, rect.centerX() + 1f, top + 28f, 10.5f, SamTheme.INK, Paint.Align.CENTER);
+        BoardPaint.text(canvas, paint, item.title, rect.right + 12f, top + 30f, item.titleSize, SamTheme.INK,
                 Paint.Align.LEFT, BoardPaint.MEDIUM);
     }
 

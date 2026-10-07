@@ -27,10 +27,11 @@ import java.util.List;
  */
 public final class LiveWidget implements BoardWidget, GenCardStore.Listener {
     private static final int MAX_ROWS = 3;
-    private static final float LABEL = 46f;
+    /** The "LIVE" header and the "+N more" footer open the Live page: 48 px touch targets. */
+    private static final float LABEL = 48f;
     private static final float PILL = GenCardLayout.PILL_HEIGHT;
     private static final float GAP = 10f;
-    private static final float FOOTER = 44f;
+    private static final float FOOTER = 48f;
     /** Shimmer of running T3 / background-run pills. */
     private static final long SHIMMER_FRAME_MS = 40L;
     /** Ringing (finished) timer pulse. */
@@ -157,11 +158,11 @@ public final class LiveWidget implements BoardWidget, GenCardStore.Listener {
             }
         }
         if (!moreText.isEmpty()) {
-            BoardPaint.text(canvas, paint, moreText, 8f, moreTop + 30f, 16f, SamTheme.ORB_PALE, Paint.Align.LEFT,
+            BoardPaint.text(canvas, paint, moreText, 8f, moreTop + 32f, 16f, SamTheme.ORB_PALE, Paint.Align.LEFT,
                     BoardPaint.MEDIUM);
-            BoardPaint.text(canvas, paint, "All live cards", width - 28f, moreTop + 30f, 15f, SamTheme.MUTED,
+            BoardPaint.text(canvas, paint, "All live cards", width - 28f, moreTop + 32f, 15f, SamTheme.MUTED,
                     Paint.Align.RIGHT, BoardPaint.REGULAR);
-            chevron(canvas, width - 12f, moreTop + 25f);
+            chevron(canvas, width - 12f, moreTop + 27f);
         }
     }
 
@@ -231,7 +232,10 @@ public final class LiveWidget implements BoardWidget, GenCardStore.Listener {
     @Override public boolean onTap(float x, float y) {
         for (int i = 0; i < rows.size(); i++) {
             Row row = rows.get(i);
-            if (y < row.top - GAP / 2f || y > row.top + PILL + GAP / 2f) continue;
+            // Pills share the gaps between them, never the header above or the footer below.
+            float above = i == 0 ? 0f : GAP / 2f;
+            float below = i == rows.size() - 1 ? 0f : GAP / 2f;
+            if (y < row.top - above || y > row.top + PILL + below) continue;
             float lx = x;
             float ly = Math.max(0f, Math.min(PILL, y - row.top));
             if (row.layout.closeAt(lx, ly)) {
