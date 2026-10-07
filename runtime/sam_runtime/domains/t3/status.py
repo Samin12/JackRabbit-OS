@@ -285,6 +285,12 @@ class PendingQuestion:
     options: tuple[str, ...]
     allow_custom: bool
     multi_select: bool
+    # What T3 expects back for each option: ``option.value ?? option.label``
+    # (apps/web pendingUserInput.ts). Parallel to ``options``; labels are for display.
+    values: tuple[str, ...] = ()
+
+    def answer_value(self, index: int) -> str:
+        return self.values[index] if index < len(self.values) else self.options[index]
 
     def view(self) -> dict[str, object]:
         return {
@@ -331,9 +337,14 @@ def _questions(value: object) -> tuple[PendingQuestion, ...]:
     for raw in value:
         if not isinstance(raw, dict) or not isinstance(raw.get("options"), list):
             continue
-        options = tuple(
-            str(option["label"]) for option in raw["options"]
+        kept = [
+            option for option in raw["options"]
             if isinstance(option, dict) and isinstance(option.get("label"), str)
+        ]
+        options = tuple(str(option["label"]) for option in kept)
+        values = tuple(
+            str(option["value"]) if isinstance(option.get("value"), str) else str(option["label"])
+            for option in kept
         )
         allow_custom = raw.get("allowCustomAnswer") is not False
         if not options and not allow_custom:
@@ -347,6 +358,7 @@ def _questions(value: object) -> tuple[PendingQuestion, ...]:
             options=options,
             allow_custom=allow_custom,
             multi_select=raw.get("multiSelect") is True,
+            values=values,
         ))
     return tuple(result)
 

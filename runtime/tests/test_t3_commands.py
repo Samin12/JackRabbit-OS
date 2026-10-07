@@ -200,6 +200,37 @@ class T3ServiceCommandTest(unittest.TestCase):
         with self.assertRaises(T3InvalidRequest):
             self.service.respond_input("ask", "multi", {"0": "Purple"})
 
+    def test_answers_send_option_values_and_keep_the_users_own_words(self) -> None:
+        shell_thread = thread("ask", "Ask", user_input=True)
+        self._connect([shell_thread])
+        valued = input_requested("pick", options=("Allow once", "Always allow"), allow_custom=False)
+        valued["payload"]["questions"][0]["options"] = [
+            {"label": "Allow once", "description": "", "value": "opt-once"},
+            {"label": "Always allow", "description": "", "value": "opt-always"},
+        ]
+        self.fake.set_detail("ask", detail(shell_thread, activities=[
+            valued,
+            input_requested("count", options=("1", "3", "5")),
+            input_requested("confirm", options=("Yes", "No")),
+        ]))
+        pending = self.service.thread_view("ask")["pending"]["inputs"][0]["questions"][0]
+        self.assertEqual(["Allow once", "Always allow"], pending["options"])
+
+        def answer(request_id: str, value: str) -> object:
+            self.service.respond_input("ask", request_id, {"0": value})
+            return self.fake.dispatched[-1]["answers"]["0"]
+
+        # T3 expects option.value ?? option.label, like its own web client.
+        self.assertEqual("opt-always", answer("pick", "always allow"))
+        self.assertEqual("opt-once", answer("pick", "the first one"))
+        self.assertEqual("opt-once", answer("pick", "opt-once"))
+        # With numeric labels a number is the label, never an index.
+        self.assertEqual("3", answer("count", "3"))
+        self.assertEqual("2", answer("count", "2"))
+        # Extra words are the user's answer, not just the label they contain.
+        self.assertEqual("Yes, but skip the slow tests", answer("confirm", "Yes, but skip the slow tests"))
+        self.assertEqual("No", answer("confirm", "no."))
+
 
 if __name__ == "__main__":
     unittest.main()

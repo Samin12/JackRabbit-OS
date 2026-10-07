@@ -49,6 +49,7 @@ from .status import (
     NEEDS_YOU,
     WORKING,
     PendingInput,
+    PendingQuestion,
     PendingRequests,
     activity_time,
     condense,
@@ -990,24 +991,33 @@ def resolve_answers(request: PendingInput, answers: dict[str, object]) -> dict[s
     return resolved
 
 
-def _pick_option(question: object, value: str) -> str:
+def _pick_option(question: PendingQuestion, value: str) -> str:
+    """The value T3 expects for one answer: ``option.value ?? option.label``, or free text."""
     text = " ".join(value.split())
     options = list(question.options)
     lowered = text.lower().strip(" .!")
-    for option in options:
-        if option.lower() == lowered:
-            return option
-    if lowered.isdigit() and 1 <= int(lowered) <= len(options):
-        return options[int(lowered) - 1]
+    for index, option in enumerate(options):
+        if option.lower() == lowered or question.answer_value(index).lower() == lowered:
+            return question.answer_value(index)
+    # "2" means the second option, unless the options are themselves numbers.
+    numeric_labels = any(option.strip().isdigit() for option in options)
+    if lowered.isdigit() and not numeric_labels and 1 <= int(lowered) <= len(options):
+        return question.answer_value(int(lowered) - 1)
     ordinals = {"first": 0, "second": 1, "third": 2, "fourth": 3, "fifth": 4}
     for word, index in ordinals.items():
         if lowered in {word, f"the {word}", f"{word} one", f"the {word} one", f"{word} option", f"the {word} option"} and index < len(options):
-            return options[index]
-    contained = [option for option in options if lowered and (lowered in option.lower() or option.lower() in lowered)]
-    if len(contained) == 1:
-        return contained[0]
+            return question.answer_value(index)
+    # A shortened label ("sqlite" for "Use SQLite") picks that option.
+    shortened = [index for index, option in enumerate(options) if lowered and lowered in option.lower()]
+    if len(shortened) == 1:
+        return question.answer_value(shortened[0])
+    # An answer that merely contains a label ("yes, but skip the tests") is the
+    # user's own words: send it whole when free text is allowed.
     if question.allow_custom:
         return text
+    containing = [index for index, option in enumerate(options) if option.lower() in lowered]
+    if len(containing) == 1:
+        return question.answer_value(containing[0])
     choices = "; ".join(options)
     raise T3InvalidRequest(f"Choose one of: {choices}.")
 
