@@ -447,7 +447,13 @@ public final class WidgetBoardView extends View {
             if (!firstVisibleFocus()) smoothScrollTo(scrollY + 160f, true);
         } else if (!step(direction)) {
             if (direction < 0) { clearFocus(true); smoothScrollTo(0f, true); return; }
-            smoothScrollTo(maxScroll, true);
+            // Past the last focusable row: reveal what is below it (e.g. the empty Creations panel)
+            // as far as the focused row stays in view. ensureFocusVisible() would cancel this scroll.
+            widgets.get(focusWidget).focusBounds(focusRow, rect);
+            float keepFocus = tops[focusWidget] + rect.top - FOCUS_MARGIN - VIEW_TOP;
+            smoothScrollTo(Math.max(scrollY, Math.min(maxScroll, keepFocus)), true);
+            invalidate();
+            return;
         }
         ensureFocusVisible();
         invalidate();
