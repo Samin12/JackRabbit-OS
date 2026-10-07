@@ -33,8 +33,14 @@ public final class SamTheme {
     private static final Typeface MEDIUM = Typeface.create("sans-serif-medium", Typeface.NORMAL);
     private static LinearGradient backdropShader;
     private static float backdropHeight;
-    private static RadialGradient glowShader;
-    private static int glowShaderColor;
+    /**
+     * Glow shaders by colour. Several pages can animate at once with different glow colours (the
+     * Control Center over the Voice page's Pixel head grey or error red), so one slot would thrash.
+     */
+    private static final int GLOW_SLOTS = 4;
+    private static final RadialGradient[] glowShaders = new RadialGradient[GLOW_SLOTS];
+    private static final int[] glowColors = new int[GLOW_SLOTS];
+    private static int glowNext;
 
     private SamTheme() {}
 
@@ -68,14 +74,7 @@ public final class SamTheme {
         paint.setShader(backdrop);
         canvas.drawRect(0f, 0f, width, height, paint);
         if (glowRadius > 0f) {
-            RadialGradient glow = glowShader;
-            if (glow == null || glowShaderColor != glowColor) {
-                glow = new RadialGradient(0f, 0f, 1f, withAlpha(glowColor, 70), withAlpha(glowColor, 0),
-                        Shader.TileMode.CLAMP);
-                glowShader = glow;
-                glowShaderColor = glowColor;
-            }
-            paint.setShader(glow);
+            paint.setShader(glowShader(glowColor));
             canvas.save();
             canvas.translate(glowX, glowY);
             canvas.scale(glowRadius, glowRadius);
@@ -83,6 +82,19 @@ public final class SamTheme {
             canvas.restore();
         }
         paint.setShader(null);
+    }
+
+    /** Cached unit-radius glow for {@code color} (main thread). */
+    private static RadialGradient glowShader(int color) {
+        for (int i = 0; i < GLOW_SLOTS; i++) {
+            if (glowShaders[i] != null && glowColors[i] == color) return glowShaders[i];
+        }
+        RadialGradient glow = new RadialGradient(0f, 0f, 1f, withAlpha(color, 70), withAlpha(color, 0),
+                Shader.TileMode.CLAMP);
+        glowShaders[glowNext] = glow;
+        glowColors[glowNext] = color;
+        glowNext = (glowNext + 1) % GLOW_SLOTS;
+        return glow;
     }
 
     /** Frosted glass panel: faint top-lit fill with a hairline edge. */
