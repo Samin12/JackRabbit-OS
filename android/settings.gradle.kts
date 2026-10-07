@@ -30,6 +30,7 @@ include(
     ":feature:creation-import",
     ":feature:background-run",
     ":feature:genui",
+    ":feature:t3",
     ":runtime-host",
     ":system:motor-service",
     ":system:power-overlay",

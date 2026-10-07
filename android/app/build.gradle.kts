@@ -63,6 +63,7 @@ dependencies {
     implementation(project(":feature:creation-import"))
     implementation(project(":feature:background-run"))
     implementation(project(":feature:genui"))
+    implementation(project(":feature:t3"))
     implementation(project(":core:motor"))
     implementation(project(":runtime-host"))
     testImplementation("junit:junit:4.13.2")

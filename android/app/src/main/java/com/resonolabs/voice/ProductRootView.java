@@ -18,6 +18,7 @@ import com.resonolabs.feature.backgroundrun.BackgroundRunPanelView;
 import com.resonolabs.runtime.host.RuntimeBackgroundRunClient;
 import com.resonolabs.runtime.host.RuntimeCreationImportClient;
 import com.resonolabs.feature.creationimport.CreationImportView;
+import com.resonolabs.feature.t3.T3PageView;
 
 final class ProductRootView extends FrameLayout {
     private final VoicePageView voice;
@@ -29,6 +30,8 @@ final class ProductRootView extends FrameLayout {
     private final BackgroundRunPanelView runner;
     private final CreationImportView creationImport;
     private final ControlCenterView controlCenter;
+    private final T3PageView t3;
+    private boolean t3Open;
     private boolean settingsOpen;
     private boolean cardsOpen;
     private boolean cameraOpen;
@@ -56,8 +59,32 @@ final class ProductRootView extends FrameLayout {
         camera.setVisibility(GONE);
         cards = new CardsPageView(activity, this::openVoice, this::showCreation);
         cards.setVisibility(GONE);
+        t3 = new T3PageView(activity, new T3PageView.Host() {
+            @Override public void talkToThread(String threadId, String title) {
+                ProductRootView.this.talkToThread(threadId, title);
+            }
+
+            @Override public void talkToNewThread(String projectId, String projectTitle) {
+                ProductRootView.this.talkToNewThread(projectId, projectTitle);
+            }
+
+            @Override public void openSettings() {
+                ProductRootView.this.openSettings();
+            }
+
+            @Override public void showChrome(boolean visible) {
+                if (t3Open && !settingsOpen && !runnerOpen && !cameraOpen) {
+                    chrome.setVisibility(visible ? VISIBLE : GONE);
+                }
+            }
+
+            @Override public void needsYou(int count) {
+                chrome.showT3Badge(count);
+            }
+        });
+        t3.setVisibility(GONE);
         chrome = new ProductChromeView(activity, this::openSettings, this::openVoice,
-                this::openCards, this::openRunner);
+                this::openCards, this::openT3, this::openRunner);
         runner = new BackgroundRunPanelView(activity, backgroundRuns, chrome::showRuns,
                 this::closeRunner);
         runner.setVisibility(GONE);
@@ -68,6 +95,7 @@ final class ProductRootView extends FrameLayout {
         settings.setVisibility(GONE);
         addView(voice, match());
         addView(cards, match());
+        addView(t3, match());
         addView(camera, match());
         addView(runner, match());
         addView(creationImport, match());
@@ -80,6 +108,7 @@ final class ProductRootView extends FrameLayout {
         setFocusableInTouchMode(true);
         setContentDescription("SamRabbit HOME");
         runner.start();
+        t3.stop(); // Hidden: only the slow badge poll runs until the T3 tab opens.
     }
 
     private LayoutParams match() {
@@ -91,6 +120,7 @@ final class ProductRootView extends FrameLayout {
         voice.setVisibility(GONE);
         cards.setVisibility(GONE);
         cards.stop();
+        hideT3();
         chrome.setVisibility(GONE);
         settings.setVisibility(VISIBLE);
         settings.requestFocus();
@@ -98,28 +128,20 @@ final class ProductRootView extends FrameLayout {
 
     private void openRunner() {
         runnerOpen = true;
-        voice.setVisibility(GONE); cards.setVisibility(GONE); chrome.setVisibility(GONE);
+        voice.setVisibility(GONE); cards.setVisibility(GONE); hideT3(); chrome.setVisibility(GONE);
         runner.setVisibility(VISIBLE); runner.opened(); runner.requestFocus();
     }
 
     private void closeRunner() {
         runnerOpen = false; runner.setVisibility(GONE); chrome.setVisibility(VISIBLE);
-        if (cardsOpen) { cards.setVisibility(VISIBLE); cards.start(); cards.requestFocus(); }
-        else { voice.setVisibility(VISIBLE); voice.requestFocus(); }
+        restoreTab();
     }
 
     private void closeSettings() {
         settingsOpen = false;
         settings.setVisibility(GONE);
         chrome.setVisibility(VISIBLE);
-        if (cardsOpen) {
-            cards.setVisibility(VISIBLE);
-            cards.start();
-            cards.requestFocus();
-        } else {
-            voice.setVisibility(VISIBLE);
-            voice.requestFocus();
-        }
+        restoreTab();
     }
 
     private void openCreationImport() {
@@ -138,9 +160,94 @@ final class ProductRootView extends FrameLayout {
         settings.requestFocus();
     }
 
+    private void openT3() {
+        if (t3Open) return;
+        if (cardsOpen) {
+            cardsOpen = false;
+            cards.stop();
+            cards.setVisibility(GONE);
+        }
+        t3Open = true;
+        chrome.showTab(ProductChromeView.TAB_T3);
+        voice.setVisibility(GONE);
+        showT3();
+    }
+
+    private void closeT3() {
+        if (!t3Open) return;
+        t3Open = false;
+        t3.stop();
+        t3.setVisibility(GONE);
+        chrome.setVisibility(VISIBLE);
+    }
+
+    /** Shows the selected T3 tab; the chrome stays hidden while a thread is open. */
+    private void showT3() {
+        t3.setVisibility(VISIBLE);
+        t3.start();
+        t3.requestFocus();
+        chrome.setVisibility(t3.detailOpen() ? GONE : VISIBLE);
+    }
+
+    /** Hide (but keep selected) the T3 tab while an overlay page owns the screen. */
+    private void hideT3() {
+        if (!t3Open) return;
+        t3.stop();
+        t3.setVisibility(GONE);
+    }
+
+    /** Re-show whichever top-level tab was selected before an overlay page opened. */
+    private void restoreTab() {
+        if (cardsOpen) {
+            cards.setVisibility(VISIBLE);
+            cards.start();
+            cards.requestFocus();
+        } else if (t3Open) {
+            showT3();
+        } else {
+            voice.setVisibility(VISIBLE);
+            voice.requestFocus();
+        }
+    }
+
+    /**
+     * T3 "Talk": switch to Voice and tell the model that what the user says next is for this
+     * thread (sent with t3_send_message unless they say otherwise).
+     */
+    void talkToThread(String threadId, String title) {
+        String name = title == null || title.isBlank() ? "Untitled thread" : title.trim();
+        openVoice();
+        voice.startSessionWithNote("Host note (from the R1's T3 tab, not the user's words): the user is looking at "
+                + "T3 Code thread \u201c" + name + "\u201d (id " + threadId + ") and tapped Talk. Treat what "
+                + "they say next as a message for that thread and send it with t3_send_message, passing thread=\""
+                + threadId + "\", unless they clearly ask for something else; use t3_respond with the same thread "
+                + "for its pending approvals or questions. Confirm in a few words once it is sent. Right now, "
+                + "briefly ask what they want to tell that thread, then wait.");
+    }
+
+    /** T3 "Talk" on the new-thread screen: what the user says next becomes the first prompt. */
+    void talkToNewThread(String projectId, String projectTitle) {
+        // t3_new_thread takes the project by name ("project"), not by id.
+        boolean known = projectId != null && !projectId.isBlank()
+                && projectTitle != null && !projectTitle.isBlank();
+        String where = known
+                ? "project \u201c" + projectTitle.trim() + "\u201d"
+                : "their most recently active project";
+        String how = known
+                ? "create it with t3_new_thread, passing the prompt and project=\"" + projectTitle.trim()
+                        + "\" unless they name another project"
+                : "create it with t3_new_thread, passing the prompt and no project unless they name one";
+        openVoice();
+        voice.startSessionWithNote("Host note (from the R1's T3 tab, not the user's words): the user wants to start "
+                + "a new T3 Code thread in " + where + ". Treat what they say next as the prompt and " + how
+                + ", then confirm in one short sentence. Right now, briefly ask what the new thread should do, "
+                + "then wait.");
+    }
+
     private void openCards() {
+        closeT3();
         cardsOpen = true;
-        chrome.showCards(true);
+        chrome.showTab(ProductChromeView.TAB_CARDS);
         voice.setVisibility(GONE);
         cards.setVisibility(VISIBLE);
         cards.start();
@@ -148,8 +255,9 @@ final class ProductRootView extends FrameLayout {
     }
 
     private void openVoice() {
+        closeT3();
         cardsOpen = false;
-        chrome.showCards(false);
+        chrome.showTab(ProductChromeView.TAB_VOICE);
         cards.stop();
         cards.setVisibility(GONE);
         voice.setVisibility(VISIBLE);
@@ -164,14 +272,14 @@ final class ProductRootView extends FrameLayout {
     private void openCameraHandoff() {
         cameraOpen = true;
         cameraHandoffOpen = true;
-        voice.setVisibility(GONE); cards.setVisibility(GONE); chrome.setVisibility(GONE);
+        voice.setVisibility(GONE); cards.setVisibility(GONE); hideT3(); chrome.setVisibility(GONE);
         camera.setVisibility(VISIBLE); camera.startHandoff(); camera.requestFocus();
     }
 
     private void openCamera() {
         if (settingsOpen || cameraOpen) return;
         cameraOpen = true;
-        voice.setVisibility(GONE); cards.setVisibility(GONE); chrome.setVisibility(GONE);
+        voice.setVisibility(GONE); cards.setVisibility(GONE); hideT3(); chrome.setVisibility(GONE);
         camera.setVisibility(VISIBLE); camera.startPreview(); camera.requestFocus();
     }
 
@@ -179,11 +287,7 @@ final class ProductRootView extends FrameLayout {
         cameraOpen = false;
         cameraHandoffOpen = false;
         camera.setVisibility(GONE); chrome.setVisibility(cardContentOpen ? GONE : VISIBLE);
-        if (cardsOpen) {
-            cards.setVisibility(VISIBLE); cards.start(); cards.requestFocus();
-        } else {
-            voice.setVisibility(VISIBLE); voice.requestFocus();
-        }
+        restoreTab();
     }
 
     @Override public boolean onInterceptTouchEvent(MotionEvent event) {
@@ -269,6 +373,7 @@ final class ProductRootView extends FrameLayout {
         if (settingsOpen) settings.requestFocus();
         else if (runnerOpen) runner.requestFocus();
         else if (cardsOpen) cards.requestFocus();
+        else if (t3Open) t3.requestFocus();
         else voice.requestFocus();
     }
 
@@ -283,6 +388,10 @@ final class ProductRootView extends FrameLayout {
         }
         if (settingsOpen) return settings.onInput(UiInputIntent.BACK);
         if (cardsOpen) return cards.onInput(UiInputIntent.BACK);
+        if (t3Open) {
+            if (!t3.onInput(UiInputIntent.BACK)) openVoice();
+            return true;
+        }
         // Voice is the visible page: BACK closes its transcript, then ends a live session.
         return voice.onInput(UiInputIntent.BACK);
     }
@@ -335,6 +444,7 @@ final class ProductRootView extends FrameLayout {
             for (int depth = 0; depth < 4 && cardContentOpen; depth++) cards.onInput(UiInputIntent.BACK);
             if (cardsOpen) openVoice();
         }
+        if (t3Open) openVoice();
     }
 
     private void dispatch(UiInputIntent intent) {
@@ -343,12 +453,16 @@ final class ProductRootView extends FrameLayout {
         else if (runnerOpen) runner.onInput(intent);
         else if (settingsOpen) settings.onInput(intent);
         else if (cardsOpen) cards.onInput(intent);
+        else if (t3Open) {
+            if (!t3.onInput(intent) && intent == UiInputIntent.BACK) openVoice();
+        }
         else voice.onInput(intent);
     }
 
     void close() {
         voice.close();
         cards.close();
+        t3.close();
         camera.close();
         creationImport.close();
         runner.stop();
