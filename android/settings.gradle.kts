@@ -32,4 +32,5 @@ include(
     ":feature:genui",
     ":runtime-host",
     ":system:motor-service",
+    ":system:power-overlay",
 )

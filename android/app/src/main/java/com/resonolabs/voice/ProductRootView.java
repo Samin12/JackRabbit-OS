@@ -32,6 +32,7 @@ final class ProductRootView extends FrameLayout {
     private boolean settingsOpen;
     private boolean cardsOpen;
     private boolean cameraOpen;
+    private boolean cameraHandoffOpen;
     private boolean cardContentOpen;
     private boolean runnerOpen;
     private boolean creationImportOpen;
@@ -162,6 +163,7 @@ final class ProductRootView extends FrameLayout {
 
     private void openCameraHandoff() {
         cameraOpen = true;
+        cameraHandoffOpen = true;
         voice.setVisibility(GONE); cards.setVisibility(GONE); chrome.setVisibility(GONE);
         camera.setVisibility(VISIBLE); camera.startHandoff(); camera.requestFocus();
     }
@@ -175,6 +177,7 @@ final class ProductRootView extends FrameLayout {
 
     private void returnFromCamera() {
         cameraOpen = false;
+        cameraHandoffOpen = false;
         camera.setVisibility(GONE); chrome.setVisibility(cardContentOpen ? GONE : VISIBLE);
         if (cardsOpen) {
             cards.setVisibility(VISIBLE); cards.start(); cards.requestFocus();
@@ -280,7 +283,58 @@ final class ProductRootView extends FrameLayout {
         }
         if (settingsOpen) return settings.onInput(UiInputIntent.BACK);
         if (cardsOpen) return cards.onInput(UiInputIntent.BACK);
+        // Voice is the visible page: BACK closes its transcript, then ends a live session.
+        return voice.onInput(UiInputIntent.BACK);
+    }
+
+    /**
+     * Side-button double press (see SideButtonGesture). A live session is stopped from wherever
+     * the user is, even mid-reply; otherwise every panel/overlay is closed, Voice is shown and a
+     * session starts. Returns true when a session was started.
+     */
+    boolean toggleVoiceFromSideButton() {
+        if (voice.isInSession()) {
+            stopVoiceSession();
+            return false;
+        }
+        showVoicePage();
+        voice.toggleSession();
         return true;
+    }
+
+    /** Cold start through the alias: the gesture can only mean "start". */
+    boolean startVoiceFromSideButton() {
+        return !voice.isInSession() && toggleVoiceFromSideButton();
+    }
+
+    /**
+     * The screen went off (single side-button press). While asleep the HOME process drops to
+     * TOP_SLEEPING without microphone capability, so a live session would keep running deaf.
+     * Returns true when a session was ended.
+     */
+    boolean stopVoiceForScreenOff() {
+        if (!voice.isInSession()) return false;
+        stopVoiceSession();
+        return true;
+    }
+
+    private void stopVoiceSession() {
+        // The camera hand-off belongs to the session being ended; leave it with the session.
+        if (cameraOpen && cameraHandoffOpen) { camera.stop(); returnFromCamera(); }
+        voice.toggleSession();
+    }
+
+    private void showVoicePage() {
+        if (controlCenter.isOpen()) controlCenter.hide();
+        if (creationImportOpen) closeCreationImport();
+        if (runnerOpen) closeRunner();
+        if (cameraOpen) { camera.stop(); returnFromCamera(); }
+        if (settingsOpen) closeSettings();
+        if (cardsOpen) {
+            // Unwind calendar/tasks/creation first so the chrome comes back together with Voice.
+            for (int depth = 0; depth < 4 && cardContentOpen; depth++) cards.onInput(UiInputIntent.BACK);
+            if (cardsOpen) openVoice();
+        }
     }
 
     private void dispatch(UiInputIntent intent) {
