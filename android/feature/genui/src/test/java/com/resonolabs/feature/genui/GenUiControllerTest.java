@@ -219,4 +219,15 @@ public class GenUiControllerTest {
         assertEquals("{\"ok\":false,\"error\":\"No card with id 'groceries' (it expired; show it again if needed).\"}",
                 controller.execute(GenUiTools.UPDATE_CARD, "{\"id\":\"groceries\"}", clock.elapsed()));
     }
+
+    /** A failed call must not leave the previous call's transcript line for the host to record again. */
+    @Test public void failedCallsClearTheTranscriptLine() {
+        show(card("a"));
+        assertTrue(controller.lastTranscriptLine().startsWith("[Card]"));
+        controller.execute(GenUiTools.UPDATE_CARD, "{\"title\":\"no id\"}", clock.elapsed());
+        assertEquals("", controller.lastTranscriptLine());
+        show(card("b"));
+        controller.execute(GenUiTools.DISMISS_CARD, "{}", clock.elapsed());
+        assertEquals("", controller.lastTranscriptLine());
+    }
 }

@@ -119,6 +119,8 @@ public final class GenUiController implements GenCardStore.Listener, AutoCloseab
 
     /** Runs show_card / update_card / dismiss_card and returns the function_call_output string. */
     public String execute(String tool, String raw, long now) {
+        // Every call sets its own line; a failed call must not leave the previous one behind.
+        lastTranscriptLine = "";
         try {
             if (GenUiTools.SHOW_CARD.equals(tool)) return show(raw, now);
             if (GenUiTools.UPDATE_CARD.equals(tool)) return update(raw, now);
