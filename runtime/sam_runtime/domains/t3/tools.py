@@ -107,9 +107,9 @@ T3_TOOL_SPECS: tuple[tuple[str, str, str, dict[str, object]], ...] = (
         "Answer a pending approval or question in a T3 Code thread. For an approval pass decision: accept "
         "(approve once), acceptForSession (always allow for this session), decline, or cancel. Before accepting, "
         "restate in a few words what the agent wants to do (from t3_read_thread or the T3 update) and get a "
-        "clear yes; decline and cancel need no restatement. For a question pass answer (single question) or "
-        "answers as {questionId: option label or the user's words}. requestId may be omitted when exactly one "
-        "request is pending. Never invent ids.",
+        "clear yes; decline and cancel need no restatement. For a question pass answer (one question) or "
+        "answers (one per question, in the order t3_read_thread listed them), using an option label or the "
+        "user's words. requestId may be omitted when exactly one request is pending. Never invent ids.",
         "external_write",
         {
             "type": "object",
@@ -118,7 +118,11 @@ T3_TOOL_SPECS: tuple[tuple[str, str, str, dict[str, object]], ...] = (
                 "requestId": {"type": "string"},
                 "decision": {"type": "string", "enum": ["accept", "acceptForSession", "decline", "cancel"]},
                 "answer": {"type": "string", "description": "Answer to the only pending question."},
-                "answers": {"type": "object", "additionalProperties": {"type": "string"}},
+                "answers": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "One answer per question in order; for a multi-select question join choices with ' | '.",
+                },
             },
             "required": ["thread"],
             "additionalProperties": False,
@@ -349,13 +353,13 @@ class T3ToolHandlers:
         request_id = _text(arguments.get("requestId"))
         decision = _text(arguments.get("decision"))
         answer = _text(arguments.get("answer"))
-        answers = arguments.get("answers") if isinstance(arguments.get("answers"), dict) else None
+        ordered = [str(entry) for entry in arguments.get("answers") or [] if str(entry).strip()]
         approvals = {approval.request_id: approval for approval in pending.approvals}
         inputs = {request.request_id: request for request in pending.inputs}
         if request_id is None:
-            if decision and not (answer or answers):
+            if decision and not (answer or ordered):
                 candidates = list(approvals)
-            elif (answer or answers) and not decision:
+            elif (answer or ordered) and not decision:
                 candidates = list(inputs)
             else:
                 candidates = list(approvals) + list(inputs)
@@ -371,12 +375,16 @@ class T3ToolHandlers:
             return {"ok": True, "threadId": thread_id, "title": item["title"], "requestId": request_id, "decision": decision}
         if request_id in inputs:
             request = inputs[request_id]
-            if answers is None and answer is not None:
-                if len(request.questions) != 1:
-                    raise T3InvalidRequest("This request has several questions. Pass answers keyed by question id.")
-                answers = {request.questions[0].question_id: answer}
-            if not answers:
+            if not ordered and answer is not None:
+                ordered = [answer]
+            if not ordered:
                 raise T3InvalidRequest("Pass the user's answer.")
+            if len(ordered) != len(request.questions):
+                raise T3InvalidRequest(f"This request has {len(request.questions)} questions; pass one answer per question, in order.")
+            answers: dict[str, object] = {}
+            for question, value in zip(request.questions, ordered):
+                parts = [part.strip() for part in value.split("|") if part.strip()]
+                answers[question.question_id] = parts if question.multi_select and len(parts) > 1 else value
             sent = self._service.respond_input(thread_id, request_id, answers)
             return {"ok": True, "threadId": thread_id, "title": item["title"], "requestId": request_id, "answers": sent["answers"]}
         raise T3RequestNotPending("That request is no longer pending.")

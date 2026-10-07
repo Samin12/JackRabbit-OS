@@ -50,7 +50,7 @@ class T3VoiceToolsTest(unittest.TestCase):
         definitions = {item["name"]: item for item in self.catalog.realtime_definitions()}
         self.assertEqual(TOOL_NAMES, TOOL_NAMES & set(definitions))
         text = json.dumps([definitions[name] for name in TOOL_NAMES])
-        for keyword in ("anyOf", "oneOf", "allOf", "$ref"):
+        for keyword in ("anyOf", "oneOf", "allOf", "$ref", '"additionalProperties": {'):
             self.assertNotIn(keyword, text)
         self.assertIn("never invent ids", definitions["t3_respond"]["description"].lower())
         self.assertIn("restate", definitions["t3_respond"]["description"])
@@ -123,6 +123,14 @@ class T3VoiceToolsTest(unittest.TestCase):
         self.assertTrue(ok, value)
         self.assertEqual({"type": "thread.user-input.respond", "requestId": "q-1", "answers": {"0": "Use SQLite"}},
                          {key: self.fake.dispatched[-1][key] for key in ("type", "requestId", "answers")})
+
+        self.fake.set_detail("ask", detail(asking, activities=[input_requested("q-2", options=("Red", "Green", "Blue"), multi=True)]))
+        ok, value = self._call("t3_respond", {"thread": "pick storage", "requestId": "q-2", "answers": ["red | blue"]})
+        self.assertTrue(ok, value)
+        self.assertEqual({"0": ["Red", "Blue"]}, self.fake.dispatched[-1]["answers"])
+        ok, value = self._call("t3_respond", {"thread": "pick storage", "answers": ["Red", "Green"]})
+        self.assertFalse(ok)
+        self.assertIn("one answer per question", value)
 
         self.fake.set_detail("ask", detail(asking, activities=[approval_requested("req-7")]))
         ok, value = self._call("t3_respond", {"thread": "pick storage", "decision": "decline"})
