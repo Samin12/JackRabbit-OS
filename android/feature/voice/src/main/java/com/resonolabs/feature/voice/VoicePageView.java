@@ -369,6 +369,12 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
                 }
                 touchDragging = false;
             }
+            case MotionEvent.ACTION_CANCEL -> {
+                // The shell took the gesture (tab swipe, edge Back, pull-down): drop the card
+                // drag, or the next swipe on the cards would be swallowed.
+                cards.onDragEnd();
+                touchDragging = false;
+            }
             default -> { }
         }
         return true;
