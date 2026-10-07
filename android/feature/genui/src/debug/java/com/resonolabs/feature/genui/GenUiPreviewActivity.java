@@ -105,7 +105,11 @@ public final class GenUiPreviewActivity extends Activity {
         String json = intent.getStringExtra("json");
         String encoded = intent.getStringExtra("b64");
         if (json == null && encoded != null) {
-            json = new String(Base64.decode(encoded, Base64.DEFAULT), StandardCharsets.UTF_8);
+            try {
+                json = new String(Base64.decode(encoded, Base64.DEFAULT), StandardCharsets.UTF_8);
+            } catch (IllegalArgumentException invalid) {
+                Log.w(TAG, "adhoc b64 is not valid base64");
+            }
         }
         if (json == null) return;
         GenUiController controller = view.controller();
