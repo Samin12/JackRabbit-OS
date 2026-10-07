@@ -381,7 +381,7 @@ class JournalWorker:
 
     def _run(self) -> None:
         while not self._stop.is_set():
+            self._wake.clear()  # before draining, so a wake() during the drain is never lost
             while not self._stop.is_set() and self._safe_step():
                 pass
             self._wake.wait(self._idle)
-            self._wake.clear()

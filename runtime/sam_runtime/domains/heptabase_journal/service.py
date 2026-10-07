@@ -326,6 +326,7 @@ class HeptabaseJournalService:
         ))
         if created:
             _LOG.info("heptabase.note.queued", extra={"date": entry.journal_date})
+        self._worker.wake()
         state = self._await_delivery(entry.entry_id) if wait else self._public_state(entry.entry_id)
         return {"recorded": True, "state": state, "date": entry.journal_date, "entryId": entry.entry_id}
 
@@ -619,6 +620,12 @@ class HeptabaseJournalService:
                 self._settings.record_error(f"A journal entry could not be written ({error.code}).")
                 _LOG.warning("heptabase.append.failed", extra={"code": error.code})
             return
+        except Exception:
+            # Unknown failure point (e.g. Keystore while sealing a rotated token): never leave rows
+            # in 'sending'; the fingerprint check decides whether a resend is needed.
+            _LOG.exception("heptabase.append.unexpected")
+            self._outbox.mark_uncertain(ids, "unexpected_error", now + backoff_seconds(attempts))
+            return
         self._outbox.mark_sent(ids)
         self._solo.difference_update(ids)
         self._settings.record_sent()
@@ -657,6 +664,10 @@ class HeptabaseJournalService:
             return
         except HeptabaseError as error:
             self._outbox.mark_uncertain(ids, f"verify_{error.code}", now + backoff_seconds(max(attempts, 1)))
+            return
+        except Exception:
+            _LOG.exception("heptabase.verify.unexpected")
+            self._outbox.mark_uncertain(ids, "verify_unexpected_error", now + backoff_seconds(max(attempts, 1)))
             return
         found = [entry.entry_id for entry in work.entries if journal_contains(journal, entry.fingerprint)]
         missing = [entry_id for entry_id in ids if entry_id not in found]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import time
 import unittest
 from zoneinfo import ZoneInfo
 
@@ -181,6 +182,30 @@ class HeptabaseOutboxTest(unittest.TestCase):
         self.assertEqual("reconnect_required", self.h.service.management_view()["state"])
         self.assertEqual(0, self.h.service.drain())
         self.assertEqual([], self.h.fake.calls)
+
+    def test_background_worker_delivers_and_answers_the_caller(self) -> None:
+        self.h.service.start()
+        try:
+            started = time.monotonic()
+            result = self.h.service.record_note("sent by the worker thread")
+            self.assertEqual("sent", result["state"])
+            self.assertLess(time.monotonic() - started, 2.5)
+            self.h.service.record_note("queued without waiting", wait=False)
+            deadline = time.monotonic() + 3
+            while self._states().count("sent") < 2 and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertEqual(["sent", "sent"], self._states(), "woken worker drains new entries")
+        finally:
+            self.h.service.stop()
+
+    def test_unexpected_errors_never_strand_rows_in_sending(self) -> None:
+        self.transport.script.append(RuntimeError("keystore exploded"))
+        self.h.service.record_note("odd failure")
+        self.assertEqual(["uncertain"], self._states())
+        self.h.clock.advance(31)
+        self.h.service.drain()
+        self.assertEqual(["sent"], self._states())
+        self.assertEqual(1, len(self.h.fake.appends()))
 
     def test_next_work_skips_held_failed_and_backing_off(self) -> None:
         outbox = self.h.service._outbox  # noqa: SLF001
