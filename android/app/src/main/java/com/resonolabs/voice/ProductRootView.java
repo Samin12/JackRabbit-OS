@@ -32,7 +32,6 @@ final class ProductRootView extends FrameLayout {
     private final ControlCenterView controlCenter;
     private final T3PageView t3;
     private boolean t3Open;
-    private boolean t3DetailOpen;
     private boolean settingsOpen;
     private boolean cardsOpen;
     private boolean cameraOpen;
@@ -73,7 +72,6 @@ final class ProductRootView extends FrameLayout {
             }
 
             @Override public void showChrome(boolean visible) {
-                t3DetailOpen = !visible;
                 if (t3Open && !settingsOpen && !runnerOpen && !cameraOpen) {
                     chrome.setVisibility(visible ? VISIBLE : GONE);
                 }
