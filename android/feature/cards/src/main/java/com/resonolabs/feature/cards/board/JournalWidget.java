@@ -22,10 +22,13 @@ import java.util.List;
 /**
  * Heptabase journal at a glance: connected / needs reconnect / not connected, today's sent and
  * queued entries, and a big Note button that opens the keyboard bar; the typed words go to
- * {@code POST /v1/journal/notes} verbatim. When not connected it only says where to connect.
+ * {@code POST /v1/journal/notes} verbatim. Heptabase is connected on the user's Mac (the
+ * Heptabase CLI bridge), so "connected" is whatever {@code /v1/journal/status} reports,
+ * whichever transport carries it; when not connected the widget says to connect it on the Mac,
+ * and a tap checks again.
  */
 public final class JournalWidget implements BoardWidget {
-    private static final int SETTINGS = 0, NOTE = 1;
+    private static final int STATUS = 0, NOTE = 1;
     private static final float PAD = 22f;
     private static final float HEADER = 54f;
     private static final float BODY = 76f;
@@ -179,19 +182,19 @@ public final class JournalWidget implements BoardWidget {
             titleColor = SamTheme.MUTED;
             chip = "";
         } else if (status.state == JournalStatus.State.DISCONNECTED) {
-            title = "Connect Heptabase";
-            detail = "in Settings → Management";
+            title = "Connect Heptabase on your Mac";
+            detail = "Then notes land in today's journal";
             titleColor = SamTheme.INK;
             chip = status.chip();
             chipColor = SamTheme.MUTED;
-            focus.add(SETTINGS);
+            focus.add(STATUS);
         } else if (status.state == JournalStatus.State.RECONNECT) {
-            title = "Reconnect Heptabase";
-            detail = "in Settings → Management";
+            title = "Reconnect on your Mac";
+            detail = "Notes wait here until then";
             titleColor = SamTheme.AMBER;
             chip = status.reconnectChip();
             chipColor = SamTheme.AMBER;
-            focus.add(SETTINGS);
+            focus.add(STATUS);
             focus.add(NOTE);
         } else {
             title = "Today's journal";
@@ -329,7 +332,7 @@ public final class JournalWidget implements BoardWidget {
     }
 
     @Override public String focusKey(int index) {
-        return focus.get(index) == NOTE ? "note" : "settings";
+        return focus.get(index) == NOTE ? "note" : "status";
     }
 
     @Override public boolean onTap(float x, float y) {
@@ -341,15 +344,22 @@ public final class JournalWidget implements BoardWidget {
             openNote();
             return true;
         }
-        if (status.state != JournalStatus.State.CONNECTED) host.openSettings();
+        if (status.state != JournalStatus.State.CONNECTED) checkAgain();
         return true;
     }
 
     @Override public boolean activate(int index) {
         if (index < 0 || index >= focus.size()) return false;
         if (focus.get(index) == NOTE) openNote();
-        else host.openSettings();
+        else checkAgain();
         return true;
+    }
+
+    /** Not connected (or waiting for a reconnect) on the Mac: ask the runtime again right away. */
+    private void checkAgain() {
+        if (saving) return;
+        showFeedback("Checking the Mac…", SamTheme.MUTED, 1_800L);
+        refresh();
     }
 
     private void openNote() {

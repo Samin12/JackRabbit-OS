@@ -47,6 +47,6 @@ public interface BoardHost {
     /** The keyboard bar for a typed journal note (sent verbatim to today's Heptabase journal). */
     void openJournalNote();
 
-    /** Settings (where Management lives: connect a calendar, Heptabase, pair T3). */
+    /** Settings (where Management lives: connect a calendar, pair T3 again). */
     void openSettings();
 }
