@@ -27,7 +27,7 @@ final class T3ThreadSource extends PollingLiveSource {
 
             @Override public void onUnavailable(int status, String code) {
                 String note = switch (status) {
-                    case 404 -> "Thread not found";
+                    case 404 -> "Thread unavailable";
                     case 409 -> "T3 not connected";
                     case 401, 403 -> "T3 needs sign-in";
                     default -> "Unavailable";
@@ -49,8 +49,8 @@ final class T3ThreadSource extends PollingLiveSource {
         GenBlock text = new GenBlock(GenBlock.Type.TEXT);
         text.id = "last";
         text.style = GenSchema.STYLE_MUTED;
-        text.text = "Thread not found".equals(note)
-                ? "This coding thread isn't on the connected T3 server."
+        text.text = "Thread unavailable".equals(note)
+                ? "This thread isn't available from T3 on this R1 right now."
                 : "Pair T3 Code in R1 management to follow this thread live.";
         card.body.add(text);
         card.liveSubtitle = note;

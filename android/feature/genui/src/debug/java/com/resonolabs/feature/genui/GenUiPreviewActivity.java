@@ -32,6 +32,8 @@ public final class GenUiPreviewActivity extends Activity {
     private static final String TAG = "GenUiPreview";
     private static GenUiPreviewActivity active;
     private GenUiPreviewView view;
+    private android.widget.FrameLayout root;
+    private LiveCardsPageView deck;
 
     /** The resumed preview, if any (the debug receiver routes ad-hoc cards to it). */
     static GenUiPreviewActivity active() {
@@ -48,8 +50,10 @@ public final class GenUiPreviewActivity extends Activity {
         setShowWhenLocked(true);
         setTurnScreenOn(true);
         view = new GenUiPreviewView(this);
-        setContentView(view);
-        view.showScene(getIntent().getIntExtra("scene", 0));
+        root = new android.widget.FrameLayout(this);
+        root.addView(view);
+        setContentView(root);
+        showScene(getIntent().getIntExtra("scene", 0));
         handleExtras(getIntent());
         view.requestFocus();
         immersive();
@@ -57,8 +61,40 @@ public final class GenUiPreviewActivity extends Activity {
 
     @Override protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
-        if (intent.hasExtra("scene")) view.showScene(intent.getIntExtra("scene", 0));
+        if (intent.hasExtra("scene")) showScene(intent.getIntExtra("scene", 0));
         handleExtras(intent);
+    }
+
+    /** Scenes render in the fake Voice page, except "live-deck" which shows Cards &gt; Live. */
+    void showScene(int index) {
+        if (deck != null) {
+            deck.close();
+            root.removeView(deck);
+            deck = null;
+        }
+        view.showScene(index);
+        if ("live-deck".equals(view.sceneName())) {
+            deck = new LiveCardsPageView(this, view.controller());
+            root.addView(deck);
+            deck.start();
+            deck.requestFocus();
+            view.setVisibility(View.GONE);
+        } else {
+            view.setVisibility(View.VISIBLE);
+            view.requestFocus();
+        }
+    }
+
+    private boolean input(UiInputIntent intent) {
+        if (deck != null) {
+            if (deck.onInput(intent)) return true;
+            if (intent == UiInputIntent.NEXT || intent == UiInputIntent.PREVIOUS) {
+                showScene(view.sceneIndex() + (intent == UiInputIntent.NEXT ? 1 : -1));
+                return true;
+            }
+            return false;
+        }
+        return view.input(intent);
     }
 
     private void handleExtras(Intent intent) {
@@ -91,6 +127,7 @@ public final class GenUiPreviewActivity extends Activity {
     }
 
     @Override protected void onDestroy() {
+        if (deck != null) deck.close();
         if (view != null) view.close();
         super.onDestroy();
     }
@@ -98,7 +135,7 @@ public final class GenUiPreviewActivity extends Activity {
     @Override public boolean dispatchKeyEvent(KeyEvent event) {
         UiInputIntent intent = HardwareInputRouter.keyIntent(event.getKeyCode());
         if (intent != null) {
-            if (event.getAction() == KeyEvent.ACTION_DOWN) view.input(intent);
+            if (event.getAction() == KeyEvent.ACTION_DOWN) input(intent);
             return true;
         }
         return super.dispatchKeyEvent(event);
@@ -106,14 +143,14 @@ public final class GenUiPreviewActivity extends Activity {
 
     @Override public boolean onGenericMotionEvent(MotionEvent event) {
         UiInputIntent intent = HardwareInputRouter.motionIntent(event);
-        if (intent != null) return view.input(intent);
+        if (intent != null) return input(intent);
         return super.onGenericMotionEvent(event);
     }
 
     @Override
     @SuppressWarnings("deprecation")
     public void onBackPressed() {
-        if (!view.input(UiInputIntent.BACK)) finish();
+        if (!input(UiInputIntent.BACK)) finish();
     }
 
     private void immersive() {

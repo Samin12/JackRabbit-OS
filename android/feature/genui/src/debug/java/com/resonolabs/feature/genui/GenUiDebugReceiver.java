@@ -28,7 +28,7 @@ public final class GenUiDebugReceiver extends BroadcastReceiver {
         String action = intent.getAction() == null ? "" : intent.getAction();
         GenUiPreviewActivity preview = GenUiPreviewActivity.active();
         if (action.endsWith("DEBUG_SCENE")) {
-            if (preview != null) preview.view().showScene(intent.getIntExtra("scene", 0));
+            if (preview != null) preview.showScene(intent.getIntExtra("scene", 0));
             return;
         }
         String tool = action.endsWith("DEBUG_UPDATE") ? GenUiTools.UPDATE_CARD

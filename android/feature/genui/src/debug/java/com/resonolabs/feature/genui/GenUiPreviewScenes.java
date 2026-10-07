@@ -105,6 +105,11 @@ final class GenUiPreviewScenes {
     static final String REAL_T3 = "{\"id\":\"t3-real\",\"eyebrow\":\"T3 Code\",\"icon\":\"code\",\"accent\":\"cyan\","
             + "\"title\":\"Login redirect thread\",\"live\":{\"type\":\"t3-thread\",\"threadId\":\"thr_missing\"}}";
 
+    static final String PINNED = "{\"id\":\"wifi\",\"eyebrow\":\"Home\",\"icon\":\"home\",\"accent\":\"mint\","
+            + "\"title\":\"Guest Wi-Fi\",\"subtitle\":\"SamHouse-Guest\",\"pinned\":true,\"body\":[{\"type\":\"kv\","
+            + "\"columns\":2,\"pairs\":[{\"k\":\"Network\",\"v\":\"SamHouse-Guest\"},{\"k\":\"Password\",\"v\":\"orb-glass-42\"}]}]}";
+
+
     static final Scene[] ALL = {
             new Scene("compact-timer", Session.LIVE, false, UBER, TIMER_PILL),
             new Scene("checklist", Session.RESPONDING, false, GROCERIES),
@@ -123,6 +128,7 @@ final class GenUiPreviewScenes {
             new Scene("package", Session.RESPONDING, false, PACKAGE),
             new Scene("real-sources", Session.LIVE, true, REAL_T3, REAL_CALENDAR, REAL_TASKS),
             new Scene("adhoc", Session.LIVE, false),
+            new Scene("live-deck", Session.IDLE, false, GROCERIES, WEATHER, PINNED, T3, TIMER_PILL),
     };
 
     private GenUiPreviewScenes() {}

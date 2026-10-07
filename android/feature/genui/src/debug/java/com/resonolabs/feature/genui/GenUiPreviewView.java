@@ -57,8 +57,16 @@ final class GenUiPreviewView extends View implements GenUiController.Host {
         return controller;
     }
 
+    int sceneIndex() {
+        return sceneIndex;
+    }
+
     int sceneCount() {
         return GenUiPreviewScenes.ALL.length;
+    }
+
+    GenUiPreviewScenes.Scene scene() {
+        return scene;
     }
 
     String sceneName() {
@@ -98,6 +106,7 @@ final class GenUiPreviewView extends View implements GenUiController.Host {
             if ("timer-done".equals(scene.name)) store.timerDone(timer);
         }
         if ("expanded".equals(scene.name)) overlay.expand(store.front());
+        if ("live-deck".equals(scene.name)) controller.onSessionEnded();
         for (GenCard card : store.activeCards()) card.arrivedAt = 0L;
     }
 

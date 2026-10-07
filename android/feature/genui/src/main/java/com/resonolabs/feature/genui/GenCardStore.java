@@ -375,6 +375,27 @@ public final class GenCardStore {
         if (index >= 0) front = index;
     }
 
+    /** Cards &gt; Live: forget a Recent card. */
+    public boolean removeRecent(String id) {
+        for (int index = 0; index < recent.size(); index++) {
+            if (recent.get(index).id.equals(id)) {
+                recent.remove(index);
+                notifyChanged();
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Cards &gt; Live: put a Recent card back on the Voice stack (fresh ttl). */
+    public void restore(GenCard card) {
+        recent.remove(card);
+        card.retiredAt = 0L;
+        card.updatedAt = now();
+        card.arrivedAt = now();
+        put(card);
+    }
+
     /** Pin/unpin from the deck. */
     public boolean setPinned(GenCard card, boolean pinned) {
         if (pinned && !card.pinned && pinnedCount() >= MAX_PINNED) return false;

@@ -204,6 +204,21 @@ public class GenCardStoreTest {
         assertFalse(store.wasDismissedByUser("a"));
     }
 
+    @Test public void recentCardsCanBeRestoredOrForgotten() {
+        ephemeral("a");
+        ephemeral("b");
+        store.onSessionEnded();
+        GenCard a = store.recent().get(1);
+        assertEquals("a", a.id);
+        store.restore(a);
+        assertEquals(a, store.front());
+        assertEquals(0L, a.retiredAt);
+        assertEquals(List.of("b"), ids(store.recent()));
+        assertTrue(store.removeRecent("b"));
+        assertFalse(store.removeRecent("b"));
+        assertTrue(store.recent().isEmpty());
+    }
+
     @Test public void cycleMovesTheFrontAndWraps() {
         ephemeral("a");
         ephemeral("b");

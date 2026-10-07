@@ -78,6 +78,37 @@ public final class GenCard {
     public long pulseAt;
     public long arrivedAt;
 
+    /** Shallow display copy (blocks are shared; lists are new). */
+    public GenCard copy() {
+        GenCard copy = new GenCard();
+        copy.id = id;
+        copy.title = title;
+        copy.subtitle = subtitle;
+        copy.eyebrow = eyebrow;
+        copy.size = size;
+        copy.icon = icon;
+        copy.accent = accent;
+        copy.pinned = pinned;
+        copy.ttlMs = ttlMs;
+        copy.createdAt = createdAt;
+        copy.updatedAt = updatedAt;
+        copy.state = state;
+        copy.body.addAll(body);
+        copy.actions.addAll(actions);
+        copy.live = live;
+        copy.revision = revision;
+        copy.originSessionId = originSessionId;
+        copy.retiredAt = retiredAt;
+        copy.liveTitle = liveTitle;
+        copy.liveSubtitle = liveSubtitle;
+        copy.liveTrailing = liveTrailing;
+        copy.liveStatus = liveStatus;
+        copy.terminal = terminal;
+        copy.terminalAt = terminalAt;
+        copy.liveNote = liveNote;
+        return copy;
+    }
+
     public String displayTitle() {
         return liveTitle != null && !liveTitle.isEmpty() ? liveTitle : title;
     }
