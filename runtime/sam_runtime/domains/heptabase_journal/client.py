@@ -63,9 +63,11 @@ class HttpTransport:
     the outbox treats as uncertain because ``append_to_journal`` is not idempotent.
     """
 
-    def __init__(self, *, timeout: float = 20.0, context_factory: Callable[[], ssl.SSLContext] = _tls_context) -> None:
+    def __init__(self, *, timeout: float = 20.0, context_factory: Callable[[], ssl.SSLContext] = _tls_context,
+                 allow_http: Callable[[str], bool] | None = None) -> None:
         self._timeout = timeout
         self._context_factory = context_factory
+        self._allow_http = allow_http  # plain http beyond loopback (the LAN Mac bridge only)
         self._context: ssl.SSLContext | None = None
         self._lock = threading.Lock()
 
@@ -81,7 +83,9 @@ class HttpTransport:
         parsed = urlsplit(url)
         if parsed.scheme not in ("http", "https") or not parsed.hostname:
             raise ValueError("Heptabase endpoint is invalid.")
-        if parsed.scheme == "http" and parsed.hostname not in _LOOPBACK_HOSTS:
+        if parsed.scheme == "http" and parsed.hostname not in _LOOPBACK_HOSTS and not (
+            self._allow_http is not None and self._allow_http(parsed.hostname)
+        ):
             raise ValueError("Heptabase endpoints require HTTPS.")
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
         wait = self._timeout if timeout is None else timeout

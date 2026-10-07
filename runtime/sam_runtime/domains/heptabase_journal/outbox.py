@@ -26,6 +26,13 @@ _LOG = runtime_logger()
 BACKOFF_SECONDS = (30, 120, 600, 3600)
 SENT_RETENTION_SECONDS = 30 * 86400
 HELD_RETENTION_SECONDS = 86400
+# Mac-bridge failures that say nothing about the entry itself (Mac asleep, Heptabase app closed):
+# safe to retry as soon as the user is active again. OAuth/network backoff is left unchanged.
+TRANSIENT_ERRORS = (
+    "bridge_unreachable", "bridge_connection_lost", "bridge_not_configured", "bridge_busy", "bridge_unauthorized",
+    "bridge_token_unavailable", "heptabase_app_unavailable", "heptabase_cli_missing", "heptabase_busy",
+    "heptabase_app_error", "heptabase_cli_timeout", "heptabase_cli_failed", "heptabase_cli_bad_output",
+)
 _COLUMNS = (
     "entry_id, journal_date, kind, source_ref, voice_session_id, utterance_id, utterance_key, content, "
     "plain_content, fingerprint, candidate_text, use_plain, state, attempts, event_at, next_attempt_at, "
@@ -191,6 +198,22 @@ class JournalOutboxRepository:
 
     def set_use_plain(self, entry_id: str) -> None:
         self._update((entry_id,), "use_plain = 1, state = 'pending', next_attempt_at = ?", (self._now(),))
+
+    def expedite(self, journal_date: str | None = None) -> int:
+        """Retry now instead of waiting out a backoff that a transient Mac-bridge failure caused.
+        Rejections keep their backoff and attempt count."""
+        now = self._now()
+        codes = (*TRANSIENT_ERRORS, *(f"verify_{code}" for code in TRANSIENT_ERRORS))
+        marks = ",".join("?" for _ in codes)
+        scope, params = ("AND journal_date = ?", (journal_date,)) if journal_date else ("", ())
+        with self._database.connect() as connection:
+            cursor = connection.execute(
+                f"UPDATE journal_outbox SET next_attempt_at = ?, updated_at = ? "
+                f"WHERE state IN ('pending', 'uncertain') AND next_attempt_at > ? AND last_error IN ({marks}) {scope}",
+                (now, now, now, *codes, *params),
+            )
+            connection.commit()
+        return cursor.rowcount
 
     def retry_failed(self) -> int:
         with self._database.connect() as connection:
