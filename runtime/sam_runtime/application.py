@@ -81,6 +81,8 @@ from .background_agent.workspace import RunWorkspaceRegistry
 from .storage.workspace import WorkspaceRepository
 from .workspace.service import DurableWorkspace
 from .workspace.tools import WORKSPACE_TOOL_SET, register_workspace_tools
+from .domains.heptabase_journal import JOURNAL_TOOL_SET, HeptabaseJournalService, register_journal_tools
+from .api.heptabase_routes import HeptabaseRoutes
 
 
 class RuntimeApplication:
@@ -170,6 +172,15 @@ class RuntimeApplication:
         TasksToolPackage(self._task_service).register(self._tools)
         self._connections = ConnectionRepository(self._database)
         self._connection_routes = ConnectionRoutes(self._connections)
+        self._heptabase_journal = HeptabaseJournalService(
+            database=self._database,
+            credentials=ConnectionCredentialRepository(self._database),
+            envelopes=connection_envelopes,
+            sessions=self._sessions,
+            connections=self._connections,
+        )
+        self._heptabase_routes = HeptabaseRoutes(self._heptabase_journal)
+        register_journal_tools(self._tools, self._heptabase_journal)
         register_mail_tools(self._tools, self._mail_repository, self._mail_service)
         register_web_search(self._tools, OpenAIWebSearch(credentials, provider_settings, self._subscription))
         self._background_agent_runs = AgentRunRepository(self._database)
@@ -395,6 +406,13 @@ class RuntimeApplication:
                 changed_by="runtime-bootstrap",
                 reason="enable read-only workspace access for Voice and bounded workspace access for Background Agent",
             )
+        if self._audience_router.binding_for(JOURNAL_TOOL_SET) is None:
+            self._audience_router.set_audience(
+                JOURNAL_TOOL_SET,
+                AgentAudience.VOICE,
+                changed_by="runtime-bootstrap",
+                reason="enable the built-in Heptabase journal for Voice (shown only when connected)",
+            )
         self._catalog.bootstrap_defaults()
         self._skill_lifecycle.recover()
         self._instruction_documents.recover()
@@ -436,11 +454,13 @@ class RuntimeApplication:
             creations=self._creation_routes,
             connections=self._connection_routes,
             background_agent=self._background_agent_routes,
+            heptabase=self._heptabase_routes,
         )
         self._server.start()
         self._background_agent.start()
         self._mail_scheduler.start()
         self._calendar_scheduler.start()
+        self._heptabase_journal.start()
         self._events.publish(
             "runtime.ready",
             {"status": "ready", "startCount": int(record.value)},
@@ -452,6 +472,7 @@ class RuntimeApplication:
         self._background_agent.stop()
         self._mail_scheduler.stop()
         self._calendar_scheduler.stop()
+        self._heptabase_journal.stop()
         if self._server is not None:
             self._server.stop()
             self._server = None

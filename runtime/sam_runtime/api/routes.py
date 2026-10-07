@@ -25,6 +25,7 @@ from .plugin_routes import PluginRoutes
 from .creation_routes import CreationRoutes
 from .connection_routes import ConnectionRoutes
 from .background_agent_routes import BackgroundAgentRoutes
+from .heptabase_routes import HeptabaseRoutes
 
 if TYPE_CHECKING:
     from .http_server import HealthReader, RestartRequest
@@ -94,6 +95,7 @@ class RuntimeRoutes:
         creations: CreationRoutes | None = None,
         connections: ConnectionRoutes | None = None,
         background_agent: BackgroundAgentRoutes | None = None,
+        heptabase: HeptabaseRoutes | None = None,
     ) -> None:
         self._health = health
         self._lifecycle = lifecycle
@@ -117,6 +119,7 @@ class RuntimeRoutes:
         self._creations = creations
         self._connections = connections
         self._background_agent = background_agent
+        self._heptabase = heptabase
 
     def handle_get(self, req: RouteRequest) -> None:
         path = req.path.split("?", 1)[0]
@@ -152,6 +155,7 @@ class RuntimeRoutes:
             return
         if creations is not None and creations.handle_get(req, pairing): return
         if connections is not None and connections.handle_get(req, pairing): return
+        if self._heptabase is not None and self._heptabase.handle_get(req, pairing): return
         if path == "/v1/health":
             req.respond_json(200, self._health())
             return
@@ -276,6 +280,7 @@ class RuntimeRoutes:
         if plugins is not None and plugins.handle_post(req, pairing):
             return
         if creations is not None and creations.handle_post(req, pairing): return
+        if self._heptabase is not None and self._heptabase.handle_post(req, pairing): return
         if path == "/v1/mcp" and mcp is not None:
             payload = req.request_json(max_bytes=65_536)
             if payload is None:
@@ -341,6 +346,10 @@ class RuntimeRoutes:
                     appended += 1
                 except ValueError:
                     continue
+            # Journal the user's words before memory review so a reviewer or
+            # provider failure can never drop them (deduped by session id).
+            if self._heptabase is not None:
+                self._heptabase.voice_session_finalized(session_id, raw_entries)
             if appended == 0:
                 req.respond_json(409, {"error": {"code": "nothing_to_review", "message": "No transcript entries were captured."}})
                 return
@@ -594,6 +603,7 @@ class RuntimeRoutes:
         if plugins is not None and plugins.handle_delete(req, pairing):
             return
         if creations is not None and creations.handle_delete(req, pairing): return
+        if self._heptabase is not None and self._heptabase.handle_delete(req, pairing): return
         if path.startswith("/v1/management/memory/sessions/") and pairing is not None and memory is not None:
             if req.browser_session(pairing, mutation=True) is None:
                 return
