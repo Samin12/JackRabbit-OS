@@ -163,22 +163,65 @@ public final class RuntimeVoiceClient implements AutoCloseable {
     }
 
     /**
-     * The Realtime model reads a tool result as text. MCP results carry the same data twice
-     * (the JSON text in {@code content} and again as {@code structuredContent}); drop the copy
-     * when a text block is present so large results (e.g. a calendar with long descriptions)
-     * cost half the tokens.
+     * The Realtime model reads a tool result as text. Most runtime tools carry the same data
+     * twice (the JSON text in {@code content} and again as {@code structuredContent}, either
+     * as-is or wrapped as {@code {"result": ...}}); drop the copy so large results (e.g. a
+     * calendar with long descriptions) cost half the tokens. Only an exact JSON copy is dropped:
+     * some tools answer with a short summary text and keep the data in {@code structuredContent}
+     * alone (e.g. {@code goal_inspect}: "Goal is completed." plus the run's output), and the
+     * model must still see that.
      */
     static void compactForModel(JSONObject result) {
         if (result == null || !result.has("structuredContent")) return;
         JSONArray content = result.optJSONArray("content");
         if (content == null) return;
+        Object structured = result.opt("structuredContent");
+        Object wrapped = structured instanceof JSONObject object && object.length() == 1
+                ? object.opt("result") : null;
         for (int index = 0; index < content.length(); index++) {
             JSONObject block = content.optJSONObject(index);
-            if (block != null && "text".equals(block.optString("type")) && !block.optString("text").isEmpty()) {
+            if (block == null || !"text".equals(block.optString("type"))) continue;
+            Object text = parseJson(block.optString("text"));
+            if (text != null && (sameJson(text, structured) || wrapped != null && sameJson(text, wrapped))) {
                 result.remove("structuredContent");
                 return;
             }
         }
+    }
+
+    /** A JSON object or array parsed from {@code text}, or null when it is not JSON. */
+    private static Object parseJson(String text) {
+        String trimmed = text == null ? "" : text.trim();
+        if (trimmed.isEmpty() || (trimmed.charAt(0) != '{' && trimmed.charAt(0) != '[')) return null;
+        try {
+            return new org.json.JSONTokener(trimmed).nextValue();
+        } catch (Exception invalid) {
+            return null;
+        }
+    }
+
+    /** Structural JSON equality (key order and number spelling ignored). */
+    static boolean sameJson(Object left, Object right) {
+        if (left instanceof JSONObject a && right instanceof JSONObject b) {
+            if (a.length() != b.length()) return false;
+            java.util.Iterator<String> keys = a.keys();
+            while (keys.hasNext()) {
+                String key = keys.next();
+                if (!b.has(key) || !sameJson(a.opt(key), b.opt(key))) return false;
+            }
+            return true;
+        }
+        if (left instanceof JSONArray a && right instanceof JSONArray b) {
+            if (a.length() != b.length()) return false;
+            for (int index = 0; index < a.length(); index++) {
+                if (!sameJson(a.opt(index), b.opt(index))) return false;
+            }
+            return true;
+        }
+        if (left instanceof Number a && right instanceof Number b) {
+            return Double.compare(a.doubleValue(), b.doubleValue()) == 0;
+        }
+        return left == null ? right == null : left.equals(right);
     }
 
     private McpResponse postMcp(
