@@ -15,7 +15,9 @@ android {
 dependencies {
     implementation(project(":core:design"))
     implementation(project(":core:input"))
+    implementation(project(":core:power"))
     implementation(project(":runtime-host"))
+    implementation(project(":feature:genui"))
     implementation("io.github.webrtc-sdk:android:144.7559.09")
     testImplementation("junit:junit:4.13.2")
 }

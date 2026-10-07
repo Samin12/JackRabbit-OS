@@ -13,6 +13,7 @@ android {
 dependencies {
     implementation(project(":core:design"))
     implementation(project(":core:input"))
+    implementation(project(":core:power"))
     implementation(project(":runtime-host"))
     testImplementation("junit:junit:4.13.2")
 }

@@ -38,6 +38,7 @@ import com.resonolabs.ui.input.UiInputIntent;
 import com.resonolabs.ui.input.UiInputTarget;
 import com.resonolabs.runtime.host.ManagementOpenAiSource;
 import com.resonolabs.runtime.host.ManagementOpenAiState;
+import com.resonolabs.ui.power.AlwaysOnVoice;
 
 import java.util.List;
 
@@ -58,6 +59,9 @@ public final class SettingsPanelView extends View implements UiInputTarget {
     private static final float AI_REASONING_TOP = 480f;
     private static final float AI_REASONING_BOTTOM = 540f;
     private static final float AI_REFRESH_TOP = 556f;
+    /** Sound page: the "Always-on voice" switch row between the volume hero and -/+. */
+    private static final float ALWAYS_ON_TOP = 396f;
+    private static final float ALWAYS_ON_BOTTOM = 472f;
     private static final List<String> ROWS = List.of(
             "Wi-Fi", "Bluetooth", "Management", "AI", "Creations", "Sound", "Display", "About");
 
@@ -183,7 +187,31 @@ public final class SettingsPanelView extends View implements UiInputTarget {
         int max = audio == null ? 0 : audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
         float level = max == 0 ? 0f : current / (float) max;
         drawLevelHero(canvas, "Volume", sound()[0].value, level);
+        drawAlwaysOnRow(canvas);
         stepButtons(canvas);
+    }
+
+    /** Always-on voice: keep a voice session listening with the screen off, reconnect if it drops. */
+    private void drawAlwaysOnRow(Canvas canvas) {
+        boolean on = AlwaysOnVoice.isEnabled(activity);
+        RectF row = new RectF(20f, ALWAYS_ON_TOP, 460f, ALWAYS_ON_BOTTOM);
+        SamTheme.glass(canvas, paint, row, 22f, false);
+        SamTheme.text(canvas, paint, "Always-on voice", 40f, ALWAYS_ON_TOP + 33f, 20f,
+                SamTheme.INK, Paint.Align.LEFT, true);
+        SamTheme.text(canvas, paint, on ? "Keeps listening with the screen off" : "Screen off ends the session",
+                40f, ALWAYS_ON_TOP + 58f, 14f, SamTheme.MUTED, Paint.Align.LEFT, false);
+        float cy = (ALWAYS_ON_TOP + ALWAYS_ON_BOTTOM) / 2f;
+        RectF track = new RectF(374f, cy - 17f, 436f, cy + 17f);
+        if (on) {
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(SamTheme.ORB_BLUE);
+            canvas.drawRoundRect(track, 17f, 17f, paint);
+        } else {
+            SamTheme.glass(canvas, paint, track, 17f, false);
+        }
+        paint.setStyle(Paint.Style.FILL);
+        paint.setColor(on ? SamTheme.INK : SamTheme.MUTED);
+        canvas.drawCircle(on ? 419f : 391f, cy, 13f, paint);
     }
 
     private void drawDisplayPage(Canvas canvas) {
@@ -1168,6 +1196,9 @@ public final class SettingsPanelView extends View implements UiInputTarget {
             } else if (y >= AI_REFRESH_TOP && y <= AI_REFRESH_TOP + 72f) {
                 saveAiDraft();
             }
+        } else if ("Sound".equals(openPage) && y >= ALWAYS_ON_TOP && y <= ALWAYS_ON_BOTTOM) {
+            AlwaysOnVoice.setEnabled(activity, !AlwaysOnVoice.isEnabled(activity));
+            invalidate();
         } else if (y >= 482f && y <= 584f) {
             if ("Sound".equals(openPage)) {
                 adjustVolume(x >= DESIGN_WIDTH / 2f);
