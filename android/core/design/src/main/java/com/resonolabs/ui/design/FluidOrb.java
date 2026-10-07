@@ -61,6 +61,9 @@ public final class FluidOrb {
             }
             """;
 
+    /** Page glow colour behind a Pixel head (see {@link #color()}). */
+    static final int PIXEL_AMBIENT = Color.rgb(80, 90, 110);
+
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint glowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final RuntimeShader shader;
@@ -113,7 +116,15 @@ public final class FluidOrb {
         return this;
     }
 
+    /**
+     * The orb's colour; pages also tint the glow behind the orb with it. A Pixel head hero is
+     * monochrome, so there the default orb blue becomes a faint neutral cool grey (closer to the
+     * black stage the head is designed for); status colours such as the error red still show.
+     */
     public int color() {
+        if (head != null && color == SamTheme.ORB_BLUE && OrbStyleSetting.current() == OrbStyle.PIXEL_HEAD) {
+            return PIXEL_AMBIENT;
+        }
         return color;
     }
 

@@ -69,8 +69,8 @@ public final class SettingsPanelView extends View implements UiInputTarget {
     private static final RectF DISPLAY_PLUS = new RectF(250f, 262f, 460f, 326f);
     private static final RectF ORB_STYLE_PANEL = new RectF(20f, 342f, 460f, 562f);
     private static final RectF ORB_STYLE_TRACK = new RectF(36f, 482f, 444f, 546f);
-    private static final float ORB_PREVIEW_Y = 416f;
-    private static final float ORB_PREVIEW_RADIUS = 40f;
+    private static final float ORB_PREVIEW_Y = 418f;
+    private static final float ORB_PREVIEW_RADIUS = 44f;
     private static final RectF BACK_DISC = new RectF(10f, 22f, 54f, 66f);
     private static final RectF CLOSE_DISC = new RectF(414f, 20f, 462f, 68f);
 

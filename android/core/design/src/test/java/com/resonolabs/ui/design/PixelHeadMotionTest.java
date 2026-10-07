@@ -99,9 +99,9 @@ public final class PixelHeadMotionTest {
         assertEquals(0, PixelHeadMotion.bucketFor(30f * 2.2f, heights));
         assertEquals(0, PixelHeadMotion.bucketFor(19f * 2.2f, heights));
         assertEquals(0, PixelHeadMotion.bucketFor(18f * 2.2f, heights));
-        // Settings About (50) and Display preview (40): the 112 px art.
+        // Settings About (50) and the Display preview (44): the 112 px art.
         assertEquals(1, PixelHeadMotion.bucketFor(50f * 2.2f, heights));
-        assertEquals(1, PixelHeadMotion.bucketFor(40f * 2.2f, heights));
+        assertEquals(1, PixelHeadMotion.bucketFor(44f * 2.2f, heights));
         // Background run, running (56): the 176 px art.
         assertEquals(2, PixelHeadMotion.bucketFor(56f * 2.2f, heights));
         assertEquals(last, PixelHeadMotion.bucketFor(10_000f, heights));
