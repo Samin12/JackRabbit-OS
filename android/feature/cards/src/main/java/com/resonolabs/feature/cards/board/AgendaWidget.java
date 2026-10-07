@@ -144,7 +144,7 @@ public final class AgendaWidget implements BoardWidget {
             status.title = failed ? "Calendar unavailable right now" : "Loading calendar…";
             y += status.height;
         } else if (!configured) {
-            Item block = add(UNCONFIGURED, y, 92f);
+            Item block = add(UNCONFIGURED, y, 74f);
             block.title = "Connect a calendar";
             block.detail = "in Settings → Management";
             y += block.height;

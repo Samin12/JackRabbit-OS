@@ -89,7 +89,9 @@ public final class WidgetBoardView extends View {
     public WidgetBoardView(Context context) {
         super(context);
         setFocusable(true);
-        // The board draws its own wheel focus; the framework's grey keyboard-focus wash would dim it all.
+        // Take focus even in touch mode so key input never parks focus on the full-screen HOME root,
+        // whose framework focus highlight washes the whole screen grey; the board draws its own focus.
+        setFocusableInTouchMode(true);
         setDefaultFocusHighlightEnabled(false);
         setContentDescription("Widgets: up next, tasks and creations");
         scroller = new OverScroller(context, new DecelerateInterpolator(1.6f));
