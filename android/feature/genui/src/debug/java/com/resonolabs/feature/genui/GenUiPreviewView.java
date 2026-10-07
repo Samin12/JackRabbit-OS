@@ -84,7 +84,7 @@ final class GenUiPreviewView extends View implements GenUiController.Host {
         overlay = new GenCardOverlay(controller);
         controller.onSessionStarted("preview");
         for (String card : scene.cards) {
-            controller.onResponseCreated();
+            controller.resetBudgets();
             String output = controller.execute(GenUiTools.SHOW_CARD, card, store.now());
             Log.i(TAG, "scene " + scene.name + " show -> " + output);
         }

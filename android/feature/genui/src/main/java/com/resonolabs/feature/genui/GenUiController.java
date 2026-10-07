@@ -85,6 +85,12 @@ public final class GenUiController implements GenCardStore.Listener, AutoCloseab
         showsThisResponse = 0;
     }
 
+    /** Clears both show budgets (fixtures and tests; never called for model traffic). */
+    void resetBudgets() {
+        showsThisResponse = 0;
+        java.util.Arrays.fill(newIdTimes, Long.MIN_VALUE / 2);
+    }
+
     public void onSessionStarted(String id) {
         sessionId = id;
         showsThisResponse = 0;

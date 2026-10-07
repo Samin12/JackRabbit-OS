@@ -43,6 +43,8 @@ public final class GenCardLayout {
         int textColor;
         // rows
         int rows;
+        /** First visible row (live step lists keep their newest rows when trimmed). */
+        int firstRow;
         float rowHeight;
         boolean rowsHaveDetail;
         String[] rowTitle;
@@ -222,6 +224,7 @@ public final class GenCardLayout {
         more = null;
         int hiddenRows = 0;
         int hiddenBlocks = 0;
+        boolean olderHidden = false;
         for (int index = 0; index < card.body.size(); index++) {
             GenBlock block = card.body.get(index);
             Box box = boxes[boxCount] != null ? boxes[boxCount] : (boxes[boxCount] = new Box());
@@ -240,6 +243,11 @@ public final class GenCardLayout {
                     && room >= box.rowHeight) {
                 int fit = (int) (room / box.rowHeight);
                 hiddenRows += box.rows - fit;
+                if (card.live != null && block.type == GenBlock.Type.LIST) {
+                    // Live progress lists: the newest (active) step matters most.
+                    box.firstRow = box.rows - fit;
+                    olderHidden = true;
+                }
                 box.rows = fit;
                 box.height = fit * box.rowHeight;
                 box.top = y + gap;
@@ -274,7 +282,8 @@ public final class GenCardLayout {
         }
         if (overflow) {
             int hidden = hiddenRows + hiddenBlocks;
-            more = (hidden > 0 ? "+" + hidden + " more" : "More") + "  •  tap to expand";
+            String what = olderHidden && hiddenBlocks == 0 ? " earlier" : " more";
+            more = (hidden > 0 ? "+" + hidden + what : "More") + "  •  tap to expand";
             moreTop = y + 4f;
             y = moreTop + MORE_H - 4f;
         }
@@ -349,6 +358,7 @@ public final class GenCardLayout {
     private void measure(GenFonts fonts, Box box, GenBlock block, float inner, int textLines) {
         box.block = block;
         box.rows = 0;
+        box.firstRow = 0;
         box.height = 0f;
         switch (block.type) {
             case TEXT -> {
@@ -671,7 +681,7 @@ public final class GenCardLayout {
             if (box.block.type != GenBlock.Type.CHECKLIST && box.block.type != GenBlock.Type.LIST) continue;
             if (contentY >= box.top && contentY < box.top + box.rows * box.rowHeight) {
                 int row = (int) ((contentY - box.top) / box.rowHeight);
-                return index << 8 | Math.min(row, box.rows - 1);
+                return index << 8 | (box.firstRow + Math.min(row, box.rows - 1));
             }
         }
         return -1;

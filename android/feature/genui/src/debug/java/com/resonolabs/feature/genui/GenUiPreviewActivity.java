@@ -57,6 +57,10 @@ public final class GenUiPreviewActivity extends Activity {
         handleExtras(getIntent());
         view.requestFocus();
         immersive();
+        // Android 16 / targetSdk 36 routes BACK through the dispatcher, not onBackPressed().
+        getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+                android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT,
+                () -> { if (!input(UiInputIntent.BACK)) finish(); });
     }
 
     @Override protected void onNewIntent(Intent intent) {

@@ -274,10 +274,11 @@ public final class GenCardRenderer {
     }
 
     private void drawList(Canvas canvas, GenCardLayout.Box box, GenBlock block, float x, float inner, long now) {
-        for (int row = 0; row < box.rows; row++) {
+        for (int slot = 0; slot < box.rows; slot++) {
+            int row = box.firstRow + slot;
             GenRow item = block.items[row];
-            float rt = box.top + row * box.rowHeight;
-            if (row > 0) {
+            float rt = box.top + slot * box.rowHeight;
+            if (slot > 0) {
                 paint.setColor(GenColors.HAIRLINE);
                 canvas.drawRect(x, rt, x + inner, rt + 1f, paint);
             }

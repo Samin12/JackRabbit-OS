@@ -69,6 +69,7 @@ public final class GenCardOverlay {
     private long frontChangedAt;
     private float arriveFrom;
     private float drag;
+    private boolean dragCycled;
     private int pendingDirection;
 
     public GenCardOverlay(GenUiController controller) {
@@ -363,12 +364,13 @@ public final class GenCardOverlay {
             return true;
         }
         if (dock != Dock.CARDS && dock != Dock.COMPACT) return false;
+        if (dragCycled) return true; // one card per swipe, however long the swipe
         drag += dy;
         if (drag >= SWIPE) {
-            drag = 0f;
+            dragCycled = true;
             cycle(1);
         } else if (drag <= -SWIPE) {
-            drag = 0f;
+            dragCycled = true;
             cycle(-1);
         }
         return true;
@@ -376,6 +378,7 @@ public final class GenCardOverlay {
 
     public void onDragEnd() {
         drag = 0f;
+        dragCycled = false;
     }
 
     public boolean onTap(float x, float y) {
