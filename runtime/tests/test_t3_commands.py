@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest import mock
 
 from sam_runtime.domains.t3.commands import T3CommandBuilder
 from sam_runtime.domains.t3.service import T3DispatchFailed, T3InvalidRequest, T3RequestNotPending
@@ -199,6 +200,29 @@ class T3ServiceCommandTest(unittest.TestCase):
         self.assertEqual({"0": ["Red", "Blue"]}, self.fake.dispatched[-1]["answers"])
         with self.assertRaises(T3InvalidRequest):
             self.service.respond_input("ask", "multi", {"0": "Purple"})
+
+    def test_live_snapshot_is_not_terminal_before_a_requested_turn_starts(self) -> None:
+        # genui stops polling a live card once a snapshot says terminal.
+        self._connect([thread("done", "Finished", turn_id="turn-1"), thread("blank", "Blank", session_status=None, turn_state=None)])
+        self.assertEqual(("ok", True), tuple(self.service.live_view("done")[key] for key in ("status", "terminal")))
+        self.assertEqual(("idle", False), tuple(self.service.live_view("blank")[key] for key in ("status", "terminal")))
+
+        self.service.send_message("done", "One more thing")
+        live = self.service.live_view("done")
+        self.assertEqual(("active", False, "Starting"), (live["status"], live["terminal"], live["phase"]))
+        with mock.patch("sam_runtime.domains.t3.service._TURN_START_GRACE", -1.0):
+            self.service._invalidate("done")
+            self.assertTrue(self.service.live_view("done")["terminal"])
+        self.service.send_message("done", "And another")
+        self.fake.set_threads([thread("done", "Finished", turn_id="turn-2", completed_at="2026-10-07T12:05:00.000Z")])
+        self.service.sync_once()
+        self.service._invalidate("done")
+        self.assertEqual(("ok", True), tuple(self.service.live_view("done")[key] for key in ("status", "terminal")))
+
+        created = self.service.create_thread("Write the release notes")["threadId"]
+        self.fake.set_detail(created, detail(thread(created, "Write the release notes", session_status=None, turn_state=None)))
+        live = self.service.live_view(created)
+        self.assertEqual(("active", False), (live["status"], live["terminal"]))
 
     def test_answers_send_option_values_and_keep_the_users_own_words(self) -> None:
         shell_thread = thread("ask", "Ask", user_input=True)

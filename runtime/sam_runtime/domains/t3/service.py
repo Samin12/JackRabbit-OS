@@ -74,6 +74,7 @@ LAST_MESSAGE_CHARS = 400
 _DETAIL_TTL = 1.5
 _PERSIST_SYNC_EVERY = 60.0
 _FAIL_FAST_SECONDS = 5.0
+_TURN_START_GRACE = 45.0
 _APPROVAL_PHRASES = {
     "command": "wants approval to run a command",
     "file-change": "wants approval to edit files",
@@ -171,6 +172,9 @@ class T3Service:
         self._tracker = T3TransitionTracker()
         self._detail_cache: dict[tuple[str, int], tuple[float, dict[str, object]]] = {}
         self._down_until = 0.0
+        # thread id -> (monotonic time, latest turn id before) for turns this R1 just
+        # requested; T3 still reports the previous turn until the provider starts.
+        self._turn_requests: dict[str, tuple[float, str | None]] = {}
 
     # ------------------------------------------------------------------ state
     def set_wake(self, wake: Callable[[], None]) -> None:
@@ -342,6 +346,7 @@ class T3Service:
         self._last_sync_at = None
         self._tracker.reset()
         self._detail_cache.clear()
+        self._turn_requests.clear()
         self._recompute()
 
     # ------------------------------------------------------------- transport
@@ -663,6 +668,29 @@ class T3Service:
             for key in [key for key in self._detail_cache if key[0] == thread_id]:
                 self._detail_cache.pop(key, None)
 
+    def _note_turn_requested(self, thread_id: str, previous_turn_id: object) -> None:
+        with self._lock:
+            self._turn_requests[thread_id] = (time.monotonic(), str(previous_turn_id) if previous_turn_id else None)
+            if len(self._turn_requests) > 32:
+                oldest = min(self._turn_requests, key=lambda key: self._turn_requests[key][0])
+                self._turn_requests.pop(oldest, None)
+
+    def _awaiting_turn_start(self, thread_id: str, thread: dict[str, object]) -> bool:
+        """True while a turn this R1 requested has not shown up in ``thread`` yet."""
+        with self._lock:
+            requested = self._turn_requests.get(thread_id)
+            if requested is None:
+                return False
+            at, previous_turn = requested
+            session = thread.get("session") if isinstance(thread.get("session"), dict) else {}
+            latest = thread.get("latestTurn") if isinstance(thread.get("latestTurn"), dict) else {}
+            turn_id = str(latest.get("turnId")) if latest.get("turnId") else None
+            started = session.get("status") in {"running", "starting"} or turn_id != previous_turn
+            if started or time.monotonic() - at > _TURN_START_GRACE:
+                self._turn_requests.pop(thread_id, None)
+                return False
+            return True
+
     def _summary_from_detail(self, thread: dict[str, object], pending: PendingRequests) -> dict[str, object]:
         shell_like = dict(thread)
         shell_like["hasPendingApprovals"] = bool(pending.approvals)
@@ -719,15 +747,22 @@ class T3Service:
         pending = pending_requests(activities)
         summary = self.summary(thread_id) or self._summary_from_detail(thread, pending)
         status = str(summary["status"])
+        status_label = str(summary["statusLabel"])
+        if status in {DONE, ERROR} and self._awaiting_turn_start(thread_id, thread):
+            # Still showing the previous turn: a terminal snapshot now would make the
+            # live card stop polling before the requested turn even starts.
+            status, status_label = WORKING, "Starting"
         live_status = {WORKING: "active", NEEDS_APPROVAL: "warn", NEEDS_INPUT: "warn", ERROR: "error"}.get(status, "ok")
         latest = thread.get("latestTurn") if isinstance(thread.get("latestTurn"), dict) else None
         if status == DONE and not latest:
             live_status = "idle"
-        terminal = status in {DONE, ERROR}
+        # Terminal only for a finished turn (genui contract: ok/error); a thread with
+        # no turn yet ("idle") may still start.
+        terminal = live_status in {"ok", "error"}
         parts = [str(summary.get("projectTitle") or "")]
         if summary.get("model"):
             parts.append(str(summary["model"]))
-        parts.append(str(summary["statusLabel"]))
+        parts.append(status_label)
         if status == WORKING and latest and latest.get("startedAt"):
             started = parse_time(latest.get("startedAt"))
             if started is not None:
@@ -738,7 +773,7 @@ class T3Service:
         elif status == NEEDS_INPUT and pending.inputs and pending.inputs[0].questions:
             phase = condense(pending.inputs[0].questions[0].question, 60)
         else:
-            phase = summary.get("phase") or summary["statusLabel"]
+            phase = summary.get("phase") or status_label
         turn_id = latest.get("turnId") if latest else None
         items = _activity_items([item for item in activities if isinstance(item, dict) and (turn_id is None or item.get("turnId") in {turn_id, None})])
         return {
@@ -864,6 +899,7 @@ class T3Service:
             raise T3DispatchFailed(
                 f"The thread was created but the first message failed ({type(error).__name__}).", thread_id
             ) from None
+        self._note_turn_requested(thread_id, None)
         self._log.info("t3.thread.created", extra={"project": chosen_id})
         self._wake()
         return {
@@ -887,10 +923,14 @@ class T3Service:
         interaction = str(thread.get("interactionMode") or DEFAULT_INTERACTION_MODE)
         command = self._commands.turn_start(thread_id=str(thread["id"]), text=body, runtime_mode=mode, interaction_mode=interaction)
         self._dispatch_or_fail(record, client, command)
+        session = thread.get("session") if isinstance(thread.get("session"), dict) else {}
+        was_working = session.get("status") in {"running", "starting"}
+        if not was_working:
+            latest = thread.get("latestTurn") if isinstance(thread.get("latestTurn"), dict) else {}
+            self._note_turn_requested(str(thread["id"]), latest.get("turnId"))
         self._invalidate(str(thread["id"]))
         self._wake()
-        session = thread.get("session") if isinstance(thread.get("session"), dict) else {}
-        return {"ok": True, "threadId": str(thread["id"]), "title": str(thread.get("title") or ""), "wasWorking": session.get("status") in {"running", "starting"}}
+        return {"ok": True, "threadId": str(thread["id"]), "title": str(thread.get("title") or ""), "wasWorking": was_working}
 
     def respond_approval(self, thread_id: str, request_id: str, decision: str) -> dict[str, object]:
         decision = str(decision or "").strip()
