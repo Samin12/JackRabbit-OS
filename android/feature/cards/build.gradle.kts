@@ -16,4 +16,5 @@ dependencies {
     implementation(project(":runtime-host"))
     implementation(project(":feature:calendar"))
     implementation(project(":feature:tasks"))
+    testImplementation("junit:junit:4.13.2")
 }

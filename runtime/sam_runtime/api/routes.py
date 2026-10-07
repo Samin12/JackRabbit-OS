@@ -283,6 +283,7 @@ class RuntimeRoutes:
             return
         if calendar is not None and calendar.handle_post(req, pairing):
             return
+        if self._tasks is not None and self._tasks.handle_post(req): return
         if outbound_mcp is not None and outbound_mcp.handle_post(req, pairing):
             return
         if plugins is not None and plugins.handle_post(req, pairing):

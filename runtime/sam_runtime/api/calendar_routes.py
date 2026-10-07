@@ -25,8 +25,12 @@ class CalendarRoutes:
             request.respond_json(200, {"accounts": [_account(item) for item in self._repository.list_accounts()]})
             return True
         if path == "/v1/calendar/upcoming":
-            events = self._repository.upcoming_events(datetime.now(UTC).isoformat(), limit=50)
-            request.respond_json(200, {"events": [_event(item) for item in events]})
+            # Keep all-day events up to 14 h (the widest UTC offset) past their UTC end: the device
+            # decides in its own time zone whether the day is still today.
+            events = self._repository.upcoming_events(datetime.now(UTC).isoformat(), limit=50, all_day_grace_hours=14)
+            # "configured" lets glanceable surfaces tell "no events" apart from "no calendar connected".
+            configured = any(item.enabled for item in self._repository.list_accounts())
+            request.respond_json(200, {"events": [_event(item) for item in events], "configured": configured})
             return True
         if path.startswith("/v1/calendar/events/"):
             item = self._repository.get_event(path.rsplit("/", 1)[-1])
