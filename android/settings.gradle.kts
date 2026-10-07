@@ -31,4 +31,5 @@ include(
     ":feature:background-run",
     ":runtime-host",
     ":system:motor-service",
+    ":system:power-overlay",
 )
