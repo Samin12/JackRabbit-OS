@@ -12,6 +12,7 @@ dependencies {
     implementation(project(":core:design"))
     implementation(project(":core:input"))
     implementation(project(":runtime-host"))
+    implementation(project(":feature:compose"))
     testImplementation("junit:junit:4.13.2")
     // Android's org.json is a stub on the JVM; tests parse real payloads with the reference jar.
     testImplementation("org.json:json:20231013")

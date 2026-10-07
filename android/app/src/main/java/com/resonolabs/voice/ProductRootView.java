@@ -19,6 +19,7 @@ import com.resonolabs.runtime.host.RuntimeBackgroundRunClient;
 import com.resonolabs.runtime.host.RuntimeCreationImportClient;
 import com.resonolabs.feature.creationimport.CreationImportView;
 import com.resonolabs.feature.t3.T3PageView;
+import com.resonolabs.feature.compose.ComposeSheet;
 
 final class ProductRootView extends FrameLayout {
     private final VoicePageView voice;
@@ -57,6 +58,8 @@ final class ProductRootView extends FrameLayout {
         super(activity);
         motor = new R1MotorServiceClient(activity);
         voice = new VoicePageView(activity, this::openCameraHandoff);
+        // Text fields dictate through their own mic; never while a voice session holds it.
+        ComposeSheet.setVoiceSessionProbe(voice::isInSession);
         camera = new CameraHandoffPage(activity, motor, voice, this::returnFromCamera);
         camera.setVisibility(GONE);
         cards = new CardsPageView(activity, this::openVoice, this::showCreation);
