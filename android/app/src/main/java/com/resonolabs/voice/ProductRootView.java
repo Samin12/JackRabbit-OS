@@ -298,6 +298,8 @@ final class ProductRootView extends FrameLayout {
         closeT3();
         cardsOpen = true;
         chrome.showTab(ProductChromeView.TAB_CARDS);
+        // A swipe can leave Voice while a GenUI card is expanded (chrome hidden there).
+        chrome.setVisibility(cardContentOpen ? GONE : VISIBLE);
         voice.setVisibility(GONE);
         cards.setVisibility(VISIBLE);
         cards.start();
@@ -312,7 +314,7 @@ final class ProductRootView extends FrameLayout {
         cards.setVisibility(GONE);
         voice.setVisibility(VISIBLE);
         voice.requestFocus();
-        if (voiceImmersive) chrome.setVisibility(GONE);
+        chrome.setVisibility(voiceImmersive ? GONE : VISIBLE);
     }
 
     /** GenUI: a card expanded to full height hides the chrome (posted by the Voice page). */
