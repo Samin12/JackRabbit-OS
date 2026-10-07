@@ -21,6 +21,7 @@ import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.wifi.WifiManager;
 import android.net.wifi.WifiConfiguration;
+import android.os.SystemClock;
 import android.provider.Settings;
 import android.text.InputType;
 import android.view.Gravity;
@@ -90,6 +91,8 @@ public final class SettingsPanelView extends View implements UiInputTarget {
             SamTheme.ORB_PALE, SamTheme.ORB_BLUE, Shader.TileMode.CLAMP);
     private float displayLevel;
     private String displayValue;
+    private int displayBrightness = -1;
+    private long displayReadAt;
     private final WifiNetworkScanner wifiScanner;
     private int selected;
     private String openPage;
@@ -208,8 +211,10 @@ public final class SettingsPanelView extends View implements UiInputTarget {
     }
 
     private void drawDisplayPage(Canvas canvas) {
-        // Redrawn every frame for the live orb preview, so nothing here allocates.
-        if (displayValue == null) readDisplayBrightness();
+        // Redrawn every frame for the live orb preview, so nothing here allocates. The brightness
+        // is re-read twice a second: the Control Center can change it over this page.
+        long now = SystemClock.uptimeMillis();
+        if (displayValue == null || now >= displayReadAt) readDisplayBrightness(now);
         glassPainter.draw(canvas, paint, DISPLAY_BRIGHTNESS, 24f, false);
         SamTheme.text(canvas, paint, "Brightness", 240f, 134f, 16f, SamTheme.MUTED, Paint.Align.CENTER, false);
         SamTheme.text(canvas, paint, displayValue, 240f, 196f, 54f, SamTheme.INK, Paint.Align.CENTER, true);
@@ -258,9 +263,12 @@ public final class SettingsPanelView extends View implements UiInputTarget {
         }
     }
 
-    private void readDisplayBrightness() {
+    private void readDisplayBrightness(long now) {
+        displayReadAt = now + 500L;
         int brightness = Settings.System.getInt(activity.getContentResolver(),
                 Settings.System.SCREEN_BRIGHTNESS, 0);
+        if (displayValue != null && brightness == displayBrightness) return;
+        displayBrightness = brightness;
         displayLevel = Math.max(0f, Math.min(1f, brightness / 255f));
         displayValue = Math.round(brightness * 100f / 255f) + "%";
     }
