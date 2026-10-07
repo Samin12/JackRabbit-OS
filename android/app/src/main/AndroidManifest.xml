@@ -36,14 +36,14 @@
     <application
         android:allowBackup="false"
         android:directBootAware="true"
-        android:label="ReSono R1"
+        android:label="SAM R1"
         android:networkSecurityConfig="@xml/network_security_config"
         android:supportsRtl="true"
-        android:theme="@style/Theme.ReSonoVoice"
+        android:theme="@style/Theme.SamVoice"
         android:usesNonSdkApi="true">
 
         <receiver
-            android:name=".ReSonoBootReceiver"
+            android:name=".SamBootReceiver"
             android:directBootAware="true"
             android:enabled="true"
             android:exported="false">

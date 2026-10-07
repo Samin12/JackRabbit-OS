@@ -22,7 +22,7 @@ import android.view.MotionEvent;
 import android.view.View;
 
 import com.resonolabs.ui.design.FluidOrb;
-import com.resonolabs.ui.design.ReSonoTheme;
+import com.resonolabs.ui.design.SamTheme;
 import com.resonolabs.ui.input.UiInputIntent;
 
 import java.text.SimpleDateFormat;
@@ -124,13 +124,13 @@ final class ControlCenterView extends View {
         canvas.save();
         canvas.scale(getWidth() / WIDTH, getHeight() / HEIGHT);
         canvas.translate(0f, Math.min(0f, dragOffset));
-        ReSonoTheme.background(canvas, paint, WIDTH, HEIGHT, 400f, 60f, 220f, ReSonoTheme.ORB_BLUE);
+        SamTheme.background(canvas, paint, WIDTH, HEIGHT, 400f, 60f, 220f, SamTheme.ORB_BLUE);
         orb.draw(canvas, 418f, 68f + orb.bob(3f), 30f);
         Date now = new Date();
-        ReSonoTheme.text(canvas, paint, time.format(now), 28f, 82f, 52f, ReSonoTheme.INK,
+        SamTheme.text(canvas, paint, time.format(now), 28f, 82f, 52f, SamTheme.INK,
                 Paint.Align.LEFT, true);
-        ReSonoTheme.text(canvas, paint, date.format(now) + "  ·  " + batteryLabel(), 30f, 112f, 16f,
-                ReSonoTheme.MUTED, Paint.Align.LEFT, false);
+        SamTheme.text(canvas, paint, date.format(now) + "  ·  " + batteryLabel(), 30f, 112f, 16f,
+                SamTheme.MUTED, Paint.Align.LEFT, false);
 
         drawTile(canvas, 0, "Wi‑Fi", wifiEnabled() ? wifiName() : "Off", wifiEnabled());
         drawTile(canvas, 1, "Bluetooth", bluetoothEnabled() ? "On" : "Off", bluetoothEnabled());
@@ -141,7 +141,7 @@ final class ControlCenterView extends View {
         drawSlider(canvas, VOLUME, 5, "Volume", volumeFraction(), true);
         drawNotifications(canvas);
 
-        paint.setColor(ReSonoTheme.withAlpha(ReSonoTheme.INK, 90));
+        paint.setColor(SamTheme.withAlpha(SamTheme.INK, 90));
         canvas.drawRoundRect(212f, 620f, 268f, 625f, 3f, 3f, paint);
         canvas.restore();
         if (open && isShown()) postInvalidateDelayed(33L);
@@ -150,25 +150,25 @@ final class ControlCenterView extends View {
     private void drawTile(Canvas canvas, int index, String label, String state, boolean active) {
         RectF rect = TILES[index];
         if (active) {
-            paint.setColor(ReSonoTheme.BACKGROUND);
+            paint.setColor(SamTheme.BACKGROUND);
             paint.setShader(new LinearGradient(rect.left, rect.top, rect.right, rect.bottom,
-                    ReSonoTheme.ORB_BLUE, ReSonoTheme.withAlpha(ReSonoTheme.ORB_PALE, 255),
+                    SamTheme.ORB_BLUE, SamTheme.withAlpha(SamTheme.ORB_PALE, 255),
                     Shader.TileMode.CLAMP));
             canvas.drawRoundRect(rect, 22f, 22f, paint);
             paint.setShader(null);
             if (focus == index) {
-                paint.setStyle(Paint.Style.STROKE); paint.setStrokeWidth(2.5f); paint.setColor(ReSonoTheme.INK);
+                paint.setStyle(Paint.Style.STROKE); paint.setStrokeWidth(2.5f); paint.setColor(SamTheme.INK);
                 canvas.drawRoundRect(rect, 22f, 22f, paint); paint.setStyle(Paint.Style.FILL);
             }
         } else {
-            ReSonoTheme.glass(canvas, paint, rect, 22f, focus == index);
+            SamTheme.glass(canvas, paint, rect, 22f, focus == index);
         }
         drawTileIcon(canvas, index, rect.left + 32f, rect.top + 30f, active);
         String shown = state.length() > 16 ? state.substring(0, 15) + "…" : state;
-        ReSonoTheme.text(canvas, paint, label, rect.left + 18f, rect.top + 64f, 17f,
-                active ? ReSonoTheme.BACKGROUND : ReSonoTheme.INK, Paint.Align.LEFT, true);
-        ReSonoTheme.text(canvas, paint, shown, rect.left + 18f, rect.top + 80f, 13f,
-                active ? ReSonoTheme.withAlpha(ReSonoTheme.BACKGROUND, 190) : ReSonoTheme.MUTED,
+        SamTheme.text(canvas, paint, label, rect.left + 18f, rect.top + 64f, 17f,
+                active ? SamTheme.BACKGROUND : SamTheme.INK, Paint.Align.LEFT, true);
+        SamTheme.text(canvas, paint, shown, rect.left + 18f, rect.top + 80f, 13f,
+                active ? SamTheme.withAlpha(SamTheme.BACKGROUND, 190) : SamTheme.MUTED,
                 Paint.Align.LEFT, false);
     }
 
@@ -176,7 +176,7 @@ final class ControlCenterView extends View {
         paint.setStyle(Paint.Style.STROKE);
         paint.setStrokeWidth(2.4f);
         paint.setStrokeCap(Paint.Cap.ROUND);
-        paint.setColor(active ? ReSonoTheme.BACKGROUND : ReSonoTheme.INK);
+        paint.setColor(active ? SamTheme.BACKGROUND : SamTheme.INK);
         switch (index) {
             case 0 -> {
                 for (int arc = 0; arc < 3; arc++) {
@@ -211,16 +211,16 @@ final class ControlCenterView extends View {
     }
 
     private void drawSlider(Canvas canvas, RectF rect, int index, String label, float fraction, boolean speaker) {
-        ReSonoTheme.glass(canvas, paint, rect, 26f, focus == index);
+        SamTheme.glass(canvas, paint, rect, 26f, focus == index);
         float fill = rect.left + Math.max(52f, rect.width() * fraction);
-        paint.setColor(ReSonoTheme.BACKGROUND);
-        paint.setShader(new LinearGradient(rect.left, 0f, fill, 0f, ReSonoTheme.ORB_BLUE,
-                ReSonoTheme.ORB_PALE, Shader.TileMode.CLAMP));
+        paint.setColor(SamTheme.BACKGROUND);
+        paint.setShader(new LinearGradient(rect.left, 0f, fill, 0f, SamTheme.ORB_BLUE,
+                SamTheme.ORB_PALE, Shader.TileMode.CLAMP));
         canvas.drawRoundRect(rect.left, rect.top, fill, rect.bottom, 26f, 26f, paint);
         paint.setShader(null);
         float cx = rect.left + 26f;
         float cy = rect.centerY();
-        paint.setColor(ReSonoTheme.INK);
+        paint.setColor(SamTheme.INK);
         if (speaker) {
             canvas.drawRect(cx - 9f, cy - 4f, cx - 4f, cy + 4f, paint);
             android.graphics.Path cone = new android.graphics.Path();
@@ -236,36 +236,36 @@ final class ControlCenterView extends View {
                         cx + (float) Math.cos(angle) * 11.5f, cy + (float) Math.sin(angle) * 11.5f, paint);
             }
         }
-        ReSonoTheme.text(canvas, paint, label, rect.left + 50f, cy + 6f, 16f, ReSonoTheme.INK,
+        SamTheme.text(canvas, paint, label, rect.left + 50f, cy + 6f, 16f, SamTheme.INK,
                 Paint.Align.LEFT, true);
-        ReSonoTheme.text(canvas, paint, Math.round(fraction * 100f) + "%", rect.right - 18f, cy + 6f, 15f,
-                ReSonoTheme.INK, Paint.Align.RIGHT, false);
+        SamTheme.text(canvas, paint, Math.round(fraction * 100f) + "%", rect.right - 18f, cy + 6f, 15f,
+                SamTheme.INK, Paint.Align.RIGHT, false);
     }
 
     private void drawNotifications(Canvas canvas) {
         List<NotificationFeed.Item> items = NotificationFeed.items();
-        ReSonoTheme.text(canvas, paint, "Notifications", 28f, 476f, 17f, ReSonoTheme.INK,
+        SamTheme.text(canvas, paint, "Notifications", 28f, 476f, 17f, SamTheme.INK,
                 Paint.Align.LEFT, true);
         if (items.isEmpty()) {
-            ReSonoTheme.text(canvas, paint, "You're all caught up", 240f, 548f, 16f,
-                    ReSonoTheme.MUTED, Paint.Align.CENTER, false);
+            SamTheme.text(canvas, paint, "You're all caught up", 240f, 548f, 16f,
+                    SamTheme.MUTED, Paint.Align.CENTER, false);
             return;
         }
-        ReSonoTheme.text(canvas, paint, "Clear", CLEAR.right - 4f, 476f, 15f, ReSonoTheme.ORB_PALE,
+        SamTheme.text(canvas, paint, "Clear", CLEAR.right - 4f, 476f, 15f, SamTheme.ORB_PALE,
                 Paint.Align.RIGHT, true);
         for (int row = 0; row < Math.min(2, items.size()); row++) {
             NotificationFeed.Item item = items.get(row);
             RectF rect = new RectF(24f, 490f + row * 62f, 456f, 544f + row * 62f);
-            ReSonoTheme.glass(canvas, paint, rect, 18f, false);
+            SamTheme.glass(canvas, paint, rect, 18f, false);
             String head = item.app() + (item.title().isEmpty() ? "" : " · " + item.title());
-            ReSonoTheme.text(canvas, paint, ellipsize(head, 38), rect.left + 16f, rect.top + 23f, 14f,
-                    ReSonoTheme.INK, Paint.Align.LEFT, true);
-            ReSonoTheme.text(canvas, paint, ellipsize(item.text(), 46), rect.left + 16f, rect.top + 43f, 13f,
-                    ReSonoTheme.MUTED, Paint.Align.LEFT, false);
+            SamTheme.text(canvas, paint, ellipsize(head, 38), rect.left + 16f, rect.top + 23f, 14f,
+                    SamTheme.INK, Paint.Align.LEFT, true);
+            SamTheme.text(canvas, paint, ellipsize(item.text(), 46), rect.left + 16f, rect.top + 43f, 13f,
+                    SamTheme.MUTED, Paint.Align.LEFT, false);
         }
         if (items.size() > 2) {
-            ReSonoTheme.text(canvas, paint, "+" + (items.size() - 2) + " more", 240f, 612f, 13f,
-                    ReSonoTheme.MUTED, Paint.Align.CENTER, false);
+            SamTheme.text(canvas, paint, "+" + (items.size() - 2) + " more", 240f, 612f, 13f,
+                    SamTheme.MUTED, Paint.Align.CENTER, false);
         }
     }
 

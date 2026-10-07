@@ -9,7 +9,7 @@ import android.view.MotionEvent;
 import android.view.View;
 
 import com.resonolabs.ui.design.FluidOrb;
-import com.resonolabs.ui.design.ReSonoTheme;
+import com.resonolabs.ui.design.SamTheme;
 import com.resonolabs.ui.input.UiInputIntent;
 
 import org.json.JSONArray;
@@ -102,12 +102,12 @@ final class CardsDeckView extends View {
         canvas.scale(getWidth() / WIDTH, getHeight() / HEIGHT);
         JSONObject front = items.optJSONObject(index);
         int accent = accentOf(front);
-        ReSonoTheme.background(canvas, paint, WIDTH, HEIGHT, 240f, 250f, 280f, accent);
+        SamTheme.background(canvas, paint, WIDTH, HEIGHT, 240f, 250f, 280f, accent);
         if (items.length() == 0) {
-            ReSonoTheme.text(canvas, paint, "No cards yet", 240f, 330f, 24f,
-                    ReSonoTheme.INK, Paint.Align.CENTER, true);
-            ReSonoTheme.text(canvas, paint, "Import one from R1 management.", 240f, 362f, 17f,
-                    ReSonoTheme.MUTED, Paint.Align.CENTER, false);
+            SamTheme.text(canvas, paint, "No cards yet", 240f, 330f, 24f,
+                    SamTheme.INK, Paint.Align.CENTER, true);
+            SamTheme.text(canvas, paint, "Import one from R1 management.", 240f, 362f, 17f,
+                    SamTheme.MUTED, Paint.Align.CENTER, false);
         } else {
             for (int depth = Math.min(2, items.length() - 1); depth >= 1; depth--) {
                 drawBackCard(canvas, depth);
@@ -124,18 +124,18 @@ final class CardsDeckView extends View {
     private void drawBackCard(Canvas canvas, int depth) {
         float inset = 36f + depth * 18f;
         RectF rect = new RectF(inset, 124f - depth * 14f, WIDTH - inset, 500f);
-        paint.setColor(ReSonoTheme.withAlpha(ReSonoTheme.PANEL_RAISED, 255 - depth * 70));
+        paint.setColor(SamTheme.withAlpha(SamTheme.PANEL_RAISED, 255 - depth * 70));
         canvas.drawRoundRect(rect, 28f, 28f, paint);
-        ReSonoTheme.glass(canvas, paint, rect, 28f, false);
+        SamTheme.glass(canvas, paint, rect, 28f, false);
     }
 
     private void drawFrontCard(Canvas canvas, JSONObject item, int accent) {
         if (item == null) return;
         float offset = settleOffset;
         RectF rect = new RectF(36f, 130f + offset, WIDTH - 36f, 524f + offset);
-        paint.setColor(ReSonoTheme.PANEL);
+        paint.setColor(SamTheme.PANEL);
         canvas.drawRoundRect(rect, 28f, 28f, paint);
-        ReSonoTheme.glass(canvas, paint, rect, 28f, true);
+        SamTheme.glass(canvas, paint, rect, 28f, true);
         orb.setColor(accent).setEnergy(0.25f).setSpeed(0.7f);
         orb.draw(canvas, 240f, 252f + offset + orb.bob(4f), 68f);
         String sourceType = item.optString("sourceType");
@@ -145,24 +145,24 @@ final class CardsDeckView extends View {
         String title = item.optString("title", "Creation").trim();
         if (title.isEmpty()) title = "Creation";
         if (!kind.equalsIgnoreCase(title)) {
-            ReSonoTheme.text(canvas, paint, kind.toUpperCase(java.util.Locale.ROOT), 240f, 362f + offset,
-                    13f, ReSonoTheme.withAlpha(accent, 230), Paint.Align.CENTER, true);
+            SamTheme.text(canvas, paint, kind.toUpperCase(java.util.Locale.ROOT), 240f, 362f + offset,
+                    13f, SamTheme.withAlpha(accent, 230), Paint.Align.CENTER, true);
         }
         if (title.length() > 22) title = title.substring(0, 21) + "…";
-        ReSonoTheme.text(canvas, paint, title, 240f, 398f + offset, 30f,
-                ReSonoTheme.INK, Paint.Align.CENTER, true);
+        SamTheme.text(canvas, paint, title, 240f, 398f + offset, 30f,
+                SamTheme.INK, Paint.Align.CENTER, true);
         drawDescription(canvas, item.optString("description", ""), 240f, 432f + offset, 340f);
-        ReSonoTheme.text(canvas, paint, "Tap to open", 240f, 500f + offset, 15f,
-                ReSonoTheme.withAlpha(ReSonoTheme.INK, 150), Paint.Align.CENTER, false);
+        SamTheme.text(canvas, paint, "Tap to open", 240f, 500f + offset, 15f,
+                SamTheme.withAlpha(SamTheme.INK, 150), Paint.Align.CENTER, false);
     }
 
     private int accentOf(JSONObject item) {
-        if (item == null) return ReSonoTheme.ORB_BLUE;
+        if (item == null) return SamTheme.ORB_BLUE;
         String source = item.optString("sourceType");
-        if ("builtin_calendar".equals(source)) return ReSonoTheme.PINK;
-        if ("builtin_tasks".equals(source)) return ReSonoTheme.AMBER;
+        if ("builtin_calendar".equals(source)) return SamTheme.PINK;
+        if ("builtin_tasks".equals(source)) return SamTheme.AMBER;
         try { return Color.parseColor(item.optString("accent", "#1A73F2")); }
-        catch (IllegalArgumentException ignored) { return ReSonoTheme.ORB_BLUE; }
+        catch (IllegalArgumentException ignored) { return SamTheme.ORB_BLUE; }
     }
 
     private void drawDescription(Canvas canvas, String value, float centerX, float y, float width) {
@@ -176,8 +176,8 @@ final class CardsDeckView extends View {
             }
             String text = remaining.substring(0, Math.max(1, count)).trim();
             if (line == 1 && count < remaining.length()) text += "…";
-            ReSonoTheme.text(canvas, paint, text, centerX, y + line * 24f, 17f,
-                    ReSonoTheme.MUTED, Paint.Align.CENTER, false);
+            SamTheme.text(canvas, paint, text, centerX, y + line * 24f, 17f,
+                    SamTheme.MUTED, Paint.Align.CENTER, false);
             remaining = remaining.substring(Math.min(remaining.length(), Math.max(1, count))).trim();
         }
     }
@@ -188,18 +188,18 @@ final class CardsDeckView extends View {
         float start = 240f - (count - 1) * spacing / 2f;
         for (int dot = 0; dot < count; dot++) {
             boolean active = dot == index;
-            paint.setColor(active ? ReSonoTheme.INK : ReSonoTheme.withAlpha(ReSonoTheme.MUTED, 120));
+            paint.setColor(active ? SamTheme.INK : SamTheme.withAlpha(SamTheme.MUTED, 120));
             if (active) canvas.drawRoundRect(start + dot * spacing - 9f, 549f, start + dot * spacing + 9f, 555f, 3f, 3f, paint);
             else canvas.drawCircle(start + dot * spacing, 552f, 3f, paint);
         }
     }
 
     private void drawArrow(Canvas canvas, float centerX, boolean next) {
-        ReSonoTheme.glass(canvas, paint, new RectF(centerX - 28f, 568f, centerX + 28f, 624f), 28f, false);
+        SamTheme.glass(canvas, paint, new RectF(centerX - 28f, 568f, centerX + 28f, 624f), 28f, false);
         paint.setStyle(Paint.Style.STROKE);
         paint.setStrokeWidth(2.6f);
         paint.setStrokeCap(Paint.Cap.ROUND);
-        paint.setColor(ReSonoTheme.INK);
+        paint.setColor(SamTheme.INK);
         float dir = next ? 1f : -1f;
         canvas.drawLine(centerX - 4f * dir, 586f, centerX + 5f * dir, 596f, paint);
         canvas.drawLine(centerX + 5f * dir, 596f, centerX - 4f * dir, 606f, paint);

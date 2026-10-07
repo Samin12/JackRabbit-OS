@@ -7,7 +7,7 @@ import android.view.WindowManager;
 import java.lang.reflect.Field;
 
 public final class DisplayPolicy {
-    private static final String TAG = "ReSonoDisplayPolicy";
+    private static final String TAG = "SamDisplayPolicy";
     // Confirmed from the framework.jar retained from the exact Rabbit R1 image.
     private static final int RABBIT_DISABLE_USER_ACTIVITY = 2;
     public static final long IDLE_TIMEOUT_MS = -1L;

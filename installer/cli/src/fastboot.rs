@@ -15,7 +15,7 @@ pub struct NativeFastboot {
 
 impl NativeFastboot {
     pub fn discover(release_root: &Path) -> Result<Self, CommandError> {
-        let configured = std::env::var_os("JACKRABBIT_FASTBOOT").map(PathBuf::from);
+        let configured = std::env::var_os("SAM_FASTBOOT").map(PathBuf::from);
         let bundled = if cfg!(windows) {
             release_root.join("tools/fastboot.exe")
         } else {
@@ -163,7 +163,7 @@ fn fastboot_failed(process_succeeded: bool, output: &str) -> bool {
 }
 
 fn permission_error() -> CommandError {
-    CommandError::new("JR-CLI-USB-PERMISSION", "Linux denied the R1 USB node. Run the package's install.sh so it can install drivers/51-jackrabbit-r1.rules, reconnect the R1, and retry. fastbootd uses 18d1:4ee0.")
+    CommandError::new("JR-CLI-USB-PERMISSION", "Linux denied the R1 USB node. Run the package's install.sh so it can install drivers/51-sam-r1.rules, reconnect the R1, and retry. fastbootd uses 18d1:4ee0.")
 }
 
 #[cfg(test)]

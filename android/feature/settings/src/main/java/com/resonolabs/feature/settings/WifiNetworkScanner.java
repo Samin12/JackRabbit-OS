@@ -114,7 +114,7 @@ final class WifiNetworkScanner {
 
     private boolean hasPermission() {
         // The stock Rabbit launcher bypasses this gate with its platform
-        // signature. ReSono has a separate signing identity, so it must use
+        // signature. SAM has a separate signing identity, so it must use
         // the runtime scan grants that RabbitLauncher also declares.
         boolean coarse = activity.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION)
                 == PackageManager.PERMISSION_GRANTED;

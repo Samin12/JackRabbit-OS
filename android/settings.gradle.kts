@@ -14,7 +14,7 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "ReSonoR1"
+rootProject.name = "SamR1"
 include(
     ":app",
     ":core:design",

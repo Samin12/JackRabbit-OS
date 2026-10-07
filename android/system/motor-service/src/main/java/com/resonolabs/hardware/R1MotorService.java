@@ -26,7 +26,7 @@ import java.util.concurrent.Executors;
 
 /** Privileged CipherOS adapter. Raw motor values never cross this process. */
 public final class R1MotorService extends Service {
-    private static final String LOG_TAG = "ReSonoMotor";
+    private static final String LOG_TAG = "SamMotor";
     static final int POSITION_OUTWARD = 1;
     static final int POSITION_HOME = 2;
     static final int POSITION_INWARD = 3;
@@ -52,7 +52,7 @@ public final class R1MotorService extends Service {
             "5c50802e8b2cea1647bc8e73576ac1124ef3c3da0d1eb04348762cd14269394d";
 
     private final ExecutorService moves = Executors.newSingleThreadExecutor(runnable -> {
-        Thread thread = new Thread(runnable, "resono-r1-motor");
+        Thread thread = new Thread(runnable, "sam-r1-motor");
         thread.setDaemon(true);
         return thread;
     });

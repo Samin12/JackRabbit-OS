@@ -57,7 +57,7 @@ public final class FluidOrb {
     private final Paint glowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final RuntimeShader shader;
     private final long start = SystemClock.uptimeMillis();
-    private int color = ReSonoTheme.ORB_BLUE;
+    private int color = SamTheme.ORB_BLUE;
     private float energy;
     private float speed = 1f;
     private float phase;
@@ -112,8 +112,8 @@ public final class FluidOrb {
         lastFrame = now;
         float glow = radius * (1.55f + energy * 0.25f);
         glowPaint.setShader(new RadialGradient(cx, cy + radius * 0.25f, glow,
-                new int[]{ReSonoTheme.withAlpha(color, 110), ReSonoTheme.withAlpha(color, 34),
-                        ReSonoTheme.withAlpha(color, 0)},
+                new int[]{SamTheme.withAlpha(color, 110), SamTheme.withAlpha(color, 34),
+                        SamTheme.withAlpha(color, 0)},
                 new float[]{0.35f, 0.7f, 1f}, Shader.TileMode.CLAMP));
         canvas.drawCircle(cx, cy + radius * 0.25f, glow, glowPaint);
         if (shader != null) {

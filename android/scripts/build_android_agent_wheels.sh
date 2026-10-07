@@ -11,10 +11,10 @@ WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
 : "${ANDROID_NDK_ROOT:?Set ANDROID_NDK_ROOT to Android NDK 27.3 or compatible}"
-: "${RESONO_ANDROID_PYTHON_PREFIX:?Set to an Android CPython 3.13 arm64 prefix}"
+: "${SAM_ANDROID_PYTHON_PREFIX:?Set to an Android CPython 3.13 arm64 prefix}"
 
-HOST_PYTHON="${RESONO_BUILD_PYTHON:-python3.13}"
-RUST_TOOLCHAIN="${RESONO_RUST_TOOLCHAIN:-1.88.0}"
+HOST_PYTHON="${SAM_BUILD_PYTHON:-python3.13}"
+RUST_TOOLCHAIN="${SAM_RUST_TOOLCHAIN:-1.88.0}"
 TARGET="aarch64-linux-android"
 API="31"
 CLANG="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${API}-clang"
@@ -23,7 +23,7 @@ command -v curl >/dev/null
 command -v rustup >/dev/null
 "$HOST_PYTHON" -c 'import maturin, wheel' >/dev/null
 [[ -x "$CLANG" ]]
-[[ -f "$RESONO_ANDROID_PYTHON_PREFIX/lib/libpython3.13.so" ]]
+[[ -f "$SAM_ANDROID_PYTHON_PREFIX/lib/libpython3.13.so" ]]
 
 cat > "$WORK_DIR/pyo3-cross.conf" <<EOF
 implementation=CPython
@@ -31,7 +31,7 @@ version=3.13
 shared=true
 abi3=false
 lib_name=python3.13
-lib_dir=$RESONO_ANDROID_PYTHON_PREFIX/lib
+lib_dir=$SAM_ANDROID_PYTHON_PREFIX/lib
 executable=$HOST_PYTHON
 pointer_width=64
 build_flags=

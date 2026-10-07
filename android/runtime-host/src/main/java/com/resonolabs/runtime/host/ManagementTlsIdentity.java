@@ -33,7 +33,7 @@ final class ManagementTlsIdentity {
     private static final String KEY_ALIAS = "resono.management.tls.v2";
     private static final String CERTIFICATE_BEGIN = "-----BEGIN CERTIFICATE-----";
     private static final String CERTIFICATE_END = "-----END CERTIFICATE-----";
-    private static final String DEFAULT_HOSTNAME = "ReSono R1";
+    private static final String DEFAULT_HOSTNAME = "SAM R1";
 
     private final Context context;
 

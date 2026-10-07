@@ -2,14 +2,14 @@
 set -eu
 
 package_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
-installer_binary="$package_root/bin/jackrabbit-installer"
+installer_binary="$package_root/bin/sam-installer"
 release_root="$package_root/../../release"
-linux_rule="$package_root/drivers/51-jackrabbit-r1.rules"
-JACKRABBIT_FASTBOOT="$package_root/tools/fastboot"
-export JACKRABBIT_FASTBOOT
+linux_rule="$package_root/drivers/51-sam-r1.rules"
+SAM_FASTBOOT="$package_root/tools/fastboot"
+export SAM_FASTBOOT
 
 fail() {
-  printf 'JackRabbit installer: %s\n' "$1" >&2
+  printf 'SAM Project installer: %s\n' "$1" >&2
   exit 1
 }
 
@@ -27,7 +27,7 @@ incorrect_then_retry_or_cancel() {
 }
 
 install_linux_rule() {
-  target=/etc/udev/rules.d/51-jackrabbit-r1.rules
+  target=/etc/udev/rules.d/51-sam-r1.rules
   if [ -f "$target" ] && cmp -s "$linux_rule" "$target"; then
     printf 'Linux R1 USB access is already configured.\n'
     return
@@ -62,7 +62,7 @@ install_linux_rule() {
 }
 
 [ -x "$installer_binary" ] || fail "missing installer binary: $installer_binary"
-[ -x "$JACKRABBIT_FASTBOOT" ] || fail "missing packaged fastboot: $JACKRABBIT_FASTBOOT"
+[ -x "$SAM_FASTBOOT" ] || fail "missing packaged fastboot: $SAM_FASTBOOT"
 [ -d "$release_root/images" ] || fail "missing packaged release: $release_root"
 
 case "$(uname -s)" in
@@ -71,7 +71,7 @@ case "$(uname -s)" in
     install_linux_rule
     ;;
   Darwin)
-    printf 'macOS requires no JackRabbit USB driver installation.\n'
+    printf 'macOS requires no SAM Project USB driver installation.\n'
     ;;
   *)
     fail 'this package supports Linux and macOS only'

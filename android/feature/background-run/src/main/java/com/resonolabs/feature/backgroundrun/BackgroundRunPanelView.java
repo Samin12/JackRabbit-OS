@@ -15,7 +15,7 @@ import android.view.View;
 import com.resonolabs.runtime.host.BackgroundRunSnapshot;
 import com.resonolabs.runtime.host.RuntimeBackgroundRunClient;
 import com.resonolabs.ui.design.FluidOrb;
-import com.resonolabs.ui.design.ReSonoTheme;
+import com.resonolabs.ui.design.SamTheme;
 import com.resonolabs.ui.input.UiInputIntent;
 import com.resonolabs.ui.input.UiInputTarget;
 
@@ -66,82 +66,82 @@ public final class BackgroundRunPanelView extends View implements UiInputTarget 
         BackgroundRunSnapshot run = runs.isEmpty() ? null : runs.get(0);
         boolean active = run != null && run.active();
         boolean failed = run != null && ("failed".equals(run.state()) || "cancelled".equals(run.state()));
-        int accent = failed ? ReSonoTheme.RED : ReSonoTheme.ORB_BLUE;
+        int accent = failed ? SamTheme.RED : SamTheme.ORB_BLUE;
         orb.setColor(accent)
                 .setEnergy(active ? 0.65f : 0.1f)
                 .setSpeed(active ? 1.4f : 0.4f);
         float orbY = (run == null ? 270f : 160f) + (active ? orb.bob(4f) : 0f);
         float orbR = run == null ? 62f : active ? 56f : 44f;
-        ReSonoTheme.background(canvas, paint, W, H, 240f, orbY, 240f, accent);
+        SamTheme.background(canvas, paint, W, H, 240f, orbY, 240f, accent);
 
         drawBack(canvas);
-        ReSonoTheme.text(canvas, paint, "Runner", 66f, 54f, 30f, ReSonoTheme.INK, Paint.Align.LEFT, true);
+        SamTheme.text(canvas, paint, "Runner", 66f, 54f, 30f, SamTheme.INK, Paint.Align.LEFT, true);
         if (run == null) {
             orb.draw(canvas, 240f, orbY, orbR);
-            ReSonoTheme.text(canvas, paint, "Nothing running", 240f, 396f, 26f,
-                    ReSonoTheme.INK, Paint.Align.CENTER, true);
-            ReSonoTheme.text(canvas, paint, "Background runs will show up here", 240f, 428f, 17f,
-                    ReSonoTheme.MUTED, Paint.Align.CENTER, false);
+            SamTheme.text(canvas, paint, "Nothing running", 240f, 396f, 26f,
+                    SamTheme.INK, Paint.Align.CENTER, true);
+            SamTheme.text(canvas, paint, "Background runs will show up here", 240f, 428f, 17f,
+                    SamTheme.MUTED, Paint.Align.CENTER, false);
             canvas.restore(); return;
         }
-        statePill(canvas, friendlyState(run.state()), active ? ReSonoTheme.ORB_PALE
-                : failed ? ReSonoTheme.RED : ReSonoTheme.ORB_PALE);
+        statePill(canvas, friendlyState(run.state()), active ? SamTheme.ORB_PALE
+                : failed ? SamTheme.RED : SamTheme.ORB_PALE);
         orb.draw(canvas, 240f, orbY, orbR);
 
-        drawWrapped(canvas, run.objective(), 240f, 270f, 420f, 22f, 28f, ReSonoTheme.INK,
+        drawWrapped(canvas, run.objective(), 240f, 270f, 420f, 22f, 28f, SamTheme.INK,
                 2, Paint.Align.CENTER, true);
 
         float fraction = Math.max(0f, Math.min(1f, run.fraction()));
         paint.setStyle(Paint.Style.FILL);
-        paint.setColor(ReSonoTheme.withAlpha(ReSonoTheme.INK, 26));
+        paint.setColor(SamTheme.withAlpha(SamTheme.INK, 26));
         canvas.drawRoundRect(36f, 324f, 444f, 330f, 3f, 3f, paint);
         if (fraction > 0f) {
-            paint.setShader(new LinearGradient(36f, 0f, 444f, 0f, ReSonoTheme.ORB_PALE, accent,
+            paint.setShader(new LinearGradient(36f, 0f, 444f, 0f, SamTheme.ORB_PALE, accent,
                     Shader.TileMode.CLAMP));
             canvas.drawRoundRect(36f, 324f, 36f + 408f * fraction, 330f, 3f, 3f, paint);
             paint.setShader(null);
         }
-        ReSonoTheme.text(canvas, paint, run.label(), 36f, 358f, 17f,
-                failed ? ReSonoTheme.RED : ReSonoTheme.ORB_PALE, Paint.Align.LEFT, true);
-        ReSonoTheme.text(canvas, paint, run.modelTurns() + " turns · " + run.toolCalls() + " tools",
-                444f, 358f, 15f, ReSonoTheme.MUTED, Paint.Align.RIGHT, false);
-        drawWrapped(canvas, run.activity(), 36f, 386f, 408f, 16f, 22f, ReSonoTheme.MUTED,
+        SamTheme.text(canvas, paint, run.label(), 36f, 358f, 17f,
+                failed ? SamTheme.RED : SamTheme.ORB_PALE, Paint.Align.LEFT, true);
+        SamTheme.text(canvas, paint, run.modelTurns() + " turns · " + run.toolCalls() + " tools",
+                444f, 358f, 15f, SamTheme.MUTED, Paint.Align.RIGHT, false);
+        drawWrapped(canvas, run.activity(), 36f, 386f, 408f, 16f, 22f, SamTheme.MUTED,
                 1, Paint.Align.LEFT, false);
 
         boolean hasOutcome = !run.outcome().isBlank();
         float panelBottom = hasOutcome ? 548f : 622f;
         if (!run.timeline().isEmpty()) {
             RectF panel = new RectF(18f, 406f, 462f, panelBottom);
-            ReSonoTheme.glass(canvas, paint, panel, 20f, false);
+            SamTheme.glass(canvas, paint, panel, 20f, false);
             int fit = Math.max(1, (int) ((panelBottom - 420f) / 30f));
             List<BackgroundRunSnapshot.TimelineEntry> entries = run.timeline();
             int from = Math.max(0, entries.size() - fit);
             float y = 438f;
             for (int i = from; i < entries.size(); i++) {
                 boolean latest = i == entries.size() - 1;
-                paint.setColor(latest ? ReSonoTheme.ORB_PALE : ReSonoTheme.withAlpha(ReSonoTheme.MUTED, 150));
+                paint.setColor(latest ? SamTheme.ORB_PALE : SamTheme.withAlpha(SamTheme.MUTED, 150));
                 canvas.drawCircle(40f, y - 5f, latest ? 4f : 3f, paint);
                 if (i < entries.size() - 1) {
-                    paint.setColor(ReSonoTheme.LINE);
+                    paint.setColor(SamTheme.LINE);
                     canvas.drawRect(39.5f, y + 1f, 40.5f, y + 19f, paint);
                 }
                 drawWrapped(canvas, entries.get(i).label(), 58f, y, 390f, 15f, 20f,
-                        latest ? ReSonoTheme.INK : ReSonoTheme.MUTED, 1, Paint.Align.LEFT, false);
+                        latest ? SamTheme.INK : SamTheme.MUTED, 1, Paint.Align.LEFT, false);
                 y += 30f;
             }
         }
         if (hasOutcome) drawWrapped(canvas, run.outcome(), 240f, 580f, 420f, 17f, 23f,
-                failed ? ReSonoTheme.RED : ReSonoTheme.INK, 2, Paint.Align.CENTER, false);
+                failed ? SamTheme.RED : SamTheme.INK, 2, Paint.Align.CENTER, false);
         canvas.restore();
         if (active && isShown()) postInvalidateDelayed(33L);
     }
 
     private void drawBack(Canvas canvas) {
-        ReSonoTheme.glass(canvas, paint, new RectF(10f, 22f, 54f, 66f), 22f, false);
+        SamTheme.glass(canvas, paint, new RectF(10f, 22f, 54f, 66f), 22f, false);
         paint.setStyle(Paint.Style.STROKE);
         paint.setStrokeWidth(2.6f);
         paint.setStrokeCap(Paint.Cap.ROUND);
-        paint.setColor(ReSonoTheme.INK);
+        paint.setColor(SamTheme.INK);
         canvas.drawLine(36f, 34f, 27f, 44f, paint);
         canvas.drawLine(27f, 44f, 36f, 54f, paint);
         paint.setStrokeCap(Paint.Cap.BUTT);
@@ -152,9 +152,9 @@ public final class BackgroundRunPanelView extends View implements UiInputTarget 
         paint.setTextSize(15f);
         float width = paint.measureText(label) + 34f;
         RectF pill = new RectF(456f - width, 27f, 456f, 61f);
-        ReSonoTheme.glass(canvas, paint, pill, 17f, false);
+        SamTheme.glass(canvas, paint, pill, 17f, false);
         paint.setColor(color); canvas.drawCircle(pill.left + 15f, 44f, 4f, paint);
-        ReSonoTheme.text(canvas, paint, label, pill.left + 25f, 49f, 15f, ReSonoTheme.INK,
+        SamTheme.text(canvas, paint, label, pill.left + 25f, 49f, 15f, SamTheme.INK,
                 Paint.Align.LEFT, true);
     }
 
@@ -184,7 +184,7 @@ public final class BackgroundRunPanelView extends View implements UiInputTarget 
             cut = Math.max(1, cut);
             String value = remaining.substring(0, cut).trim();
             if (line == maxLines - 1 && cut < remaining.length()) value += "…";
-            ReSonoTheme.text(canvas, paint, value, x, y + line * lineHeight, size,
+            SamTheme.text(canvas, paint, value, x, y + line * lineHeight, size,
                     color, align, bold);
             remaining = remaining.substring(cut).trim();
         }

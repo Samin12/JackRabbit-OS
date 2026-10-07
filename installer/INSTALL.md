@@ -1,7 +1,7 @@
-# Install JackRabbit on a stock Rabbit R1
+# Install SAM Project on a stock Rabbit R1
 
 This guide starts with a stock Rabbit R1 and ends with the current complete
-JackRabbit image. The guided installer handles FASTBOOT entry, the locked or
+SAM Project image. The guided installer handles FASTBOOT entry, the locked or
 unlocked bootloader branch, every required image write, userdata erasure, slot
 selection, and reboot.
 
@@ -11,7 +11,7 @@ unplug it while an image transfer is active.
 
 ## Download and extract the complete bundle
 
-1. Open the [public JackRabbit Google Drive folder](https://drive.google.com/drive/folders/1iteItXoQ3cVqyN4DhChQ3EOBlv68f8wM?usp=drive_link).
+1. Open the [public image Google Drive folder](https://drive.google.com/drive/folders/1iteItXoQ3cVqyN4DhChQ3EOBlv68f8wM?usp=drive_link).
 2. Download the file named exactly `jackrabbit-current-v0.2.zip`. Do not
    download individual `.img` files or an individual OS folder.
 3. Confirm the downloaded ZIP is exactly `2,179,959,244` bytes. Its SHA-256 is
@@ -73,7 +73,7 @@ BUNDLE_DIRECTORY/
 │       │   ├── vbmeta.img
 │       │   ├── vbmeta_system.img
 │       │   └── vbmeta_vendor.img
-│       ├── jackrabbit/
+│       ├── sam/
 │       │   ├── system.img
 │       │   └── product.img
 │       └── cipheros/
@@ -106,7 +106,7 @@ the installer stops before device access or writing.
 5. Follow the installer screen. It will tell you when the R1 must be powered
    off, disconnected, or connected.
 
-Do not use Rabbit's **Flash Stock ROM** action. The JackRabbit package performs
+Do not use Rabbit's **Flash Stock ROM** action. The SAM Project package performs
 its own complete fixed installation route.
 
 ## Run the installer
@@ -139,7 +139,7 @@ flashers that may already own the R1 USB interface.
 Double-click `install.cmd`. Accept the driver-setup prompt unless the packaged
 Rabbit MediaTek and Google fastboot drivers are already installed and working.
 Windows may show an administrator-consent dialog for driver installation; the
-JackRabbit flash program itself does not run as Administrator.
+SAM Project flash program itself does not run as Administrator.
 
 ## What the guided flow does
 
@@ -155,7 +155,7 @@ The installer:
    rejoins the main installation flow.
 5. Writes both boot slots and the required verified-boot metadata.
 6. Enters fastbootd, resets stock `super`, creates the CipherOS
-   `system_ext_a` partition, and writes the JackRabbit/CipherOS logical images.
+   `system_ext_a` partition, and writes the SAM Project/CipherOS logical images.
 7. Returns to bootloader FASTBOOT, activates the final verified-boot metadata,
    erases userdata, selects slot A, and reboots.
 
@@ -177,7 +177,7 @@ successful transfer and a successful Android first boot are separate events.
 After first boot, connect the R1 to Wi-Fi and pair its management console. The
 first management setup action is **Overview → Your Profile → Your name → Save
 name**. Confirm **Name saved.** before connecting ChatGPT/Platform access or
-starting Voice; JackRabbit uses this profile for its personalized Voice
+starting Voice; SAM Project uses this profile for its personalized Voice
 greeting.
 
 If the installer returns an error code instead, use
@@ -192,6 +192,6 @@ only the matching native CLI, Platform Tools, launchers, host drivers, and user
 documents under `hosts/PLATFORM/`.
 
 The four native executables are built by the installer CI matrix. After
-downloading its four `jackrabbit-native-PLATFORM` artifact directories, use
+downloading its four `sam-native-PLATFORM` artifact directories, use
 `scripts/assemble-host-packages.sh` to require the complete set and assemble all
 four OS packages from one verified release directory.

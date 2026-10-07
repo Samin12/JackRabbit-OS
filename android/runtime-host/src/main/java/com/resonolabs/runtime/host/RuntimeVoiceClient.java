@@ -60,7 +60,7 @@ public final class RuntimeVoiceClient implements AutoCloseable {
             connection.setConnectTimeout(1500);
             connection.setReadTimeout(3000);
             connection.setRequestProperty("Authorization", "Bearer " + token);
-            connection.setRequestProperty("X-ReSono-Voice-Session", voiceSessionId);
+            connection.setRequestProperty("X-SAM-Voice-Session", voiceSessionId);
             int status = connection.getResponseCode();
             InputStream source = status >= 400 ? connection.getErrorStream() : connection.getInputStream();
             JSONObject payload = new JSONObject(new String(
@@ -87,7 +87,7 @@ public final class RuntimeVoiceClient implements AutoCloseable {
             connection.setDoOutput(true);
             connection.setRequestProperty("Authorization", "Bearer " + token);
             connection.setRequestProperty("Content-Type", "application/json");
-            connection.setRequestProperty("X-ReSono-Voice-Session", voiceSessionId);
+            connection.setRequestProperty("X-SAM-Voice-Session", voiceSessionId);
             connection.getOutputStream().write(
                     new JSONObject().put("runId", runId).toString().getBytes(StandardCharsets.UTF_8));
             connection.getResponseCode();
@@ -99,7 +99,7 @@ public final class RuntimeVoiceClient implements AutoCloseable {
     }
 
     private final ExecutorService worker = Executors.newSingleThreadExecutor(runnable -> {
-        Thread thread = new Thread(runnable, "resono-runtime-voice-client");
+        Thread thread = new Thread(runnable, "sam-runtime-voice-client");
         thread.setDaemon(true);
         return thread;
     });
@@ -127,7 +127,7 @@ public final class RuntimeVoiceClient implements AutoCloseable {
                             .put("protocolVersion", MCP_VERSION)
                             .put("capabilities", new JSONObject())
                             .put("clientInfo", new JSONObject()
-                                    .put("name", "resono-r1-voice")
+                                    .put("name", "sam-r1-voice")
                                     .put("version", "0.1.0")));
             McpResponse init = postMcp(token, initialized, null, false);
             if (init.sessionId == null || init.sessionId.isBlank()) {
@@ -150,8 +150,8 @@ public final class RuntimeVoiceClient implements AutoCloseable {
                 deliverToolFailure(callback, "mcp-call-failed");
                 return;
             }
-            JSONObject sessionUpdate = result.optJSONObject("resonoSessionUpdate");
-            result.remove("resonoSessionUpdate");
+            JSONObject sessionUpdate = result.optJSONObject("samSessionUpdate");
+            result.remove("samSessionUpdate");
             JSONObject finalSessionUpdate = sessionUpdate;
             if (!closed.get()) main.post(() -> callback.onResult(result.toString(), finalSessionUpdate));
         } catch (Exception ignored) {
@@ -196,18 +196,18 @@ public final class RuntimeVoiceClient implements AutoCloseable {
                 connection.setRequestProperty("MCP-Protocol-Version", MCP_VERSION);
             }
             if (voiceSessionId != null && !voiceSessionId.isBlank()) {
-                connection.setRequestProperty("X-ReSono-Voice-Session", voiceSessionId);
+                connection.setRequestProperty("X-SAM-Voice-Session", voiceSessionId);
             }
             if (toolCallId != null && !toolCallId.isBlank()) {
-                connection.setRequestProperty("X-ReSono-Tool-Call", toolCallId);
+                connection.setRequestProperty("X-SAM-Tool-Call", toolCallId);
             }
             if (userUtterance != null && !userUtterance.isBlank()) {
                 connection.setRequestProperty(
-                        "X-ReSono-Voice-Utterance-B64",
+                        "X-SAM-Voice-Utterance-B64",
                         Base64.encodeToString(userUtterance.getBytes(StandardCharsets.UTF_8), Base64.NO_WRAP));
             }
             if (userUtteranceId > 0) {
-                connection.setRequestProperty("X-ReSono-Voice-Utterance-Id", Long.toString(userUtteranceId));
+                connection.setRequestProperty("X-SAM-Voice-Utterance-Id", Long.toString(userUtteranceId));
             }
             connection.getOutputStream().write(message.toString().getBytes(StandardCharsets.UTF_8));
             int status = connection.getResponseCode();

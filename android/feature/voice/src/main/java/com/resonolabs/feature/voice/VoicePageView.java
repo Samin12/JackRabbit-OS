@@ -13,7 +13,7 @@ import org.json.JSONArray;
 
 import com.resonolabs.runtime.host.RuntimeVoiceClient;
 import com.resonolabs.ui.design.FluidOrb;
-import com.resonolabs.ui.design.ReSonoTheme;
+import com.resonolabs.ui.design.SamTheme;
 import com.resonolabs.ui.input.UiInputIntent;
 
 import org.json.JSONObject;
@@ -95,7 +95,7 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
                     }
                 },
                 () -> fail("event-invalid"));
-        setContentDescription("ReSono Voice. Tap the center or press the side button to talk.");
+        setContentDescription("SAM Voice. Tap the center or press the side button to talk.");
         setFocusable(true);
         setFocusableInTouchMode(true);
     }
@@ -472,7 +472,7 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
             case ERROR -> 86f;
         };
         orbRadius += (targetRadius - orbRadius) * 0.14f;
-        orb.setColor(error ? ReSonoTheme.RED : ReSonoTheme.ORB_BLUE)
+        orb.setColor(error ? SamTheme.RED : SamTheme.ORB_BLUE)
                 .setEnergy(switch (state) {
                     case IDLE -> 0.15f;
                     case CONNECTING -> 0.4f;
@@ -490,7 +490,7 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
         float orbCenter = transcriptOpen ? 148f : 290f;
         orbY = orbY == 0f ? orbCenter : orbY + (orbCenter - orbY) * 0.14f;
         float y = orbY + orb.bob(transcriptOpen ? 2f : 5f);
-        ReSonoTheme.background(canvas, paint, WIDTH, HEIGHT, 240f, y, transcriptOpen ? 120f : 250f,
+        SamTheme.background(canvas, paint, WIDTH, HEIGHT, 240f, y, transcriptOpen ? 120f : 250f,
                 orb.color());
         orb.draw(canvas, 240f, y, orbRadius);
 
@@ -503,10 +503,10 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
         };
         if (transcriptOpen) {
             drawTranscript(canvas);
-            ReSonoTheme.text(canvas, paint, status, 240f, 534f, 14f, ReSonoTheme.MUTED,
+            SamTheme.text(canvas, paint, status, 240f, 534f, 14f, SamTheme.MUTED,
                     Paint.Align.CENTER, false);
         } else {
-            ReSonoTheme.text(canvas, paint, status, 240f, 440f, 28f, ReSonoTheme.INK,
+            SamTheme.text(canvas, paint, status, 240f, 440f, 28f, SamTheme.INK,
                     Paint.Align.CENTER, true);
             String detail = switch (state) {
                 case IDLE -> "Tap the orb or press the side button";
@@ -515,10 +515,10 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
                 default -> transcript;
             };
             drawWrapped(canvas, detail, 240f, 474f, 410f, 17f,
-                    error ? ReSonoTheme.RED : ReSonoTheme.MUTED, 2);
+                    error ? SamTheme.RED : SamTheme.MUTED, 2);
         }
         if (isAvailable()) {
-            ReSonoTheme.glass(canvas, paint, new RectF(400f, 108f, 452f, 160f), 26f, false);
+            SamTheme.glass(canvas, paint, new RectF(400f, 108f, 452f, 160f), 26f, false);
             drawCameraGlyph(canvas, 426f, 134f);
         }
         drawControls(canvas, state);
@@ -531,12 +531,12 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
         drawRoundButton(canvas, 0, transcriptOpen ? Look.SELECTED : Look.GLASS, Glyph.TRANSCRIPT, true);
         if (!live) {
             RectF start = new RectF(112f, BAR_Y - 30f, 456f, BAR_Y + 30f);
-            ReSonoTheme.glass(canvas, paint, start, 30f, false);
-            paint.setColor(ReSonoTheme.ORB_PALE);
-            drawMicGlyph(canvas, 160f, BAR_Y, false, ReSonoTheme.ORB_PALE);
-            ReSonoTheme.text(canvas, paint, state == VoiceSessionStateTracker.State.ERROR
+            SamTheme.glass(canvas, paint, start, 30f, false);
+            paint.setColor(SamTheme.ORB_PALE);
+            drawMicGlyph(canvas, 160f, BAR_Y, false, SamTheme.ORB_PALE);
+            SamTheme.text(canvas, paint, state == VoiceSessionStateTracker.State.ERROR
                             ? "Try again" : "Start talking", 300f, BAR_Y + 6f, 18f,
-                    ReSonoTheme.INK, Paint.Align.CENTER, true);
+                    SamTheme.INK, Paint.Align.CENTER, true);
             return;
         }
         drawRoundButton(canvas, 1, micMuted ? Look.DANGER : Look.GLASS, Glyph.MIC, true);
@@ -552,14 +552,14 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
     private void drawRoundButton(Canvas canvas, int slot, Look look, Glyph glyph, boolean enabled) {
         float cx = BAR_X[slot];
         RectF circle = new RectF(cx - 30f, BAR_Y - 30f, cx + 30f, BAR_Y + 30f);
-        int ink = ReSonoTheme.INK;
+        int ink = SamTheme.INK;
         switch (look) {
-            case GLASS -> ReSonoTheme.glass(canvas, paint, circle, 30f, false);
-            case SELECTED -> ReSonoTheme.glass(canvas, paint, circle, 30f, true);
+            case GLASS -> SamTheme.glass(canvas, paint, circle, 30f, false);
+            case SELECTED -> SamTheme.glass(canvas, paint, circle, 30f, true);
             case DANGER -> { paint.setColor(android.graphics.Color.rgb(196, 54, 48)); canvas.drawOval(circle, paint); }
-            case WHITE -> { paint.setColor(ReSonoTheme.INK); canvas.drawOval(circle, paint); ink = ReSonoTheme.BACKGROUND; }
+            case WHITE -> { paint.setColor(SamTheme.INK); canvas.drawOval(circle, paint); ink = SamTheme.BACKGROUND; }
         }
-        if (!enabled) ink = ReSonoTheme.withAlpha(ink, 80);
+        if (!enabled) ink = SamTheme.withAlpha(ink, 80);
         paint.setStyle(Paint.Style.STROKE);
         paint.setStrokeWidth(2.6f);
         paint.setStrokeCap(Paint.Cap.ROUND);
@@ -633,8 +633,8 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
         canvas.save();
         canvas.clipRect(0f, top, WIDTH, bottom);
         if (messages.isEmpty()) {
-            ReSonoTheme.text(canvas, paint, "Your conversation will show up here", 240f, 340f, 16f,
-                    ReSonoTheme.MUTED, Paint.Align.CENTER, false);
+            SamTheme.text(canvas, paint, "Your conversation will show up here", 240f, 340f, 16f,
+                    SamTheme.MUTED, Paint.Align.CENTER, false);
         }
         for (Object[] item : layout) {
             boolean user = (Boolean) item[0];
@@ -647,15 +647,15 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
                 paint.setTextSize(16f);
                 for (String line : lines) widest = Math.max(widest, paint.measureText(line));
                 RectF bubble = new RectF(452f - widest - 28f, itemTop, 452f, itemTop + height);
-                ReSonoTheme.glass(canvas, paint, bubble, 18f, true);
+                SamTheme.glass(canvas, paint, bubble, 18f, true);
                 for (int line = 0; line < lines.size(); line++) {
-                    ReSonoTheme.text(canvas, paint, lines.get(line), 438f, itemTop + 26f + line * 22f, 16f,
-                            ReSonoTheme.INK, Paint.Align.RIGHT, false);
+                    SamTheme.text(canvas, paint, lines.get(line), 438f, itemTop + 26f + line * 22f, 16f,
+                            SamTheme.INK, Paint.Align.RIGHT, false);
                 }
             } else {
                 for (int line = 0; line < lines.size(); line++) {
-                    ReSonoTheme.text(canvas, paint, lines.get(line), 30f, itemTop + 16f + line * 22f, 16f,
-                            ReSonoTheme.INK, Paint.Align.LEFT, false);
+                    SamTheme.text(canvas, paint, lines.get(line), 30f, itemTop + 16f + line * 22f, 16f,
+                            SamTheme.INK, Paint.Align.LEFT, false);
                 }
             }
         }
@@ -681,7 +681,7 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
     private void drawCameraGlyph(Canvas canvas, float cx, float cy) {
         paint.setStyle(Paint.Style.STROKE);
         paint.setStrokeWidth(2.2f);
-        paint.setColor(ReSonoTheme.ORB_PALE);
+        paint.setColor(SamTheme.ORB_PALE);
         canvas.drawRoundRect(cx - 13f, cy - 9f, cx + 13f, cy + 10f, 4f, 4f, paint);
         canvas.drawCircle(cx, cy + 0.5f, 5f, paint);
         paint.setStyle(Paint.Style.FILL);
@@ -699,7 +699,7 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
             }
             String text = remaining.substring(0, Math.max(1, count)).trim();
             if (line == maxLines - 1 && count < remaining.length()) text = text + "…";
-            ReSonoTheme.text(canvas, paint, text, centerX, y + line * 26f, size, color,
+            SamTheme.text(canvas, paint, text, centerX, y + line * 26f, size, color,
                     Paint.Align.CENTER, false);
             remaining = remaining.substring(Math.min(remaining.length(), Math.max(1, count))).trim();
         }

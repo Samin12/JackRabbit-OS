@@ -29,7 +29,7 @@ import java.util.Collections;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public final class NativeVoicePeer {
-    private static final String LOG_TAG = "ReSonoVoice";
+    private static final String LOG_TAG = "SamVoice";
     public interface Listener {
         void onOffer(String sdp);
         void onLive();
@@ -105,9 +105,9 @@ public final class NativeVoicePeer {
             if (peer == null) throw new IllegalStateException("peer creation failed");
 
             audioSource = factory.createAudioSource(new MediaConstraints());
-            audioTrack = factory.createAudioTrack("resono-microphone", audioSource);
+            audioTrack = factory.createAudioTrack("sam-microphone", audioSource);
             audioTrack.setEnabled(!microphoneMuted);
-            peer.addTrack(audioTrack, Collections.singletonList("resono-audio"));
+            peer.addTrack(audioTrack, Collections.singletonList("sam-audio"));
 
             DataChannel.Init init = new DataChannel.Init();
             init.ordered = true;

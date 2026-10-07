@@ -37,7 +37,7 @@ public final class MainActivity extends Activity {
         backgroundRuns = new RuntimeBackgroundRunClient();
         creationImports = new RuntimeCreationImportClient();
         runtimeHealth.checkUntilReady(this, health ->
-                android.util.Log.i("ReSonoRuntime", "HOME boundary status=" + health.status()));
+                android.util.Log.i("SamRuntime", "HOME boundary status=" + health.status()));
         setShowWhenLocked(true);
         setTurnScreenOn(true);
         root = new ProductRootView(
@@ -84,11 +84,11 @@ public final class MainActivity extends Activity {
     private void confirmRestart() {
         new AlertDialog.Builder(this)
                 .setTitle("Restart R1?")
-                .setMessage("ReSono will restart and return to HOME.")
+                .setMessage("SAM will restart and return to HOME.")
                 .setNegativeButton("Cancel", null)
                 .setPositiveButton("Restart", (ignored, which) -> {
                     PowerManager power = getSystemService(PowerManager.class);
-                    if (power != null) power.reboot("resono-settings");
+                    if (power != null) power.reboot("sam-settings");
                 })
                 .show();
     }
@@ -147,7 +147,7 @@ public final class MainActivity extends Activity {
             int disableExpand = 0x00010000;
             statusBar.getClass().getMethod("disable", int.class).invoke(statusBar, disableExpand);
         } catch (ReflectiveOperationException | RuntimeException error) {
-            android.util.Log.w("ReSonoChrome", "system shade stays enabled: " + (error.getCause() != null ? error.getCause() : error));
+            android.util.Log.w("SamChrome", "system shade stays enabled: " + (error.getCause() != null ? error.getCause() : error));
         }
     }
 

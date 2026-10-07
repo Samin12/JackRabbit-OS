@@ -77,7 +77,7 @@ final class ProductRootView extends FrameLayout {
         addView(controlCenter, match());
         setFocusable(true);
         setFocusableInTouchMode(true);
-        setContentDescription("ReSono R1 HOME");
+        setContentDescription("SAM R1 HOME");
         runner.start();
     }
 

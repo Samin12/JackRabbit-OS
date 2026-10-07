@@ -33,7 +33,7 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 
 import com.resonolabs.ui.design.FluidOrb;
-import com.resonolabs.ui.design.ReSonoTheme;
+import com.resonolabs.ui.design.SamTheme;
 import com.resonolabs.ui.input.UiInputIntent;
 import com.resonolabs.ui.input.UiInputTarget;
 import com.resonolabs.runtime.host.ManagementOpenAiSource;
@@ -120,10 +120,10 @@ public final class SettingsPanelView extends View implements UiInputTarget {
         canvas.save();
         canvas.scale(getWidth() / DESIGN_WIDTH, getHeight() / DESIGN_HEIGHT);
         boolean about = "About".equals(openPage);
-        if (about) ReSonoTheme.background(canvas, paint, DESIGN_WIDTH, DESIGN_HEIGHT,
-                240f, 168f, 230f, ReSonoTheme.ORB_BLUE);
-        else ReSonoTheme.background(canvas, paint, DESIGN_WIDTH, DESIGN_HEIGHT,
-                90f, 20f, 300f, ReSonoTheme.ORB_BLUE);
+        if (about) SamTheme.background(canvas, paint, DESIGN_WIDTH, DESIGN_HEIGHT,
+                240f, 168f, 230f, SamTheme.ORB_BLUE);
+        else SamTheme.background(canvas, paint, DESIGN_WIDTH, DESIGN_HEIGHT,
+                90f, 20f, 300f, SamTheme.ORB_BLUE);
         if (openPage == null) drawIndex(canvas); else drawPage(canvas);
         canvas.restore();
         // Only the About hero orb animates; every other settings page is static.
@@ -131,35 +131,35 @@ public final class SettingsPanelView extends View implements UiInputTarget {
     }
 
     private void drawIndex(Canvas canvas) {
-        ReSonoTheme.text(canvas, paint, "Settings", 24f, 56f, 34f,
-                ReSonoTheme.INK, Paint.Align.LEFT, true);
+        SamTheme.text(canvas, paint, "Settings", 24f, 56f, 34f,
+                SamTheme.INK, Paint.Align.LEFT, true);
         drawClose(canvas);
         for (int i = 0; i < ROWS.size(); i++) {
             float top = ROW_TOP + i * ROW_STEP;
             boolean focused = i == selected;
             RectF row = new RectF(20f, top, 460f, top + 58f);
-            ReSonoTheme.glass(canvas, paint, row, 20f, focused);
+            SamTheme.glass(canvas, paint, row, 20f, focused);
             if (focused) {
                 // Fixed-size accent only, so the focus cue never changes overall
                 // row luminance enough to drive the panel's backlight compensation.
                 paint.setStyle(Paint.Style.FILL);
-                paint.setColor(ReSonoTheme.ORB_BLUE);
+                paint.setColor(SamTheme.ORB_BLUE);
                 canvas.drawRoundRect(20f, top + 16f, 24f, top + 42f, 2f, 2f, paint);
             }
             paint.setStyle(Paint.Style.FILL);
-            paint.setColor(ReSonoTheme.withAlpha(ReSonoTheme.ORB_BLUE, focused ? 70 : 42));
+            paint.setColor(SamTheme.withAlpha(SamTheme.ORB_BLUE, focused ? 70 : 42));
             canvas.drawCircle(56f, top + 29f, 18f, paint);
             drawRowIcon(canvas, ROWS.get(i), 56f, top + 29f);
-            ReSonoTheme.text(canvas, paint, ROWS.get(i), 88f, top + 37f, 22f,
-                    ReSonoTheme.INK, Paint.Align.LEFT, true);
-            chevron(canvas, 436f, top + 29f, focused ? ReSonoTheme.ORB_PALE : ReSonoTheme.MUTED);
+            SamTheme.text(canvas, paint, ROWS.get(i), 88f, top + 37f, 22f,
+                    SamTheme.INK, Paint.Align.LEFT, true);
+            chevron(canvas, 436f, top + 29f, focused ? SamTheme.ORB_PALE : SamTheme.MUTED);
         }
     }
 
     private void drawPage(Canvas canvas) {
         drawBack(canvas);
-        ReSonoTheme.text(canvas, paint, openPage, 66f, 54f, 30f,
-                ReSonoTheme.INK, Paint.Align.LEFT, true);
+        SamTheme.text(canvas, paint, openPage, 66f, 54f, 30f,
+                SamTheme.INK, Paint.Align.LEFT, true);
         drawClose(canvas);
 
         switch (openPage) {
@@ -191,28 +191,28 @@ public final class SettingsPanelView extends View implements UiInputTarget {
         int brightness = Settings.System.getInt(activity.getContentResolver(),
                 Settings.System.SCREEN_BRIGHTNESS, 0);
         drawLevelHero(canvas, "Brightness", values[0].value, brightness / 255f);
-        ReSonoTheme.text(canvas, paint, "Screen sleep · " + values[1].value, 240f, 424f, 16f,
-                ReSonoTheme.MUTED, Paint.Align.CENTER, false);
+        SamTheme.text(canvas, paint, "Screen sleep · " + values[1].value, 240f, 424f, 16f,
+                SamTheme.MUTED, Paint.Align.CENTER, false);
         stepButtons(canvas);
     }
 
     private void drawLevelHero(Canvas canvas, String label, String value, float level) {
         RectF panel = new RectF(20f, 108f, 460f, 380f);
-        ReSonoTheme.glass(canvas, paint, panel, 24f, false);
-        ReSonoTheme.text(canvas, paint, label, 240f, 160f, 18f,
-                ReSonoTheme.MUTED, Paint.Align.CENTER, false);
-        ReSonoTheme.text(canvas, paint, value, 240f, 262f, 80f,
-                ReSonoTheme.INK, Paint.Align.CENTER, true);
+        SamTheme.glass(canvas, paint, panel, 24f, false);
+        SamTheme.text(canvas, paint, label, 240f, 160f, 18f,
+                SamTheme.MUTED, Paint.Align.CENTER, false);
+        SamTheme.text(canvas, paint, value, 240f, 262f, 80f,
+                SamTheme.INK, Paint.Align.CENTER, true);
         float clamped = Math.max(0f, Math.min(1f, level));
         paint.setStyle(Paint.Style.FILL);
-        paint.setColor(ReSonoTheme.withAlpha(ReSonoTheme.INK, 26));
+        paint.setColor(SamTheme.withAlpha(SamTheme.INK, 26));
         canvas.drawRoundRect(64f, 316f, 416f, 326f, 5f, 5f, paint);
         if (clamped > 0f) {
-            paint.setShader(new LinearGradient(64f, 0f, 416f, 0f, ReSonoTheme.ORB_PALE,
-                    ReSonoTheme.ORB_BLUE, Shader.TileMode.CLAMP));
+            paint.setShader(new LinearGradient(64f, 0f, 416f, 0f, SamTheme.ORB_PALE,
+                    SamTheme.ORB_BLUE, Shader.TileMode.CLAMP));
             canvas.drawRoundRect(64f, 316f, 64f + 352f * clamped, 326f, 5f, 5f, paint);
             paint.setShader(null);
-            paint.setColor(ReSonoTheme.INK);
+            paint.setColor(SamTheme.INK);
             canvas.drawCircle(64f + 352f * clamped, 321f, 9f, paint);
         }
     }
@@ -225,55 +225,55 @@ public final class SettingsPanelView extends View implements UiInputTarget {
     private void drawBluetoothPage(Canvas canvas) {
         boolean on = isBluetoothEnabled();
         RectF panel = new RectF(20f, 108f, 460f, 420f);
-        ReSonoTheme.glass(canvas, paint, panel, 24f, false);
+        SamTheme.glass(canvas, paint, panel, 24f, false);
         if (on) {
             orbDot(canvas, 240f, 210f, 42f);
         } else {
             paint.setStyle(Paint.Style.STROKE);
             paint.setStrokeWidth(2f);
-            paint.setColor(ReSonoTheme.withAlpha(ReSonoTheme.MUTED, 140));
+            paint.setColor(SamTheme.withAlpha(SamTheme.MUTED, 140));
             canvas.drawCircle(240f, 210f, 42f, paint);
             paint.setStyle(Paint.Style.FILL);
         }
         drawBluetoothGlyph(canvas, 240f, 210f, on ? 2.0f : 1.6f,
-                on ? ReSonoTheme.withAlpha(ReSonoTheme.BACKGROUND, 200) : ReSonoTheme.MUTED);
-        ReSonoTheme.text(canvas, paint, on ? "On" : "Off", 240f, 330f, 40f,
-                ReSonoTheme.INK, Paint.Align.CENTER, true);
-        ReSonoTheme.text(canvas, paint, bluetoothStatus, 240f, 368f, 18f,
-                ReSonoTheme.MUTED, Paint.Align.CENTER, false);
+                on ? SamTheme.withAlpha(SamTheme.BACKGROUND, 200) : SamTheme.MUTED);
+        SamTheme.text(canvas, paint, on ? "On" : "Off", 240f, 330f, 40f,
+                SamTheme.INK, Paint.Align.CENTER, true);
+        SamTheme.text(canvas, paint, bluetoothStatus, 240f, 368f, 18f,
+                SamTheme.MUTED, Paint.Align.CENTER, false);
         if (on) button(canvas, "Turn off", 20f, 494f, 460f);
         else primaryButton(canvas, "Turn on", 20f, 494f, 460f);
     }
 
     private void drawAboutPage(Canvas canvas) {
         float orbY = 168f + aboutOrb.bob(4f);
-        aboutOrb.setColor(ReSonoTheme.ORB_BLUE).setEnergy(0.15f).setSpeed(0.6f);
+        aboutOrb.setColor(SamTheme.ORB_BLUE).setEnergy(0.15f).setSpeed(0.6f);
         aboutOrb.draw(canvas, 240f, orbY, 50f);
         drawInfoGroup(canvas, statusValues("About"), 258f);
         button(canvas, "Restart device", 20f, 494f, 460f);
-        ReSonoTheme.text(canvas, paint, "Orb design inspired by Rare UI · rareui.com", 240f, 606f,
-                14f, ReSonoTheme.MUTED, Paint.Align.CENTER, false);
+        SamTheme.text(canvas, paint, "Orb design inspired by Rare UI · rareui.com", 240f, 606f,
+                14f, SamTheme.MUTED, Paint.Align.CENTER, false);
     }
 
     /** Grouped glass panel of label/value rows separated by hairlines. */
     private void drawInfoGroup(Canvas canvas, SettingValue[] values, float top) {
         float rowHeight = 64f;
         RectF panel = new RectF(20f, top, 460f, top + values.length * rowHeight);
-        ReSonoTheme.glass(canvas, paint, panel, 22f, false);
+        SamTheme.glass(canvas, paint, panel, 22f, false);
         for (int i = 0; i < values.length; i++) {
             float y = top + i * rowHeight;
             if (i > 0) {
                 paint.setStyle(Paint.Style.FILL);
-                paint.setColor(ReSonoTheme.LINE);
+                paint.setColor(SamTheme.LINE);
                 canvas.drawRect(40f, y, 440f, y + 1f, paint);
             }
-            ReSonoTheme.text(canvas, paint, sentence(values[i].label), 42f, y + 40f, 18f,
-                    ReSonoTheme.MUTED, Paint.Align.LEFT, false);
+            SamTheme.text(canvas, paint, sentence(values[i].label), 42f, y + 40f, 18f,
+                    SamTheme.MUTED, Paint.Align.LEFT, false);
             paint.setTextSize(20f);
             paint.setTypeface(android.graphics.Typeface.create("sans-serif-medium",
                     android.graphics.Typeface.NORMAL));
-            ReSonoTheme.text(canvas, paint, ellipsize(values[i].value, 250f), 438f, y + 40f, 20f,
-                    ReSonoTheme.INK, Paint.Align.RIGHT, true);
+            SamTheme.text(canvas, paint, ellipsize(values[i].value, 250f), 438f, y + 40f, 20f,
+                    SamTheme.INK, Paint.Align.RIGHT, true);
         }
     }
 
@@ -281,33 +281,33 @@ public final class SettingsPanelView extends View implements UiInputTarget {
         SettingValue[] values = network();
         String summary = "Wi-Fi " + values[0].value.toLowerCase()
                 + " · " + ("Connected".equals(values[1].value) ? "Online" : "Offline");
-        ReSonoTheme.text(canvas, paint, summary, 67f, 80f, 15f,
-                ReSonoTheme.MUTED, Paint.Align.LEFT, false);
+        SamTheme.text(canvas, paint, summary, 67f, 80f, 15f,
+                SamTheme.MUTED, Paint.Align.LEFT, false);
         String wifiHint = wifiNetworks.isEmpty() ? wifiScanState : "Tap a network to connect";
-        ReSonoTheme.text(canvas, paint, wifiHint, 24f, 130f, 16f,
-                ReSonoTheme.ORB_PALE, Paint.Align.LEFT, true);
+        SamTheme.text(canvas, paint, wifiHint, 24f, 130f, 16f,
+                SamTheme.ORB_PALE, Paint.Align.LEFT, true);
         float top = 148f;
         int count = Math.min(6, wifiNetworks.size());
         for (int i = 0; i < count; i++) {
             WifiNetworkScanner.Network network = wifiNetworks.get(i);
-            ReSonoTheme.glass(canvas, paint, new RectF(20f, top, 460f, top + 52f), 18f,
+            SamTheme.glass(canvas, paint, new RectF(20f, top, 460f, top + 52f), 18f,
                     network.connected());
             if (network.connected()) {
-                paint.setColor(ReSonoTheme.ORB_BLUE);
+                paint.setColor(SamTheme.ORB_BLUE);
                 canvas.drawCircle(40f, top + 26f, 5f, paint);
             }
             paint.setTextSize(20f);
             paint.setTypeface(android.graphics.Typeface.create("sans-serif-medium",
                     android.graphics.Typeface.NORMAL));
-            ReSonoTheme.text(canvas, paint, ellipsize(network.ssid(), 260f), 56f, top + 33f, 20f,
-                    ReSonoTheme.INK, Paint.Align.LEFT, true);
+            SamTheme.text(canvas, paint, ellipsize(network.ssid(), 260f), 56f, top + 33f, 20f,
+                    SamTheme.INK, Paint.Align.LEFT, true);
             String detail = network.connected() ? "Connected" : (network.secured() ? "Secured" : "Open");
-            ReSonoTheme.text(canvas, paint, detail, 414f, top + 32f, 14f,
-                    network.connected() ? ReSonoTheme.ORB_PALE : ReSonoTheme.MUTED,
+            SamTheme.text(canvas, paint, detail, 414f, top + 32f, 14f,
+                    network.connected() ? SamTheme.ORB_PALE : SamTheme.MUTED,
                     Paint.Align.RIGHT, false);
             for (int bar = 0; bar < 4; bar++) {
                 paint.setColor(bar < network.signalLevel()
-                        ? ReSonoTheme.ORB_PALE : ReSonoTheme.withAlpha(ReSonoTheme.MUTED, 70));
+                        ? SamTheme.ORB_PALE : SamTheme.withAlpha(SamTheme.MUTED, 70));
                 canvas.drawRoundRect(424f + bar * 7f, top + 36f - bar * 5f,
                         428f + bar * 7f, top + 40f, 2f, 2f, paint);
             }
@@ -318,9 +318,9 @@ public final class SettingsPanelView extends View implements UiInputTarget {
 
     private void drawManagementPage(Canvas canvas) {
         RectF codePanel = new RectF(20f, 108f, 460f, 290f);
-        ReSonoTheme.glass(canvas, paint, codePanel, 24f, true);
-        ReSonoTheme.text(canvas, paint, "Pairing code", 240f, 152f, 18f,
-                ReSonoTheme.MUTED, Paint.Align.CENTER, false);
+        SamTheme.glass(canvas, paint, codePanel, 24f, true);
+        SamTheme.text(canvas, paint, "Pairing code", 240f, 152f, 18f,
+                SamTheme.MUTED, Paint.Align.CENTER, false);
         paint.setLetterSpacing(0.12f);
         String code = managementState.code();
         float codeSize = 72f;
@@ -329,21 +329,21 @@ public final class SettingsPanelView extends View implements UiInputTarget {
             codeSize -= 4f;
             paint.setTextSize(codeSize);
         }
-        ReSonoTheme.text(canvas, paint, code, 240f, 246f, codeSize,
-                ReSonoTheme.INK, Paint.Align.CENTER, true);
+        SamTheme.text(canvas, paint, code, 240f, 246f, codeSize,
+                SamTheme.INK, Paint.Align.CENTER, true);
         paint.setLetterSpacing(0f);
 
         RectF addressPanel = new RectF(20f, 306f, 460f, 446f);
-        ReSonoTheme.glass(canvas, paint, addressPanel, 22f, false);
-        ReSonoTheme.text(canvas, paint, "Open on your computer", 42f, 344f, 16f,
-                ReSonoTheme.MUTED, Paint.Align.LEFT, false);
+        SamTheme.glass(canvas, paint, addressPanel, 22f, false);
+        SamTheme.text(canvas, paint, "Open on your computer", 42f, 344f, 16f,
+                SamTheme.MUTED, Paint.Align.LEFT, false);
         paint.setTextSize(22f);
         paint.setTypeface(android.graphics.Typeface.create("sans-serif-medium",
                 android.graphics.Typeface.NORMAL));
-        ReSonoTheme.text(canvas, paint, ellipsize(managementState.address(), 396f), 42f, 386f, 22f,
-                ReSonoTheme.ORB_PALE, Paint.Align.LEFT, true);
-        ReSonoTheme.text(canvas, paint, "Secure link · same Wi-Fi network", 42f, 420f, 15f,
-                ReSonoTheme.MUTED, Paint.Align.LEFT, false);
+        SamTheme.text(canvas, paint, ellipsize(managementState.address(), 396f), 42f, 386f, 22f,
+                SamTheme.ORB_PALE, Paint.Align.LEFT, true);
+        SamTheme.text(canvas, paint, "Secure link · same Wi-Fi network", 42f, 420f, 15f,
+                SamTheme.MUTED, Paint.Align.LEFT, false);
         button(canvas, "Refresh", 20f, 494f, 460f);
     }
 
@@ -354,33 +354,33 @@ public final class SettingsPanelView extends View implements UiInputTarget {
         boolean connected = openAiState.connected() || openAiState.platformConnected()
                 || openAiState.subscriptionConnected();
         if (status.isBlank()) status = connected ? "Connected" : "Not connected";
-        int statusColor = openAiState.error() ? ReSonoTheme.AMBER
-                : aiDraftDirty ? ReSonoTheme.ORB_PALE : ReSonoTheme.MUTED;
+        int statusColor = openAiState.error() ? SamTheme.AMBER
+                : aiDraftDirty ? SamTheme.ORB_PALE : SamTheme.MUTED;
         paint.setTextSize(15f);
         paint.setTypeface(android.graphics.Typeface.create("sans-serif",
                 android.graphics.Typeface.NORMAL));
-        ReSonoTheme.text(canvas, paint, ellipsize(status, 320f), 67f, 82f, 15f,
+        SamTheme.text(canvas, paint, ellipsize(status, 320f), 67f, 82f, 15f,
                 statusColor, Paint.Align.LEFT, false);
 
         aiRow(canvas, AI_PROVIDER_TOP, AI_PROVIDER_BOTTOM, "Provider", providerLabel(draftProvider),
-                connected ? ReSonoTheme.INK : ReSonoTheme.MUTED);
+                connected ? SamTheme.INK : SamTheme.MUTED);
         aiRow(canvas, AI_ACCESS_TOP, AI_ACCESS_BOTTOM, "Access", accessLabel(draftAccessPath),
-                ReSonoTheme.INK);
+                SamTheme.INK);
         aiRow(canvas, AI_VOICE_MODEL_TOP, AI_VOICE_MODEL_BOTTOM, "Voice model",
                 draftRealtimeModel == null || draftRealtimeModel.isBlank() ? "—" : draftRealtimeModel,
-                ReSonoTheme.INK);
+                SamTheme.INK);
         aiRow(canvas, AI_TEXT_MODEL_TOP, AI_TEXT_MODEL_BOTTOM, "Text model",
                 draftTextModel == null || draftTextModel.isBlank() ? "—" : draftTextModel,
-                ReSonoTheme.INK);
+                SamTheme.INK);
 
         // Reasoning row is shorter: label and value share one line.
         RectF reasoning = new RectF(20f, AI_REASONING_TOP, 460f, AI_REASONING_BOTTOM);
-        ReSonoTheme.glass(canvas, paint, reasoning, 20f, false);
+        SamTheme.glass(canvas, paint, reasoning, 20f, false);
         float mid = (AI_REASONING_TOP + AI_REASONING_BOTTOM) / 2f;
-        ReSonoTheme.text(canvas, paint, "Reasoning", 42f, mid + 7f, 18f,
-                ReSonoTheme.MUTED, Paint.Align.LEFT, false);
-        ReSonoTheme.text(canvas, paint, sentence(draftReasoning), 384f, mid + 8f, 21f,
-                openAiState.error() ? ReSonoTheme.AMBER : ReSonoTheme.INK, Paint.Align.RIGHT, true);
+        SamTheme.text(canvas, paint, "Reasoning", 42f, mid + 7f, 18f,
+                SamTheme.MUTED, Paint.Align.LEFT, false);
+        SamTheme.text(canvas, paint, sentence(draftReasoning), 384f, mid + 8f, 21f,
+                openAiState.error() ? SamTheme.AMBER : SamTheme.INK, Paint.Align.RIGHT, true);
         stepper(canvas, mid);
 
         if (aiDraftDirty) primaryButton(canvas, "Save changes", 20f, AI_REFRESH_TOP, 460f, 64f);
@@ -388,14 +388,14 @@ public final class SettingsPanelView extends View implements UiInputTarget {
     }
 
     private void aiRow(Canvas canvas, float top, float bottom, String label, String value, int valueColor) {
-        ReSonoTheme.glass(canvas, paint, new RectF(20f, top, 460f, bottom), 20f, false);
+        SamTheme.glass(canvas, paint, new RectF(20f, top, 460f, bottom), 20f, false);
         float mid = (top + bottom) / 2f;
-        ReSonoTheme.text(canvas, paint, label, 42f, mid - 8f, 15f,
-                ReSonoTheme.MUTED, Paint.Align.LEFT, false);
+        SamTheme.text(canvas, paint, label, 42f, mid - 8f, 15f,
+                SamTheme.MUTED, Paint.Align.LEFT, false);
         paint.setTextSize(23f);
         paint.setTypeface(android.graphics.Typeface.create("sans-serif-medium",
                 android.graphics.Typeface.NORMAL));
-        ReSonoTheme.text(canvas, paint, ellipsize(value, 340f), 42f, mid + 22f, 23f,
+        SamTheme.text(canvas, paint, ellipsize(value, 340f), 42f, mid + 22f, 23f,
                 valueColor, Paint.Align.LEFT, true);
         stepper(canvas, mid);
     }
@@ -403,8 +403,8 @@ public final class SettingsPanelView extends View implements UiInputTarget {
     /** Small glass disc marking the tap-to-cycle zone (x 390..460) of an AI row. */
     private void stepper(Canvas canvas, float centerY) {
         RectF disc = new RectF(403f, centerY - 22f, 447f, centerY + 22f);
-        ReSonoTheme.glass(canvas, paint, disc, 22f, false);
-        chevron(canvas, 426f, centerY, ReSonoTheme.ORB_PALE);
+        SamTheme.glass(canvas, paint, disc, 22f, false);
+        chevron(canvas, 426f, centerY, SamTheme.ORB_PALE);
     }
 
     private String accessLabel(String accessPath) {
@@ -442,11 +442,11 @@ public final class SettingsPanelView extends View implements UiInputTarget {
     private void orbDot(Canvas canvas, float cx, float cy, float r) {
         paint.setStyle(Paint.Style.FILL);
         paint.setShader(new RadialGradient(cx, cy + r * 0.3f, r * 2.2f,
-                ReSonoTheme.withAlpha(ReSonoTheme.ORB_BLUE, 80),
-                ReSonoTheme.withAlpha(ReSonoTheme.ORB_BLUE, 0), Shader.TileMode.CLAMP));
+                SamTheme.withAlpha(SamTheme.ORB_BLUE, 80),
+                SamTheme.withAlpha(SamTheme.ORB_BLUE, 0), Shader.TileMode.CLAMP));
         canvas.drawCircle(cx, cy + r * 0.3f, r * 2.2f, paint);
         paint.setShader(new LinearGradient(cx, cy - r, cx, cy + r,
-                new int[]{0xffffffff, ReSonoTheme.ORB_PALE, ReSonoTheme.ORB_BLUE},
+                new int[]{0xffffffff, SamTheme.ORB_PALE, SamTheme.ORB_BLUE},
                 new float[]{0.15f, 0.5f, 0.9f}, Shader.TileMode.CLAMP));
         canvas.drawCircle(cx, cy, r, paint);
         paint.setShader(null);
@@ -473,7 +473,7 @@ public final class SettingsPanelView extends View implements UiInputTarget {
 
     /** Simple line icons for the index rows, drawn in the pale orb tint. */
     private void drawRowIcon(Canvas canvas, String row, float cx, float cy) {
-        int color = ReSonoTheme.ORB_PALE;
+        int color = SamTheme.ORB_PALE;
         if ("Bluetooth".equals(row)) { drawBluetoothGlyph(canvas, cx, cy, 0.85f, color); return; }
         paint.setStyle(Paint.Style.STROKE);
         paint.setStrokeWidth(2f);
@@ -800,8 +800,8 @@ public final class SettingsPanelView extends View implements UiInputTarget {
         EditText key = new EditText(activity);
         key.setSingleLine(true);
         key.setHint("Platform API key");
-        key.setTextColor(ReSonoTheme.INK);
-        key.setHintTextColor(ReSonoTheme.MUTED);
+        key.setTextColor(SamTheme.INK);
+        key.setHintTextColor(SamTheme.MUTED);
         key.setTextSize(20f);
         key.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
         key.setPadding(24, 18, 24, 18);
@@ -810,7 +810,7 @@ public final class SettingsPanelView extends View implements UiInputTarget {
         sheet.setPadding(28, 24, 28, 12);
         TextView title = new TextView(activity);
         title.setText("Connect OpenAI Platform");
-        title.setTextColor(ReSonoTheme.INK);
+        title.setTextColor(SamTheme.INK);
         title.setTextSize(24f);
         title.setGravity(Gravity.START);
         sheet.addView(title);
@@ -863,11 +863,11 @@ public final class SettingsPanelView extends View implements UiInputTarget {
     }
 
     private void drawBack(Canvas canvas) {
-        ReSonoTheme.glass(canvas, paint, new RectF(10f, 22f, 54f, 66f), 22f, false);
+        SamTheme.glass(canvas, paint, new RectF(10f, 22f, 54f, 66f), 22f, false);
         paint.setStyle(Paint.Style.STROKE);
         paint.setStrokeWidth(2.6f);
         paint.setStrokeCap(Paint.Cap.ROUND);
-        paint.setColor(ReSonoTheme.INK);
+        paint.setColor(SamTheme.INK);
         canvas.drawLine(36f, 34f, 27f, 44f, paint);
         canvas.drawLine(27f, 44f, 36f, 54f, paint);
         paint.setStrokeCap(Paint.Cap.BUTT);
@@ -876,11 +876,11 @@ public final class SettingsPanelView extends View implements UiInputTarget {
 
     private void drawClose(Canvas canvas) {
         RectF disc = new RectF(414f, 20f, 462f, 68f);
-        ReSonoTheme.glass(canvas, paint, disc, 24f, false);
+        SamTheme.glass(canvas, paint, disc, 24f, false);
         paint.setStyle(Paint.Style.STROKE);
         paint.setStrokeWidth(2.4f);
         paint.setStrokeCap(Paint.Cap.ROUND);
-        paint.setColor(ReSonoTheme.INK);
+        paint.setColor(SamTheme.INK);
         canvas.drawLine(431f, 37f, 445f, 51f, paint);
         canvas.drawLine(445f, 37f, 431f, 51f, paint);
         paint.setStrokeCap(Paint.Cap.BUTT);
@@ -1004,10 +1004,10 @@ public final class SettingsPanelView extends View implements UiInputTarget {
 
     private void button(Canvas canvas, String label, float left, float top, float right, float height) {
         RectF rect = new RectF(left, top, right, top + height);
-        ReSonoTheme.glass(canvas, paint, rect, 24f, false);
+        SamTheme.glass(canvas, paint, rect, 24f, false);
         boolean glyph = label.length() == 1;
-        ReSonoTheme.text(canvas, paint, label, rect.centerX(), rect.centerY() + (glyph ? 12f : 8f),
-                glyph ? 38f : 22f, ReSonoTheme.INK, Paint.Align.CENTER, true);
+        SamTheme.text(canvas, paint, label, rect.centerX(), rect.centerY() + (glyph ? 12f : 8f),
+                glyph ? 38f : 22f, SamTheme.INK, Paint.Align.CENTER, true);
     }
 
     private void primaryButton(Canvas canvas, String label, float left, float top, float right) {
@@ -1018,12 +1018,12 @@ public final class SettingsPanelView extends View implements UiInputTarget {
         RectF rect = new RectF(left, top, right, top + height);
         paint.setStyle(Paint.Style.FILL);
         paint.setShader(new LinearGradient(0f, rect.top, 0f, rect.bottom,
-                ReSonoTheme.withAlpha(ReSonoTheme.ORB_BLUE, 240),
-                ReSonoTheme.withAlpha(ReSonoTheme.ORB_BLUE, 195), Shader.TileMode.CLAMP));
+                SamTheme.withAlpha(SamTheme.ORB_BLUE, 240),
+                SamTheme.withAlpha(SamTheme.ORB_BLUE, 195), Shader.TileMode.CLAMP));
         canvas.drawRoundRect(rect, 24f, 24f, paint);
         paint.setShader(null);
-        ReSonoTheme.text(canvas, paint, label, rect.centerX(), rect.centerY() + 8f, 22f,
-                ReSonoTheme.INK, Paint.Align.CENTER, true);
+        SamTheme.text(canvas, paint, label, rect.centerX(), rect.centerY() + 8f, 22f,
+                SamTheme.INK, Paint.Align.CENTER, true);
     }
 
     private void adjustVolume(boolean increase) {
@@ -1068,8 +1068,8 @@ public final class SettingsPanelView extends View implements UiInputTarget {
         EditText password = new EditText(activity);
         password.setSingleLine(true);
         password.setHint("Network password");
-        password.setTextColor(ReSonoTheme.INK);
-        password.setHintTextColor(ReSonoTheme.MUTED);
+        password.setTextColor(SamTheme.INK);
+        password.setHintTextColor(SamTheme.MUTED);
         password.setTextSize(20f);
         password.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
         password.setPadding(24, 18, 24, 18);
@@ -1078,7 +1078,7 @@ public final class SettingsPanelView extends View implements UiInputTarget {
         sheet.setPadding(28, 24, 28, 12);
         TextView title = new TextView(activity);
         title.setText(network.ssid());
-        title.setTextColor(ReSonoTheme.INK);
+        title.setTextColor(SamTheme.INK);
         title.setTextSize(28f);
         title.setGravity(Gravity.START);
         sheet.addView(title);

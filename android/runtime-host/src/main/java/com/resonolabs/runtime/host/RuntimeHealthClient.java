@@ -20,7 +20,7 @@ public final class RuntimeHealthClient implements AutoCloseable {
     private static final int MAX_ATTEMPTS = 20;
     private static final long RETRY_MILLIS = 250L;
     private final ExecutorService worker = Executors.newSingleThreadExecutor(runnable -> {
-        Thread thread = new Thread(runnable, "resono-runtime-health-client");
+        Thread thread = new Thread(runnable, "sam-runtime-health-client");
         thread.setDaemon(true);
         return thread;
     });

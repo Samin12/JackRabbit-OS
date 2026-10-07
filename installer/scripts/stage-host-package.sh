@@ -49,7 +49,7 @@ trap 'rm -rf "$temporary"' EXIT
 unzip -q "$tools_archive" -d "$temporary/platform-tools"
 case "$platform" in
   windows-x64)
-    cp "$cli_binary" "$output_root/bin/jackrabbit-installer.exe"
+    cp "$cli_binary" "$output_root/bin/sam-installer.exe"
     cp "$installer_root/windows/install.cmd" "$installer_root/windows/install.ps1" "$installer_root/windows/install-drivers.ps1" "$output_root/"
     cp "$temporary/platform-tools/platform-tools/fastboot.exe" "$output_root/tools/fastboot.exe"
     cp "$temporary/platform-tools/platform-tools/AdbWinApi.dll" "$temporary/platform-tools/platform-tools/AdbWinUsbApi.dll" "$temporary/platform-tools/platform-tools/libwinpthread-1.dll" "$output_root/tools/"
@@ -66,19 +66,19 @@ case "$platform" in
     unzip -q "$google_archive" -d "$output_root/drivers/google-usb-driver"
     ;;
   linux-x64)
-    cp "$cli_binary" "$output_root/bin/jackrabbit-installer"
+    cp "$cli_binary" "$output_root/bin/sam-installer"
     cp "$installer_root/linux-macos/install.sh" "$output_root/install.sh"
-    cp "$installer_root/linux-macos/drivers/51-jackrabbit-r1.rules" "$output_root/drivers/"
+    cp "$installer_root/linux-macos/drivers/51-sam-r1.rules" "$output_root/drivers/"
     cp "$temporary/platform-tools/platform-tools/fastboot" "$output_root/tools/fastboot"
     cp "$temporary/platform-tools/platform-tools/NOTICE.txt" "$output_root/tools/PLATFORM-TOOLS-NOTICE.txt"
-    chmod +x "$output_root/install.sh" "$output_root/bin/jackrabbit-installer" "$output_root/tools/fastboot"
+    chmod +x "$output_root/install.sh" "$output_root/bin/sam-installer" "$output_root/tools/fastboot"
     ;;
   macos-x64|macos-arm64)
-    cp "$cli_binary" "$output_root/bin/jackrabbit-installer"
+    cp "$cli_binary" "$output_root/bin/sam-installer"
     cp "$installer_root/linux-macos/install.sh" "$installer_root/linux-macos/install.command" "$output_root/"
     cp "$temporary/platform-tools/platform-tools/fastboot" "$output_root/tools/fastboot"
     cp "$temporary/platform-tools/platform-tools/NOTICE.txt" "$output_root/tools/PLATFORM-TOOLS-NOTICE.txt"
-    chmod +x "$output_root/install.sh" "$output_root/install.command" "$output_root/bin/jackrabbit-installer" "$output_root/tools/fastboot"
+    chmod +x "$output_root/install.sh" "$output_root/install.command" "$output_root/bin/sam-installer" "$output_root/tools/fastboot"
     ;;
 esac
 

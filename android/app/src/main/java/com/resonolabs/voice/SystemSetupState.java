@@ -5,7 +5,7 @@ import android.provider.Settings;
 import android.util.Log;
 
 final class SystemSetupState {
-    private static final String TAG = "ReSonoSystemSetup";
+    private static final String TAG = "SamSystemSetup";
 
     private SystemSetupState() { }
 

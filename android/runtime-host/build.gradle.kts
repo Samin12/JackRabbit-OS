@@ -22,7 +22,7 @@ chaquopy {
     defaultConfig {
         version = "3.13"
         buildPython(
-            providers.environmentVariable("RESONO_BUILD_PYTHON")
+            providers.environmentVariable("SAM_BUILD_PYTHON")
                 .getOrElse("python3.13")
         )
         pip {

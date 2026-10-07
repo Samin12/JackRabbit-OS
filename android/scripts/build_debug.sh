@@ -5,13 +5,13 @@ export JAVA_HOME=/tmp/r1-jdk17
 export ANDROID_HOME=/tmp/r1-android-sdk
 export ANDROID_SDK_ROOT="$ANDROID_HOME"
 export PATH="$JAVA_HOME/bin:$ANDROID_SDK_ROOT/platform-tools:$PATH"
-export RESONO_BUILD_PYTHON="${RESONO_BUILD_PYTHON:-/tmp/resono-python/cpython-3.13.2-linux-x86_64-gnu/bin/python3.13}"
+export SAM_BUILD_PYTHON="${SAM_BUILD_PYTHON:-/tmp/sam-python/cpython-3.13.2-linux-x86_64-gnu/bin/python3.13}"
 ANDROID_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PROJECT_ROOT="$(cd "$ANDROID_ROOT/.." && pwd)"
 
-if [[ ! -x "$RESONO_BUILD_PYTHON" ]]; then
-    echo "Python 3.13 build host not found: $RESONO_BUILD_PYTHON" >&2
-    echo "Set RESONO_BUILD_PYTHON to an executable Python 3.13 path." >&2
+if [[ ! -x "$SAM_BUILD_PYTHON" ]]; then
+    echo "Python 3.13 build host not found: $SAM_BUILD_PYTHON" >&2
+    echo "Set SAM_BUILD_PYTHON to an executable Python 3.13 path." >&2
     exit 1
 fi
 

@@ -13,7 +13,7 @@ import android.os.Looper;
 import android.view.MotionEvent;
 import android.view.View;
 import com.resonolabs.runtime.host.TaskClient;
-import com.resonolabs.ui.design.ReSonoTheme;
+import com.resonolabs.ui.design.SamTheme;
 import com.resonolabs.ui.input.UiInputIntent;
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -92,48 +92,48 @@ public final class TaskPageView extends View implements AutoCloseable {
 
     @Override protected void onDraw(Canvas canvas) {
         canvas.save(); canvas.scale(getWidth()/W, getHeight()/H);
-        ReSonoTheme.background(canvas, paint, W, H, 430, 30, 260, ReSonoTheme.ORB_BLUE);
+        SamTheme.background(canvas, paint, W, H, 430, 30, 260, SamTheme.ORB_BLUE);
         header(canvas);
         if (detail) drawDetail(canvas); else drawList(canvas); canvas.restore();
     }
 
     private void header(Canvas c) {
-        ReSonoTheme.text(c,paint,"Tasks",64,52,30,ReSonoTheme.INK,Paint.Align.LEFT,true);
+        SamTheme.text(c,paint,"Tasks",64,52,30,SamTheme.INK,Paint.Align.LEFT,true);
         String sub = detail ? "Task details" : tasks.length()==0 ? "All clear"
                 : tasks.length() + (tasks.length()==1 ? " open task" : " open tasks");
-        ReSonoTheme.text(c,paint,sub,65,76,15,ReSonoTheme.MUTED,Paint.Align.LEFT,false);
+        SamTheme.text(c,paint,sub,65,76,15,SamTheme.MUTED,Paint.Align.LEFT,false);
         orbDot(c,436,44,13);
     }
 
     /** Static, cheap orb glyph: white crown fading to orb blue. */
     private void orbDot(Canvas c, float cx, float cy, float r) {
         paint.setShader(new RadialGradient(cx, cy + r*0.3f, r*2.4f,
-                ReSonoTheme.withAlpha(ReSonoTheme.ORB_BLUE,70), ReSonoTheme.withAlpha(ReSonoTheme.ORB_BLUE,0), Shader.TileMode.CLAMP));
+                SamTheme.withAlpha(SamTheme.ORB_BLUE,70), SamTheme.withAlpha(SamTheme.ORB_BLUE,0), Shader.TileMode.CLAMP));
         c.drawCircle(cx, cy + r*0.3f, r*2.4f, paint);
         paint.setShader(new LinearGradient(cx, cy-r, cx, cy+r,
-                new int[]{0xffffffff, ReSonoTheme.ORB_PALE, ReSonoTheme.ORB_BLUE}, new float[]{0.15f,0.5f,0.9f}, Shader.TileMode.CLAMP));
+                new int[]{0xffffffff, SamTheme.ORB_PALE, SamTheme.ORB_BLUE}, new float[]{0.15f,0.5f,0.9f}, Shader.TileMode.CLAMP));
         c.drawCircle(cx, cy, r, paint); paint.setShader(null);
     }
 
     private void drawList(Canvas c) {
         if (tasks.length()==0) {
             orbDot(c,240,262,34);
-            ReSonoTheme.text(c,paint,"No open tasks",240,352,26,ReSonoTheme.INK,Paint.Align.CENTER,true);
-            ReSonoTheme.text(c,paint,"Ask Voice to add one.",240,384,18,ReSonoTheme.MUTED,Paint.Align.CENTER,false); return;
+            SamTheme.text(c,paint,"No open tasks",240,352,26,SamTheme.INK,Paint.Align.CENTER,true);
+            SamTheme.text(c,paint,"Ask Voice to add one.",240,384,18,SamTheme.MUTED,Paint.Align.CENTER,false); return;
         }
         int start=(selected/5)*5;
         for (int row=0; row<5 && start+row<tasks.length(); row++) {
             int i=start+row; JSONObject item=tasks.optJSONObject(i); if (item==null) continue;
             float top=92+row*96; boolean focused=i==selected;
-            ReSonoTheme.glass(c,paint,new RectF(18,top,462,top+84),20,focused);
+            SamTheme.glass(c,paint,new RectF(18,top,462,top+84),20,focused);
             // Open checkbox ring.
             paint.setStyle(Paint.Style.STROKE); paint.setStrokeWidth(2.2f);
-            paint.setColor(focused ? ReSonoTheme.ORB_PALE : ReSonoTheme.withAlpha(ReSonoTheme.MUTED,170));
+            paint.setColor(focused ? SamTheme.ORB_PALE : SamTheme.withAlpha(SamTheme.MUTED,170));
             c.drawCircle(54, top+42, 13, paint); paint.setStyle(Paint.Style.FILL);
             line(c,item.optString("text","Task"),86,top+51,24,444,focused);
         }
         if (tasks.length()>1)
-            ReSonoTheme.text(c,paint,(selected+1)+" of "+tasks.length(),456,610,16,ReSonoTheme.MUTED,Paint.Align.RIGHT,false);
+            SamTheme.text(c,paint,(selected+1)+" of "+tasks.length(),456,610,16,SamTheme.MUTED,Paint.Align.RIGHT,false);
     }
 
     private void line(Canvas c,String text,float x,float baseline,float size,float right,boolean focused) {
@@ -146,28 +146,28 @@ public final class TaskPageView extends View implements AutoCloseable {
             if (position>900) offset=Math.min(distance,(position-900)*distance/travel); postInvalidateDelayed(33);
         }
         c.save(); c.clipRect(x,baseline-size-4,right,baseline+7);
-        ReSonoTheme.text(c,paint,text,x-offset,baseline,size,focused?ReSonoTheme.INK:ReSonoTheme.withAlpha(ReSonoTheme.INK,200),Paint.Align.LEFT,true); c.restore();
+        SamTheme.text(c,paint,text,x-offset,baseline,size,focused?SamTheme.INK:SamTheme.withAlpha(SamTheme.INK,200),Paint.Align.LEFT,true); c.restore();
     }
 
     private void drawDetail(Canvas c) {
         JSONObject item=tasks.optJSONObject(selected); if(item==null)return;
-        ReSonoTheme.glass(c,paint,new RectF(18,95,462,500),24,false);
-        paint.setStyle(Paint.Style.STROKE); paint.setStrokeWidth(2.2f); paint.setColor(ReSonoTheme.ORB_PALE);
+        SamTheme.glass(c,paint,new RectF(18,95,462,500),24,false);
+        paint.setStyle(Paint.Style.STROKE); paint.setStrokeWidth(2.2f); paint.setColor(SamTheme.ORB_PALE);
         c.drawCircle(52,132,12,paint); paint.setStyle(Paint.Style.FILL);
-        ReSonoTheme.text(c,paint,"Open",74,138,16,ReSonoTheme.ORB_PALE,Paint.Align.LEFT,true);
+        SamTheme.text(c,paint,"Open",74,138,16,SamTheme.ORB_PALE,Paint.Align.LEFT,true);
         wrapped(c,item.optString("text","Task"),38,196,28,38,404);
         RectF button=new RectF(18,528,462,592);
-        paint.setShader(new LinearGradient(0,528,0,592,ReSonoTheme.withAlpha(ReSonoTheme.ORB_BLUE,235),
-                ReSonoTheme.withAlpha(ReSonoTheme.ORB_BLUE,190),Shader.TileMode.CLAMP));
+        paint.setShader(new LinearGradient(0,528,0,592,SamTheme.withAlpha(SamTheme.ORB_BLUE,235),
+                SamTheme.withAlpha(SamTheme.ORB_BLUE,190),Shader.TileMode.CLAMP));
         c.drawRoundRect(button,24,24,paint); paint.setShader(null);
-        ReSonoTheme.text(c,paint,"Edit with voice",240,568,21,ReSonoTheme.INK,Paint.Align.CENTER,true);
+        SamTheme.text(c,paint,"Edit with voice",240,568,21,SamTheme.INK,Paint.Align.CENTER,true);
     }
 
     private void wrapped(Canvas c,String value,float x,float y,float size,float line,float width) {
         paint.setTextSize(size); paint.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); String rest=value.trim();
         while(!rest.isEmpty()&&y<475){int count=paint.breakText(rest,true,width,null);
             if(count<rest.length()){int space=rest.lastIndexOf(' ',Math.max(0,count-1));if(space>0)count=space;}
-            ReSonoTheme.text(c,paint,rest.substring(0,Math.max(1,count)).trim(),x,y,size,ReSonoTheme.INK,Paint.Align.LEFT,true);
+            SamTheme.text(c,paint,rest.substring(0,Math.max(1,count)).trim(),x,y,size,SamTheme.INK,Paint.Align.LEFT,true);
             rest=rest.substring(Math.min(rest.length(),Math.max(1,count))).trim();y+=line;}
     }
     @Override public void close(){stop();client.close();}

@@ -46,7 +46,7 @@ public final class RuntimeCreationImportClient implements AutoCloseable {
                         new RuntimeSecretStore(context).loadLocalApiToken());
                 connection.setRequestProperty("Content-Type", "application/json");
                 connection.setRequestProperty("Accept", "application/json");
-                connection.setRequestProperty("X-ReSono-Agent-Audience", "both");
+                connection.setRequestProperty("X-SAM-Agent-Audience", "both");
                 try (OutputStream output = connection.getOutputStream()) {
                     output.write(payload.toString().getBytes(StandardCharsets.UTF_8));
                 }

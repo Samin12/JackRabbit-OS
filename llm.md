@@ -1,10 +1,10 @@
-# JackRabbit Coding Context for LLMs
+# SAM Project Coding Context for LLMs
 
 ## Purpose
 
-This document gives a coding assistant the minimum complete context needed to work safely and effectively on JackRabbit.
+This document gives a coding assistant the minimum complete context needed to work safely and effectively on SAM Project.
 
-JackRabbit is a standalone, Voice-first software platform for the Rabbit R1. The Android application replaces the normal HOME experience, hosts an embedded Python runtime, provides native OpenAI Realtime Voice over WebRTC, displays Cards, and serves a same-LAN management website from the device.
+SAM Project is a standalone, Voice-first software platform for the Rabbit R1. The Android application replaces the normal HOME experience, hosts an embedded Python runtime, provides native OpenAI Realtime Voice over WebRTC, displays Cards, and serves a same-LAN management website from the device.
 
 The project is source-available for noncommercial use under `LICENSE` and is
 not licensed under an OSI-approved license. Community modification and sharing
@@ -27,7 +27,7 @@ These are not separate products. The Android build packages all three into one A
 The physical product also uses Android logical partition images:
 
 ```text
-system.img       Contains the JackRabbit APK and retained system applications
+system.img       Contains the SAM Project APK and retained system applications
 vendor.img       Contains retained R1 hardware integration and the first-boot lock-screen overlay
 product.img      Retained product configuration
 system_ext.img   Retained Android system extensions
@@ -41,7 +41,7 @@ Normal application changes affect the APK and therefore only require rebuilding 
 ```text
 Rabbit R1 hardware and retained Cipher device services
                          |
-                 JackRabbit Android HOME
+                 SAM Project Android HOME
               +----------+-----------+
               |          |           |
           Native UI   WebRTC Voice   Device controls
@@ -66,7 +66,7 @@ Keep feature ownership explicit. Do not create catch-all `utils`, `helpers`, `co
 
 ### Runtime ownership
 
-- `runtime/resono_runtime/application.py` is the composition root.
+- `runtime/sam_runtime/application.py` is the composition root.
 - `providers/` owns OpenAI Platform and ChatGPT/Codex access.
 - `agents/` owns shared Agents SDK execution infrastructure.
 - `background_agent/` owns delegated goal execution.
@@ -275,7 +275,7 @@ Only restart ADB when no server sees the device. After an ADB server restart, th
 adb install -r -d android/app/build/outputs/apk/debug/app-debug.apk
 ```
 
-Start JackRabbit HOME:
+Start SAM Project HOME:
 
 ```bash
 adb shell am start -n \

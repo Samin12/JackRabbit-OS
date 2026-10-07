@@ -17,14 +17,14 @@ final class RuntimePythonHost {
         if (running) return;
         if (!Python.isStarted()) Python.start(new AndroidPlatform(context));
         Python.getInstance()
-                .getModule("resono_runtime.entrypoint")
+                .getModule("sam_runtime.entrypoint")
                 .callAttr("start", rootPath, localApiToken, credentials, restartRequest);
         running = true;
     }
 
     synchronized void stop() {
         if (!running || !Python.isStarted()) return;
-        Python.getInstance().getModule("resono_runtime.entrypoint").callAttr("stop");
+        Python.getInstance().getModule("sam_runtime.entrypoint").callAttr("stop");
         running = false;
     }
 }
