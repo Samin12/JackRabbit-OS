@@ -53,11 +53,15 @@ final class T3Time {
         return DAY.format(Instant.ofEpochMilli(thenMillis).atZone(zone));
     }
 
-    /** "Synced just now" / "Synced 4m ago" for the list header. */
-    static String synced(long nowMillis, long thenMillis) {
+    /**
+     * "Updated just now" / "Updated 4m ago" for the list header. The snapshot's updatedAt is when
+     * the thread list last changed (the revision time), not when it was last fetched, so this
+     * must not say "Synced": an idle list polled every 5 s would read "Synced 2h ago".
+     */
+    static String updated(long nowMillis, long thenMillis) {
         if (thenMillis <= 0L) return "";
         String value = relative(nowMillis, thenMillis);
-        if ("now".equals(value)) return "Synced just now";
-        return value.indexOf(' ') >= 0 ? "Synced " + value : "Synced " + value + " ago";
+        if ("now".equals(value)) return "Updated just now";
+        return value.indexOf(' ') >= 0 ? "Updated " + value : "Updated " + value + " ago";
     }
 }

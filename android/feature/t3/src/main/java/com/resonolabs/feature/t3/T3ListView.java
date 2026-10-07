@@ -166,9 +166,9 @@ final class T3ListView extends View {
         headlineSize = 21f;
         while (headlineSize > 17f && headlineWidth() > NEW_BUTTON.left - 46f) headlineSize -= 0.5f;
         while (headline.size() > 1 && headlineWidth() > NEW_BUTTON.left - 46f) headline.remove(headline.size() - 1);
-        String synced = T3Time.synced(layoutAt, snapshot.updatedAt > 0 ? snapshot.updatedAt : layoutAt);
+        String updated = T3Time.updated(layoutAt, snapshot.updatedAt > 0 ? snapshot.updatedAt : layoutAt);
         String source = demo ? "Demo data" : connectionLabel.isEmpty() ? "T3 Code" : connectionLabel;
-        subline = surface.ellipsize(source + " · " + synced, NEW_BUTTON.left - 40f, 14f, T3Surface.REGULAR);
+        subline = surface.ellipsize(source + " · " + updated, NEW_BUTTON.left - 40f, 14f, T3Surface.REGULAR);
 
         float y = 0f;
         anyWorking = false;

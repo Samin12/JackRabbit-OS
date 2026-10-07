@@ -40,9 +40,9 @@ public final class T3TimeTest {
     }
 
     @Test
-    public void syncedPhrase() {
-        assertEquals("Synced just now", T3Time.synced(NOW, NOW - 2_000L));
-        assertEquals("Synced 3m ago", T3Time.synced(NOW, NOW - 3 * 60_000L));
-        assertEquals("", T3Time.synced(NOW, 0L));
+    public void updatedPhrase() {
+        assertEquals("Updated just now", T3Time.updated(NOW, NOW - 2_000L));
+        assertEquals("Updated 3m ago", T3Time.updated(NOW, NOW - 3 * 60_000L));
+        assertEquals("", T3Time.updated(NOW, 0L));
     }
 }
