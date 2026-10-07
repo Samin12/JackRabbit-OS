@@ -84,6 +84,12 @@ public final class GenUiPreviewActivity extends Activity {
         super.onPause();
     }
 
+    /** Leaving the preview ends it, so no scripted or real live source keeps polling behind HOME. */
+    @Override protected void onStop() {
+        super.onStop();
+        if (!isChangingConfigurations()) finish();
+    }
+
     @Override protected void onDestroy() {
         if (view != null) view.close();
         super.onDestroy();
