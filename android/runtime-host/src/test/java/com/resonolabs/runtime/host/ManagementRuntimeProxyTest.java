@@ -31,6 +31,16 @@ public final class ManagementRuntimeProxyTest {
     }
 
     @Test
+    public void macControlManagementRoutesAreForwardedButDeviceRoutesAreNot() {
+        assertTrue(ManagementRuntimeProxy.isAllowed("/v1/management/mac"));
+        assertTrue(ManagementRuntimeProxy.isAllowed("/v1/management/t3/settings"));
+        assertFalse(ManagementRuntimeProxy.isAllowed("/v1/management/mac/act"));
+        assertFalse(ManagementRuntimeProxy.isAllowed("/v1/mac/state"));
+        assertEquals(25_000, ManagementRuntimeProxy.readTimeoutMillis("/v1/management/mac"));
+        assertEquals(15_000, ManagementRuntimeProxy.readTimeoutMillis("/v1/management/t3/settings"));
+    }
+
+    @Test
     public void deviceJournalRoutesStayLoopbackOnly() {
         assertFalse(ManagementRuntimeProxy.isAllowed("/v1/journal/status"));
         assertFalse(ManagementRuntimeProxy.isAllowed("/v1/journal/notes"));
