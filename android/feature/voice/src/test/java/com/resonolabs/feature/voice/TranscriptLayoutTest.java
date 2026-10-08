@@ -92,8 +92,12 @@ public final class TranscriptLayoutTest {
                 "Bar chart of focus hours per day", "art_1");
         TranscriptLayout.measure(ui, new Mono());
         float inner = TranscriptLayout.UI_RIGHT - TranscriptLayout.UI_LEFT - 2f * TranscriptLayout.UI_PAD;
-        assertEquals(inner, ui.frameWidth, 0.01f);
         assertEquals(TranscriptLayout.UI_THUMB_MAX_H, ui.frameHeight, 0.01f); // 408*0.66 = 269 -> 200
+        assertEquals(200f / 0.66f, ui.frameWidth, 0.01f); // hugs the fitted picture
+        TranscriptItem wide = TranscriptItem.generatedUi(REF, 0.3f, "Wide", "", "art_w");
+        TranscriptLayout.measure(wide, new Mono());
+        assertEquals(inner, wide.frameWidth, 0.01f);
+        assertEquals(inner * 0.3f, wide.frameHeight, 0.01f);
         assertEquals("Weekly focus hours", ui.titleLine);
         assertEquals("Bar chart of focus hours per day", ui.detailLine);
         float expected = TranscriptLayout.UI_PAD + TranscriptLayout.UI_LABEL_H + 8f + 200f + 10f

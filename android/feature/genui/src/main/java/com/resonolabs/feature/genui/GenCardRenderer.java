@@ -259,32 +259,36 @@ public final class GenCardRenderer {
         }
     }
 
-    /** A host picture fitted (never cropped) into its box on a dark rounded backdrop. */
+    /**
+     * A host picture fitted (never cropped) into its box, centered, in a rounded frame that hugs
+     * it; a placeholder of the same shape while the thumbnail decodes.
+     */
     private void drawImage(Canvas canvas, GenCardLayout.Box box, GenBlock block, float x, float inner, float top) {
         float h = box.height;
         float radius = 16f;
+        GenImages images = GenImages.peek();
+        Bitmap bitmap = images == null ? null : images.thumb(block.ref);
+        boolean ready = bitmap != null && bitmap.getWidth() > 0 && bitmap.getHeight() > 0;
+        float aspect = ready ? bitmap.getHeight() / (float) bitmap.getWidth() : block.aspect;
+        float dw = Math.min(inner, h / Math.max(0.01f, aspect));
+        float dh = Math.min(h, dw * aspect);
+        float left = x + (inner - dw) / 2f;
+        float imageTop = top + (h - dh) / 2f;
+        dst.set(left, imageTop, left + dw, imageTop + dh);
         paint.setShader(null);
         paint.setStyle(Paint.Style.FILL);
         paint.setColor(GenColors.withAlpha(GenColors.BACKGROUND, 200));
-        canvas.drawRoundRect(x, top, x + inner, top + h, radius, radius, paint);
-        GenImages images = GenImages.peek();
-        Bitmap bitmap = images == null ? null : images.thumb(block.ref);
-        if (bitmap != null && bitmap.getWidth() > 0 && bitmap.getHeight() > 0) {
-            float scale = Math.min(inner / bitmap.getWidth(), h / bitmap.getHeight());
-            float dw = bitmap.getWidth() * scale;
-            float dh = bitmap.getHeight() * scale;
-            float left = x + (inner - dw) / 2f;
-            float imageTop = top + (h - dh) / 2f;
-            dst.set(left, imageTop, left + dw, imageTop + dh);
-            drawRounded(canvas, bitmap, null, dst, radius - 2f);
+        canvas.drawRoundRect(dst, radius, radius, paint);
+        if (ready) {
+            drawRounded(canvas, bitmap, null, dst, radius);
         } else {
-            icons.draw(canvas, paint, GenSchema.ICON_CHART, x + inner / 2f, top + h / 2f, 30f,
+            icons.draw(canvas, paint, GenSchema.ICON_CHART, dst.centerX(), dst.centerY(), 30f,
                     GenColors.withAlpha(GenColors.ORB_PALE, 140), 2f);
         }
         paint.setStyle(Paint.Style.STROKE);
         paint.setStrokeWidth(1.2f);
         paint.setColor(GenColors.LINE);
-        canvas.drawRoundRect(x + 0.6f, top + 0.6f, x + inner - 0.6f, top + h - 0.6f, radius, radius, paint);
+        canvas.drawRoundRect(dst, radius, radius, paint);
         paint.setStyle(Paint.Style.FILL);
     }
 

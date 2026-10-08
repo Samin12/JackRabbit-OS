@@ -160,7 +160,10 @@ public final class HostImageCardsTest {
         assertEquals("Weekly focus hours", GenCardLayout.summary(card));
         assertEquals(card.body.get(0), GenCardLayout.firstImage(card));
         controller.onImageTapped(card, card.body.get(0));
-        assertEquals(REF + "|Weekly focus hours", host.openedImages.get(0));
+        assertEquals(REF + "|Weekly focus hours: Bars per day", host.openedImages.get(0));
+        GenCard photo = controller.showHostCard(HostImageCards.cardJson(HostImageCards.CAMERA, REF, 0.75f,
+                "Photo", "You sent this photo", null, false));
+        assertEquals("You sent this photo", GenUiController.imageCaption(photo, photo.body.get(0)));
         assertTrue(GenUiController.describe(card).contains("picture (Weekly focus hours)"));
     }
 

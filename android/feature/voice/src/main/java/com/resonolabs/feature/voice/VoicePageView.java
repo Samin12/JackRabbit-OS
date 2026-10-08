@@ -1303,6 +1303,11 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
             }
         }
         canvas.restore();
+        if (transcriptScroll < max - 1f) {
+            // More below: content softly fades into the page instead of a hard cut.
+            glass.fillVertical(canvas, paint, 0f, bottom - 28f, WIDTH, bottom, 0f,
+                    SamTheme.withAlpha(SamTheme.BACKGROUND, 0), SamTheme.withAlpha(SamTheme.BACKGROUND, 235), 28f);
+        }
     }
 
     private void drawTextItem(Canvas canvas, TranscriptItem item, float itemTop) {
@@ -1348,7 +1353,8 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
                     Paint.Align.RIGHT, false);
         }
         float thumbTop = itemTop + pad + TranscriptLayout.UI_LABEL_H + 8f;
-        pictureFrame.set(left + pad, thumbTop, left + pad + item.frameWidth, thumbTop + item.frameHeight);
+        float thumbLeft = (left + right - item.frameWidth) / 2f;
+        pictureFrame.set(thumbLeft, thumbTop, thumbLeft + item.frameWidth, thumbTop + item.frameHeight);
         drawPicture(canvas, item.imageRef, pictureFrame, 14f, item.source);
         float titleBaseline = pictureFrame.bottom + 10f + 17f;
         SamTheme.text(canvas, paint, item.titleLine, left + pad, titleBaseline, TranscriptLayout.UI_TITLE_SIZE,

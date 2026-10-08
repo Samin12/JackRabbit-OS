@@ -14,7 +14,7 @@ import java.util.List;
  * TEXT model    plain text from x 30, wrap 404, height lines*22+8
  * IMAGE         rounded picture frame (user: right-aligned, max 264 wide; host: left, max 360),
  *               height clamp(w*aspect, 96, 236) + a 24 px caption row
- * UI            glass panel 24..456: "Generated" label, thumbnail (max 200 tall), title, summary
+ * UI            glass panel 24..456: "Generated" label, centered thumbnail (max 408x200), title, summary
  * gap           12 px between items
  * </pre>
  */
@@ -97,8 +97,10 @@ final class TranscriptLayout {
             }
             case UI -> {
                 float inner = UI_RIGHT - UI_LEFT - 2f * UI_PAD;
-                item.frameWidth = inner;
-                item.frameHeight = Math.max(IMAGE_MIN_H, Math.min(UI_THUMB_MAX_H, inner * item.aspect));
+                // The frame hugs the fitted picture (centered in the panel): no dark side bands.
+                float[] frame = frame(item.aspect, inner, UI_THUMB_MAX_H);
+                item.frameWidth = frame[0];
+                item.frameHeight = frame[1];
                 item.titleLine = ellipsize(item.text().isEmpty() ? "Generated UI" : item.text(),
                         UI_TITLE_SIZE, true, inner, measurer);
                 item.detailLine = ellipsize(item.detail, UI_SUMMARY_SIZE, false, inner, measurer);

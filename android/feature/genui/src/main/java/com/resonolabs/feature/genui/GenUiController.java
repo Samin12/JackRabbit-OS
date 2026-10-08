@@ -337,11 +337,17 @@ public final class GenUiController implements GenCardStore.Listener, AutoCloseab
         host.invalidateUi();
     }
 
-    /** Tap on a host picture: full screen. */
+    /** Tap on a host picture: full screen, captioned "<alt or title>: <subtitle>". */
     public void onImageTapped(GenCard card, GenBlock image) {
         if (image == null || image.ref == null) return;
-        String caption = image.alt != null ? image.alt : card.displayTitle();
-        host.openImage(image.ref, caption);
+        host.openImage(image.ref, imageCaption(card, image));
+    }
+
+    static String imageCaption(GenCard card, GenBlock image) {
+        String head = image.alt != null ? image.alt : card.displayTitle();
+        String sub = card.displaySubtitle();
+        if (sub == null || sub.isEmpty() || sub.equals(head)) return head;
+        return head + ": " + sub;
     }
 
     /** Tap on a card body with nothing hidden: make it the conversation topic, silently. */
