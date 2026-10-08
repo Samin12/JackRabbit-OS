@@ -74,10 +74,13 @@ that streams in:
 
 ```sh
 python3 companion/desktop/dev/fake_sync_server.py --port 3790          # --empty, --no-sync, --live-loop 60
-open http://127.0.0.1:3790/app/?chrome=1                               # needs the sr_desktop cookie, so use:
-SR_TOKEN_FILE=~/.config/samrabbit/desktop-token companion/desktop/dev/shoot.sh /tmp/shots 3790
+defaults write com.samrabbit.desktop BaseURL http://127.0.0.1:3790/app/ # the real app, against the fake
+companion/desktop/dev/shoot.sh /tmp/shots 3790                          # or headless screenshots
 curl -X POST -H "X-SamRabbit-Desktop: $(cat ~/.config/samrabbit/desktop-token)" http://127.0.0.1:3790/dev/live
+defaults delete com.samrabbit.desktop BaseURL                           # back to the real bridge
 ```
+
+(A plain browser can't open the page: every route needs the `sr_desktop` cookie, which `shoot.sh` sets.)
 
 `shoot.sh` drives headless Chrome (agent-browser) and takes screenshots; `STEPS="open:<id> top shot:name …"`
 scripts states. `?chrome=1` draws stand-in traffic lights so the page looks like it does in the app.
