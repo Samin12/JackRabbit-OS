@@ -79,7 +79,7 @@ class GeneratedUiToolsTest(unittest.TestCase):
                          value)
         (body,) = self.fake.generate_bodies()
         self.assertEqual({"requestId": request_id, "prompt": "a bar chart of my week's meetings",
-                          "data": "Mon 3, Tue 5, Wed 2", "conversationId": "a" * 24, "size": "r1"}, body)
+                          "data": "Mon 3, Tue 5, Wed 2", "conversationId": "s_" + "a" * 24, "size": "r1"}, body)
         self.assertEqual([value["artifactId"]], self.watcher.pending())
 
     def test_a_retried_tool_call_makes_one_visual_and_one_announcement(self) -> None:
@@ -109,7 +109,8 @@ class GeneratedUiToolsTest(unittest.TestCase):
         self.assertEqual("c_" + "1" * 20, self.fake.generate_bodies()[-1]["conversationId"])
         broken = register_generated_ui_tools(ToolCatalog(), self.client, self.watcher,
                                              conversation_lookup=lambda _session: 1 / 0)
-        self.assertEqual("b" * 24, broken.conversation_id(context), "falls back to the voice session id")
+        self.assertEqual("s_" + "b" * 24, broken.conversation_id(context),
+                         "falls back to the conversation sync's own id for an unlinked session")
 
     def test_calls_without_a_voice_session_still_work(self) -> None:
         self.configure()

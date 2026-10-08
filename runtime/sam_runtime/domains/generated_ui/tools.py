@@ -6,7 +6,8 @@ Visible only while the Mac bridge is configured. The call returns at once with `
 
 Conversation id: the R1's ``conversationId`` for this voice session, so the generated UI lands in the same
 timeline on the desktop. In order: a ``conversation_id`` on the tool context (if the runtime provides one),
-the injected ``conversation_lookup(voiceSessionId)`` (the conversation-sync map), else the voice session id.
+the injected ``conversation_lookup(voiceSessionId)`` (the conversation-sync map), else ``s_<voiceSessionId>``,
+the conversation sync files a session the R1 never linked under (``ConversationSyncService.conversation_for``).
 """
 
 from __future__ import annotations
@@ -90,7 +91,7 @@ class GeneratedUiToolHandlers:
                 mapped = None
             if isinstance(mapped, str) and mapped.strip():
                 return mapped.strip()
-        return session or None
+        return f"s_{session}"[:64] if session else None
 
     def generate(self, arguments: dict[str, object], context: ToolInvocationContext | None) -> ToolInvocationResult:
         request = " ".join(str(arguments.get("request") or "").split())
