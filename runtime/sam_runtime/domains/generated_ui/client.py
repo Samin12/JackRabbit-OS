@@ -20,6 +20,7 @@ GENERATE_TIMEOUT_SECONDS = 12.0
 STATUS_TIMEOUT_SECONDS = 10.0
 IMAGE_TIMEOUT_SECONDS = 20.0
 MAX_IMAGE_BYTES = 400 * 1024
+MAX_BODY_BYTES = 60 * 1024  # the bridge reads at most 64 KB of JSON; 24000 non-ASCII characters can be ~96 KB
 ARTIFACT_ID = re.compile(r"^ui_[0-9a-f]{24}$")
 _SAFE_ID = re.compile(r"[^A-Za-z0-9._:\-]")
 
@@ -63,10 +64,15 @@ class GeneratedUiClient:
     def generate(self, *, request_id: str, prompt: str, data: str | None, conversation_id: str | None,
                  size: str = "r1") -> dict[str, object]:
         body: dict[str, object] = {"requestId": safe_id(request_id), "prompt": prompt, "size": size}
-        if data:
-            body["data"] = data
         if conversation_id:
             body["conversationId"] = safe_id(conversation_id)
+        if data:
+            body["data"] = data
+            while len(_encode(body)) > MAX_BODY_BYTES and body["data"]:
+                text = str(body["data"])  # shorten the data (never the request) until the bridge accepts it
+                body["data"] = text[:max(0, int(len(text) * 0.85) - 16)]
+            if not body["data"]:
+                body.pop("data")
         value = self._json("POST", "/v1/ui/generate", body=body, timeout=GENERATE_TIMEOUT_SECONDS)
         if not isinstance(value.get("artifactId"), str) or not ARTIFACT_ID.match(value["artifactId"]):
             raise GeneratedUiFailure("bad_answer", "The Mac answered with something unexpected.")
@@ -110,7 +116,7 @@ class GeneratedUiClient:
         headers = {"Authorization": f"Bearer {token}", "Accept": accept}
         raw = None
         if body is not None:
-            raw = json.dumps(body, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+            raw = _encode(body)
             headers["Content-Type"] = "application/json"
         try:
             return self._transport.request(method, url + path, body=raw, headers=headers, timeout=timeout)
@@ -140,6 +146,10 @@ class GeneratedUiClient:
             raise GeneratedUiFailure("bridge_outdated", _FRIENDLY["bridge_outdated"], status=404)
         message = _FRIENDLY.get(code) or str(error.get("message") or "The Mac could not make that visual.")[:300]
         raise GeneratedUiFailure(code, message, status=response.status, retryable=bool(error.get("retryable")))
+
+
+def _encode(body: dict[str, object]) -> bytes:
+    return json.dumps(body, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
 
 def _check(artifact_id: str) -> None:

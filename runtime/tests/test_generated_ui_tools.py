@@ -112,6 +112,18 @@ class GeneratedUiToolsTest(unittest.TestCase):
         self.assertEqual("s_" + "b" * 24, broken.conversation_id(context),
                          "falls back to the conversation sync's own id for an unlinked session")
 
+    def test_long_non_ascii_data_is_shortened_to_what_the_bridge_accepts(self) -> None:
+        self.configure()
+        data = "日本語のデータ" * 3500  # 24500 characters, cut to 24000 by the tool: ~72 KB of UTF-8
+        result = self.call({"request": "a chart of this", "data": data})
+        self.assertFalse(result.is_error, result.text)
+        body = self.fake.generate_bodies()[-1]
+        raw = json.dumps(body, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        self.assertLessEqual(len(raw), 64 * 1024, "the bridge rejects bodies over 64 KB with 413")
+        self.assertTrue(data.startswith(str(body["data"])))
+        self.assertGreater(len(str(body["data"])), 10000, "only as much as needed is cut")
+        self.assertEqual("a chart of this", body["prompt"])
+
     def test_calls_without_a_voice_session_still_work(self) -> None:
         self.configure()
         result = self.call({"request": "a diagram"}, session=None, call=None)
