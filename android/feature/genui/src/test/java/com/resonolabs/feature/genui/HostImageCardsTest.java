@@ -182,4 +182,18 @@ public final class HostImageCardsTest {
         assertEquals(2, dismissed.size());
         assertTrue(dismissed.contains("a") && dismissed.contains("b"));
     }
+
+    @Test public void persistedPictureCardsComeBackIntoRecent() {
+        GenTestSupport.MemoryPersistence persistence = new GenTestSupport.MemoryPersistence();
+        persistence.saved = "{\"version\":1,\"cards\":[{\"id\":\"ui-art_final\",\"title\":\"New: Weekly focus hours\",\"subtitle\":\"Bar chart of focus hours per day; Thursday peaks at 7.4 h.\",\"eyebrow\":\"Generated on your Mac\",\"size\":\"card\",\"icon\":\"chart\",\"accent\":\"violet\",\"pinned\":false,\"ttlSec\":1800,\"body\":[{\"type\":\"image\",\"ref\":\"sha256:e98594f02963d9db420c833c60a2bf0855ec1846f7659779a8b0fae0d2875e8f\",\"alt\":\"Weekly focus hours\",\"aspect\":0.6666666865348816}],\"actions\":[],\"createdAt\":1791432858497,\"updatedAt\":1791432858497,\"state\":\"active\",\"where\":\"stack\"}]}";
+        // Just after a reboot: elapsed is small, the card is minutes old on the wall clock.
+        clock.elapsed = 120_000L;
+        clock.wall = 1791432858497L + 360_000L;
+        GenCardStore restored = new GenCardStore(clock, persistence, null);
+        assertEquals(0, restored.stackSize());
+        assertEquals(1, restored.recent().size());
+        GenCard card = restored.recent().get(0);
+        assertEquals("ui-art_final", card.id);
+        assertEquals(GenBlock.Type.IMAGE, card.body.get(0).type);
+    }
 }
