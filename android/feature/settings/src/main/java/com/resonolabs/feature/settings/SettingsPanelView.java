@@ -130,6 +130,9 @@ public final class SettingsPanelView extends View implements UiInputTarget {
     /** Page that BACK returns to from Theme ("Display" when its link opened it), else the list. */
     private String themeReturn;
     private boolean onScreen;
+    /** About's rows, read when the page opens (it animates; no per-frame PackageManager calls). */
+    private SettingValue[] aboutValues;
+    private final RectF buttonRect = new RectF();
     private final android.graphics.Typeface medium =
             android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL);
     private final LinearGradient brightnessFill = new LinearGradient(64f, 0f, 416f, 0f,
@@ -315,7 +318,7 @@ public final class SettingsPanelView extends View implements UiInputTarget {
             case "Bluetooth" -> drawBluetoothPage(canvas);
             case "About" -> drawAboutPage(canvas);
             default -> {
-                drawInfoGroup(canvas, statusValues(openPage), 108f);
+                drawInfoGroup(canvas, sentenceLabels(statusValues(openPage)), 108f);
                 button(canvas, "Refresh", 20f, 494f, 460f);
             }
         }
@@ -632,17 +635,24 @@ public final class SettingsPanelView extends View implements UiInputTarget {
         float orbY = 168f + aboutOrb.bob(4f);
         aboutOrb.setColor(SamTheme.ORB_BLUE).setEnergy(0.15f).setSpeed(0.6f);
         aboutOrb.draw(canvas, 240f, orbY, 50f);
-        drawInfoGroup(canvas, statusValues("About"), 258f);
+        if (aboutValues == null) aboutValues = sentenceLabels(statusValues("About"));
+        drawInfoGroup(canvas, aboutValues, 258f);
         button(canvas, "Restart device", 20f, 494f, 460f);
         SamTheme.text(canvas, paint, "Orb design inspired by Rare UI · rareui.com", 240f, 606f,
                 14f, SamTheme.MUTED, Paint.Align.CENTER, false);
     }
 
-    /** Grouped glass panel of label/value rows separated by hairlines. */
+    /** The same rows with display labels ("DEVICE" becomes "Device"). */
+    private static SettingValue[] sentenceLabels(SettingValue[] values) {
+        SettingValue[] out = new SettingValue[values.length];
+        for (int i = 0; i < values.length; i++) out[i] = new SettingValue(sentence(values[i].label), values[i].value);
+        return out;
+    }
+
+    /** Grouped glass panel of label/value rows separated by hairlines; labels are drawn as given. */
     private void drawInfoGroup(Canvas canvas, SettingValue[] values, float top) {
         float rowHeight = 64f;
-        RectF panel = new RectF(20f, top, 460f, top + values.length * rowHeight);
-        SamTheme.glass(canvas, paint, panel, 22f, false);
+        glassPainter.draw(canvas, paint, 20f, top, 460f, top + values.length * rowHeight, 22f, false);
         for (int i = 0; i < values.length; i++) {
             float y = top + i * rowHeight;
             if (i > 0) {
@@ -650,11 +660,10 @@ public final class SettingsPanelView extends View implements UiInputTarget {
                 paint.setColor(SamTheme.LINE);
                 canvas.drawRect(40f, y, 440f, y + 1f, paint);
             }
-            SamTheme.text(canvas, paint, sentence(values[i].label), 42f, y + 40f, 18f,
+            SamTheme.text(canvas, paint, values[i].label, 42f, y + 40f, 18f,
                     SamTheme.MUTED, Paint.Align.LEFT, false);
             paint.setTextSize(20f);
-            paint.setTypeface(android.graphics.Typeface.create("sans-serif-medium",
-                    android.graphics.Typeface.NORMAL));
+            paint.setTypeface(medium);
             SamTheme.text(canvas, paint, ellipsize(values[i].value, 250f), 438f, y + 40f, 20f,
                     SamTheme.INK, Paint.Align.RIGHT, true);
         }
@@ -1376,8 +1385,9 @@ public final class SettingsPanelView extends View implements UiInputTarget {
     }
 
     private void button(Canvas canvas, String label, float left, float top, float right, float height) {
-        RectF rect = new RectF(left, top, right, top + height);
-        SamTheme.glass(canvas, paint, rect, 24f, false);
+        RectF rect = buttonRect;
+        rect.set(left, top, right, top + height);
+        glassPainter.draw(canvas, paint, rect, 24f, false);
         boolean glyph = label.length() == 1;
         SamTheme.text(canvas, paint, label, rect.centerX(), rect.centerY() + (glyph ? 12f : 8f),
                 glyph ? 38f : 22f, SamTheme.INK, Paint.Align.CENTER, true);
@@ -1690,6 +1700,7 @@ public final class SettingsPanelView extends View implements UiInputTarget {
                 case "Management" -> refreshManagement();
                 case "AI" -> refreshOpenAi();
                 case "Display" -> displayValue = null;
+                case "About" -> aboutValues = null;
                 case THEME -> {
                     themeFocus = OrbStyleSetting.current().ordinal();
                     themeAppliedAt = -1L;
