@@ -36,6 +36,10 @@ PLIST="$HOME_DIR/Library/LaunchAgents/$LABEL.plist"
 if ! command -v heptabase >/dev/null 2>&1 && [ ! -x /opt/homebrew/bin/heptabase ]; then
   echo "install.sh: warning: the heptabase CLI is not installed yet (Heptabase > Settings > AI Features)." >&2
 fi
+if ! command -v cua-driver >/dev/null 2>&1 && [ ! -x /Applications/CuaDriver.app/Contents/MacOS/cua-driver ] \
+    && ! ls "$HOME"/.hermes/tools/cua-driver-*/CuaDriver.app/Contents/MacOS/cua-driver >/dev/null 2>&1; then
+  echo "install.sh: warning: cua-driver was not found; Mac control from the R1 stays off until it is installed." >&2
+fi
 
 # 1. Token (0600, never printed).
 umask 077
@@ -53,6 +57,7 @@ chmod 600 "$TOKEN_FILE"
 umask 022
 mkdir -p "$APP_DIR" "$(dirname "$LOG_FILE")" "$(dirname "$PLIST")"
 install -m 0644 "$SOURCE_DIR/samrabbit_bridge.py" "$APP_DIR/samrabbit_bridge.py"
+install -m 0644 "$SOURCE_DIR/samrabbit_mac.py" "$APP_DIR/samrabbit_mac.py"
 touch "$LOG_FILE"; chmod 600 "$LOG_FILE"
 if [ "$(stat -f %z "$LOG_FILE" 2>/dev/null || echo 0)" -gt 5242880 ]; then : > "$LOG_FILE"; fi
 
@@ -116,6 +121,13 @@ while True:
 cli, app = health.get("cli") or {}, health.get("app") or {}
 print(f"bridge running: heptabase CLI {cli.get('version') or 'missing'}, "
       f"Heptabase app {'reachable' if app.get('reachable') else 'NOT reachable (' + str(app.get('detail')) + ')'}")
+mac = health.get("mac") or {}
+driver, permissions = mac.get("driver") or {}, mac.get("permissions") or {}
+print(f"mac control: cua-driver {driver.get('version') or 'missing'}, "
+      f"accessibility {'on' if permissions.get('accessibility') else 'OFF'}, "
+      f"screen vision {'on' if permissions.get('screenRecording') else 'OFF'}")
+if mac.get("screenRecordingFix"):
+    print("  to turn on screen vision: " + mac["screenRecordingFix"].replace("Run on the Mac: ", ""))
 EOF
 IP=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || echo "<this Mac's IP>")
 echo "Bridge URL: http://$IP:$PORT"
