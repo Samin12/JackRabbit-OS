@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Install (or refresh) the SamRabbit Mac bridge as a per-user LaunchAgent. Safe to run again:
-# the token is created only when missing, the script and plist are rewritten, the agent reloaded.
+# the tokens are created only when missing, the scripts and plist are rewritten, the agent reloaded.
+# Conversation sync keeps its store in ~/Library/Application Support/SamRabbit/sync (never deleted here).
 #
 #   companion/mac-bridge/install.sh [--port 3780] [--host 0.0.0.0] [--python /usr/bin/python3]
 #
@@ -26,6 +27,8 @@ SOURCE_DIR=$(cd "$(dirname "$0")" && pwd)
 HOME_DIR=${SAMRABBIT_HOME:-$HOME}
 CONFIG_DIR="$HOME_DIR/.config/samrabbit"
 TOKEN_FILE="$CONFIG_DIR/bridge-token"
+DESKTOP_TOKEN_FILE="$CONFIG_DIR/desktop-token"
+SYNC_DIR="$HOME_DIR/Library/Application Support/SamRabbit/sync"
 APP_DIR="$HOME_DIR/Library/Application Support/SamRabbit/bridge"
 LOG_FILE="$HOME_DIR/Library/Logs/samrabbit-bridge.log"
 PLIST="$HOME_DIR/Library/LaunchAgents/$LABEL.plist"
@@ -52,22 +55,33 @@ else
   echo "keeping the existing bridge token in $TOKEN_FILE"
 fi
 chmod 600 "$TOKEN_FILE"
+# The desktop app's own token (loopback-only conversation API), separate from the R1's.
+if [ ! -s "$DESKTOP_TOKEN_FILE" ]; then
+  "$PYTHON" -c 'import secrets, sys; sys.stdout.write(secrets.token_urlsafe(32) + "\n")' > "$DESKTOP_TOKEN_FILE.tmp"
+  mv "$DESKTOP_TOKEN_FILE.tmp" "$DESKTOP_TOKEN_FILE"
+  echo "created a new desktop token in $DESKTOP_TOKEN_FILE"
+fi
+chmod 600 "$DESKTOP_TOKEN_FILE"
+mkdir -p "$SYNC_DIR"; chmod 700 "$SYNC_DIR"
 
 # 2. The bridge script, copied so the agent does not depend on this checkout.
 umask 022
 mkdir -p "$APP_DIR" "$(dirname "$LOG_FILE")" "$(dirname "$PLIST")"
 install -m 0644 "$SOURCE_DIR/samrabbit_bridge.py" "$APP_DIR/samrabbit_bridge.py"
 install -m 0644 "$SOURCE_DIR/samrabbit_mac.py" "$APP_DIR/samrabbit_mac.py"
+install -m 0644 "$SOURCE_DIR/samrabbit_sync.py" "$APP_DIR/samrabbit_sync.py"
 touch "$LOG_FILE"; chmod 600 "$LOG_FILE"
 if [ "$(stat -f %z "$LOG_FILE" 2>/dev/null || echo 0)" -gt 5242880 ]; then : > "$LOG_FILE"; fi
 
 # 3. LaunchAgent plist (written with plistlib so every path is escaped correctly).
-"$PYTHON" - "$PLIST" "$LABEL" "$PYTHON" "$APP_DIR/samrabbit_bridge.py" "$HOST" "$PORT" "$TOKEN_FILE" "$LOG_FILE" "$APP_DIR" <<'EOF'
+"$PYTHON" - "$PLIST" "$LABEL" "$PYTHON" "$APP_DIR/samrabbit_bridge.py" "$HOST" "$PORT" "$TOKEN_FILE" "$LOG_FILE" \
+    "$APP_DIR" "$SYNC_DIR" "$DESKTOP_TOKEN_FILE" <<'EOF'
 import os, plistlib, sys
-plist, label, python, script, host, port, token, log, workdir = sys.argv[1:]
+plist, label, python, script, host, port, token, log, workdir, sync_dir, desktop_token = sys.argv[1:]
 value = {
     "Label": label,
-    "ProgramArguments": [python, "-I", script, "--host", host, "--port", port, "--token-file", token],
+    "ProgramArguments": [python, "-I", script, "--host", host, "--port", port, "--token-file", token,
+                         "--sync-dir", sync_dir, "--desktop-token-file", desktop_token],
     "EnvironmentVariables": {"PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"},
     "WorkingDirectory": workdir,
     "RunAtLoad": True,
@@ -128,6 +142,9 @@ print(f"mac control: cua-driver {driver.get('version') or 'missing'}, "
       f"screen vision {'on' if permissions.get('screenRecording') else 'OFF'}")
 if mac.get("screenRecordingFix"):
     print("  to turn on screen vision: " + mac["screenRecordingFix"].replace("Run on the Mac: ", ""))
+sync = health.get("sync") or {}
+print(f"conversation sync: {'on' if sync.get('available') else 'OFF'}"
+      f"{'' if sync.get('desktopToken', True) else ' (desktop token missing)'}")
 EOF
 IP=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || echo "<this Mac's IP>")
 echo "Bridge URL: http://$IP:$PORT"

@@ -46,13 +46,25 @@ class InstallTest(unittest.TestCase):
         self.assertTrue(script.is_file())
         self.assertTrue(str(script).startswith(self.home), "the agent runs an installed copy, not the checkout")
         self.assertTrue((script.parent / "samrabbit_mac.py").is_file(), "the Mac-control module is installed too")
-        self.assertEqual(["--host", "0.0.0.0", "--port", "3780", "--token-file", str(token_file)],
+        self.assertTrue((script.parent / "samrabbit_sync.py").is_file(), "the conversation-sync module is installed too")
+        desktop_token_file = Path(self.home, ".config/samrabbit/desktop-token")
+        desktop_token = desktop_token_file.read_text().strip()
+        self.assertGreaterEqual(len(desktop_token), 40)
+        self.assertNotEqual(token, desktop_token, "the desktop app has its own token")
+        self.assertEqual(0o600, stat.S_IMODE(desktop_token_file.stat().st_mode))
+        self.assertNotIn(desktop_token, output)
+        sync_dir = Path(self.home, "Library/Application Support/SamRabbit/sync")
+        self.assertEqual(0o700, stat.S_IMODE(sync_dir.stat().st_mode))
+        self.assertEqual(["--host", "0.0.0.0", "--port", "3780", "--token-file", str(token_file),
+                          "--sync-dir", str(sync_dir), "--desktop-token-file", str(desktop_token_file)],
                          plist["ProgramArguments"][3:])
         self.assertTrue(plist["StandardErrorPath"].endswith("Library/Logs/samrabbit-bridge.log"))
 
+        (sync_dir / "conversations.db").write_text("kept")
         output = self.run_script("install.sh", "--port", "3791")
         self.assertIn("keeping the existing bridge token", output)
         self.assertEqual(token, token_file.read_text().strip())
+        self.assertEqual(desktop_token, desktop_token_file.read_text().strip(), "the desktop token is kept too")
         with plist_path.open("rb") as handle:
             self.assertIn("3791", plistlib.load(handle)["ProgramArguments"])
 
@@ -60,8 +72,11 @@ class InstallTest(unittest.TestCase):
         self.assertFalse(plist_path.exists())
         self.assertFalse(script.exists())
         self.assertTrue(token_file.exists(), "token kept without --purge")
+        self.assertTrue(desktop_token_file.exists())
         self.run_script("uninstall.sh", "--purge")
         self.assertFalse(token_file.exists())
+        self.assertFalse(desktop_token_file.exists())
+        self.assertEqual("kept", (sync_dir / "conversations.db").read_text(), "synced conversations are never deleted")
 
     def test_install_rejects_a_bad_port(self) -> None:
         env = {**os.environ, "SAMRABBIT_HOME": self.home, "SAMRABBIT_SKIP_LAUNCHCTL": "1"}
