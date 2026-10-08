@@ -816,6 +816,11 @@ def make_server(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, *, token_fil
                 calendar_id: Optional[str] = None, calendar_writer: Any = None) -> BridgeServer:
     """Conversation sync runs only with a ``sync_dir`` (the command line passes the default one). ``cli`` is a
     path, ``auto`` or ``dry-run``; without it only the installed copy uses the real CLI (``cli_for``)."""
+    if calendar_writer is None and gcal is not None and composio is None and default_cli_choice() == CLI_DRY_RUN:
+        # A copy run from a checkout (tests, dev) never changes the real Google Calendar unless given --composio.
+        calendar_writer = gcal.UnavailableWriter("calendar_dev_copy", "This copy of the Mac bridge is not the "
+                                                 "installed one, so it does not change Google Calendar. Pass "
+                                                 "--composio <path> to use a Composio CLI explicitly.")
     if calendar_writer is None and gcal is not None:
         # A bad SAMRABBIT_CALENDAR_ID or an unusable temp folder turns calendar changes off, never the bridge.
         calendar_writer = gcal.make_writer_or_unavailable(composio, calendar_id=calendar_id)

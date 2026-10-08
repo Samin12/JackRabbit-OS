@@ -6,8 +6,8 @@ runtime does the filtering with its own clock: the answer holds only events that
 its local time, a speakable label for the window, and the first event after it, clearly marked as later.
 
 All-day events (a birthday, an offsite) are not "in the next 30 minutes": they count as inside a window only when
-the window overlaps their local day and is at least ``ALL_DAY_MIN_WINDOW`` (6 hours) long, as for "today" or "this
-afternoon". In a shorter window the ones on that day come separately as ``allDayToday``.
+at least ``ALL_DAY_MIN_WINDOW`` (6 hours) of the window falls on their local day, as for "today" or "this
+afternoon". Otherwise the ones the window touches come separately as ``allDayToday``.
 
 Read-only: it uses ``CalendarRepository.upcoming_events`` and nothing else.
 """
@@ -52,7 +52,6 @@ def list_window(
     start, end = _bounds(arguments, now.astimezone(UTC), zone)
     candidates = repository.upcoming_events(start.isoformat(), limit=_SCAN_LIMIT,
                                             all_day_grace_hours=_ALL_DAY_GRACE_HOURS)
-    all_day_counts = end - start >= ALL_DAY_MIN_WINDOW
     inside: list[dict[str, object]] = []
     all_day_beside: list[dict[str, object]] = []  # all-day events of the day(s) a short window falls on
     later: CalendarEvent | None = None
@@ -62,7 +61,9 @@ def list_window(
             continue
         event_start, event_end = bounds
         if _overlaps(event_start, event_end, start, end):
-            target = inside if all_day_counts or not event.all_day else all_day_beside
+            target = inside
+            if event.all_day and min(end, event_end) - max(start, event_start) < ALL_DAY_MIN_WINDOW:
+                target = all_day_beside  # a short slice of that day (or a window crossing midnight into it)
             if len(target) < limit:
                 item = view(event)
                 item.update(_local_fields(event, event_start, event_end, start, zone))

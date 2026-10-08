@@ -153,6 +153,17 @@ class CalendarRoutesTest(unittest.TestCase):
         self.assertEqual(405, self.call("POST", "/v1/calendar/status", {})[0])
         self.assertEqual(405, self.call("GET", "/v1/calendar/events")[0])
 
+    def test_a_checkout_copy_never_changes_the_real_calendar_without_an_explicit_cli(self) -> None:
+        self.assertEqual(bridge.CLI_DRY_RUN, bridge.default_cli_choice(), "tests run from a checkout")
+        token_file = Path(self.tmp.name) / "bridge-token"
+        server = bridge.make_server("127.0.0.1", 0, token_file=str(token_file), cli="dry-run",
+                                    driver=str(Path(self.tmp.name) / "no-cua-driver"), sync_dir=None,
+                                    artifacts_dir=str(Path(self.tmp.name) / "artifacts"))
+        self.addCleanup(server.server_close)
+        self.assertIsInstance(server.calendar, gcal.UnavailableWriter)
+        self.assertEqual("calendar_dev_copy", server.calendar.code)
+        self.assertFalse(server.calendar.capabilities()["available"])
+
     def test_missing_cli_is_reported_and_refused_honestly(self) -> None:
         self.server.calendar = gcal.make_writer(str(self.composio) + "-absent")
         self.addCleanup(self.server.calendar.close)

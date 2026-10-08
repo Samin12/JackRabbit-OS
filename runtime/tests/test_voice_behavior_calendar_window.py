@@ -121,6 +121,13 @@ class CalendarWindowTest(unittest.TestCase):
         self.assertTrue(empty["note"].startswith("Nothing is on the calendar from 11:05 AM to 11:55 AM"))
         self.assertEqual(["Company offsite"], [item["title"] for item in empty["allDayToday"]])
 
+    def test_a_window_crossing_midnight_counts_only_the_day_it_mostly_covers(self) -> None:
+        self.morning(("Company offsite", datetime(2026, 10, 8, tzinfo=UTC), datetime(2026, 10, 9, tzinfo=UTC), True))
+        evening = self.window(**{"from": "2026-10-08T18:00", "to": "2026-10-09T02:00"})  # 6 h of Oct 8, 2 h of Oct 9
+        self.assertIn("Company offsite", [item["title"] for item in evening["events"]])
+        self.assertNotIn("Mom's birthday", [item["title"] for item in evening["events"]])
+        self.assertEqual(["Mom's birthday"], [item["title"] for item in evening["allDayToday"]])
+
     def test_whole_number_floats_and_now_in_any_case(self) -> None:
         self.morning()
         self.assertEqual(self.window(withinMinutes=30), self.window(withinMinutes=30.0))
