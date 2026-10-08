@@ -97,6 +97,14 @@ class PlacementTest(unittest.TestCase):
             self.assertTrue(is_general_task(text), text)
         for text in ("fix the login bug", "write unit tests for the parser", "refactor the API client", "hello"):
             self.assertFalse(is_general_task(text), text)
+        # Coding work about everyday things (the R1's own features) is still coding work.
+        for text in ("fix the calendar sync so all-day events show", "add a Spotify widget to the board",
+                     "the email card crashes when I open it", "fix the bug where the Heptabase journal doesn't save",
+                     "make the mac bridge return the window title", "add a screenshot button to the management page",
+                     "make the search for threads faster"):
+            self.assertFalse(is_general_task(text), text)
+        for text in ("summarize this web page", "set up the webinar tabs in Chrome", "make a deck for the meeting"):
+            self.assertTrue(is_general_task(text), text)
 
     def test_t3_new_thread_uses_placement_when_no_project_is_named(self) -> None:
         self.connect()
@@ -114,6 +122,10 @@ class PlacementTest(unittest.TestCase):
         result = catalog.invoke("t3_new_thread", {"prompt": "Fix it", "project": "Workbench"}, agent=AgentKind.VOICE)
         self.assertEqual(PROJECT_MAIN, self.fake.dispatched[4]["projectId"])
         self.assertNotIn("placement", json.loads(result.text))
+        result = catalog.invoke("t3_new_thread", {"prompt": "Make the calendar widget show all-day events"},
+                                agent=AgentKind.VOICE)
+        self.assertEqual(PROJECT_SIDE, self.fake.dispatched[6]["projectId"], "coding work stays in the code project")
+        self.assertEqual("recent", json.loads(result.text)["placement"])
 
     def test_mac_task_delegates_to_a_t3_thread_in_the_orchestration_project(self) -> None:
         catalog = ToolCatalog()

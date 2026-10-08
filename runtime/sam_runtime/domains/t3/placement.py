@@ -55,6 +55,13 @@ _GENERAL = re.compile(
     r"downloads|folder|folders|desktop|screenshot|organi[sz]e|clean up|summari[sz]e|research|draft|reply|"
     r"tweet|invoice|spreadsheet|excel|slides|deck|pdf|photo|photos|video|videos|wifi|bluetooth|volume|"
     r"computer|mac)\b")
+# Words that make a request about building or fixing software even when it names everyday things
+# ("fix the calendar sync", "add a Spotify widget", "the email card crashes"): never a life task.
+_SOFTWARE = re.compile(
+    r"\b(widgets?|features?|buttons?|ui|ux|components?|card|(?<!web )pages?|sync\w*|bridge|runtime|server|client|"
+    r"endpoint\w*|readme|documentation|animation\w*|fonts?|icons?|integration\w*|plugins?|android|ios|r1|"
+    r"bugs?|crash\w*|broken|not working|doesn t work|does not work|isn t working|faster|slower|performance|"
+    r"latency)\b")
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,11 +114,13 @@ def words(text: object) -> list[str]:
 
 
 def is_general_task(text: str) -> bool:
-    """A computer or life task rather than coding work (more general signals than coding ones)."""
+    """A computer or life task rather than coding work: more general signals than coding ones, and
+    nothing that is about building software. Unsure means coding (the most recently active project,
+    as before placement existed): t3_new_thread is the coding tool, mac_task the computer one."""
     lowered = " ".join(words(text))
     general = len(_GENERAL.findall(lowered))
     coding = len(_CODING.findall(lowered))
-    return general > coding
+    return general > coding and _SOFTWARE.search(lowered) is None
 
 
 def _names(record: dict[str, object]) -> list[str]:
