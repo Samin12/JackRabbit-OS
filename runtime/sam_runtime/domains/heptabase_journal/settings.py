@@ -20,7 +20,9 @@ def _now() -> str:
 
 @dataclass(frozen=True, slots=True)
 class JournalSettings:
-    auto_sessions: bool = True
+    # Off by default: the journal holds only what the user explicitly asks to add (journal_add). "Record every
+    # voice conversation in my journal" turns the end-of-session entries on.
+    auto_sessions: bool = False
     include_actions: bool = True
     include_assistant: bool = False
     redact_secrets: bool = True

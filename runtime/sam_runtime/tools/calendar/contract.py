@@ -21,10 +21,22 @@ def contracts() -> tuple[CalendarToolContract, ...]:
         CalendarToolContract(
             "calendar_list_upcoming",
             "List upcoming events from the local synchronized Calendar service, soonest first, with "
-            "their start and end times. Use this for today, tomorrow, this week or any date: list, "
-            "then keep only the events in that range.",
+            "their start and end times. For any time window ('the next 30 minutes', 'the next hour', "
+            "'this afternoon', 'until 3', 'tomorrow morning') pass the window: withinMinutes (from now), "
+            "or from and to (ISO 8601 with the UTC offset from the [Clock] note, e.g. "
+            "2026-10-08T12:00:00-04:00). The answer then holds only the events in that window, with local "
+            "times (localStart) and a window label: tell the user exactly those, say plainly when there are "
+            "none, and never present nextAfterWindow or any other event as inside the window. Without a "
+            "window it lists the next events (for today, tomorrow or this week prefer from and to).",
             "read",
-            _schema({"limit": {"type": "integer", "minimum": 1, "maximum": 50}}),
+            _schema({
+                "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+                "withinMinutes": {"type": "integer", "minimum": 1, "maximum": 10080,
+                                  "description": "Window from now, e.g. 30 for 'the next 30 minutes'."},
+                "from": {"type": "string", "description": "Window start, ISO 8601 (default now)."},
+                "to": {"type": "string", "description": "Window end, ISO 8601."},
+                "timezone": {"type": "string", "description": "IANA zone for local times (default America/New_York)."},
+            }),
         ),
         CalendarToolContract(
             "calendar_search",

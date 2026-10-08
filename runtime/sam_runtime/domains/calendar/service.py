@@ -79,7 +79,8 @@ class CalendarService:
     def invoke_tool(self, name: str, context: ToolInvocationContext, arguments: dict[str, object]) -> ToolInvocationResult:
         try:
             if name == "calendar_list_upcoming":
-                value = [self._event_view(item) for item in self._repository.upcoming_events(datetime.now(UTC).isoformat(), limit=_limit(arguments))]
+                from sam_runtime.domains.calendar.window import list_window, requested  # time windows, read-only
+                value = list_window(self._repository, arguments, now=datetime.now(UTC), limit=_limit(arguments), view=self._event_view) if requested(arguments) else [self._event_view(item) for item in self._repository.upcoming_events(datetime.now(UTC).isoformat(), limit=_limit(arguments))]
             elif name == "calendar_search":
                 value = [self._event_view(item) for item in self._repository.search_upcoming(datetime.now(UTC).isoformat(), _required(arguments, "query"), limit=_limit(arguments))]
             elif name == "calendar_read_event":

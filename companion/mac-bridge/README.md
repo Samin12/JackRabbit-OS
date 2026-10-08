@@ -1,7 +1,8 @@
 # SamRabbit Mac bridge (Heptabase journal and Mac control)
 
-The R1 writes your words and activity lines into your Heptabase journal. This
-bridge lets it do that through the Heptabase desktop app on your Mac, using the
+The R1 writes what you ask it to add into your Heptabase journal (and, only if you turn on
+"Record every voice conversation in my journal", your words and activity lines from each voice
+session). This bridge lets it do that through the Heptabase desktop app on your Mac, using the
 app's own CLI (`heptabase journal append` / `journal read`). There is no
 Heptabase sign-in and nothing to click in Heptabase.
 
@@ -65,7 +66,7 @@ private-LAN peers are accepted (10/8, 172.16/12, 192.168/16, 169.254/16, fc00::/
 
 | Route | Result |
 |---|---|
-| `GET /health` | `{ok, service, version, cli:{available, version}, app:{reachable, detail}, mac:{…capabilities, screenLocked}, checkedAt}` (cached 10 s) |
+| `GET /health` | `{ok, service, version, cli:{available, version, mode ("real" or "dry-run")}, app:{reachable, detail}, mac:{…capabilities, screenLocked}, checkedAt}` (cached 10 s) |
 | `POST /v1/heptabase/journal/append` `{date:"YYYY-MM-DD", content:"<markdown>"}` | the CLI's `{date, title, contentMd5}` |
 | `GET /v1/heptabase/journal/read?date=YYYY-MM-DD` | `{date, title, text, contentMd5}`: the day as plain text lines (paragraphs, headings, `- ` bullets, `1. ` numbers, `[ ]`/`[x]` todos, `+ ` toggles, `> ` quotes; marks removed; nested items indented) |
 
@@ -246,13 +247,23 @@ generation). The CLI is found on `PATH`, then `~/.local/bin/claude`; agent-brows
 - The token file is re-read when it changes. To rotate it, delete the file, run `install.sh`, and connect the R1
   again.
 
+## Which Heptabase CLI (test and dev bridges never write to the real journal)
+
+`--cli` (or `SAMRABBIT_HEPTABASE_CLI`) picks it: a path (used as given), `auto` (the real `heptabase` on `PATH` or
+`/opt/homebrew/bin/heptabase`) or `dry-run` (nothing reaches Heptabase: appends stay in the bridge's memory and are
+answered with `dryRun: true`; reads return them). Without a choice, only the installed LaunchAgent copy in
+`~/Library/Application Support/SamRabbit/bridge/` uses the real CLI; every other copy, such as a second bridge run from
+a checkout on another port, is `dry-run`. `install.sh` also passes `--cli auto` in the LaunchAgent. `/health` reports
+it as `cli.mode` (`real` or `dry-run`), and a dry-run bridge logs a warning at start. To test against a fake CLI, pass
+its path; pass `--cli auto` only when you really want writes in your Heptabase journal.
+
 ## Tests
 
 ```sh
 python3 -m unittest discover -s companion/mac-bridge/tests
 ```
 
-The tests put a fake `heptabase` executable first on `PATH` (`tests/fake_heptabase.py`), drive Mac control through a
+The tests pass a fake `heptabase` executable by path (`tests/fake_heptabase.py`), drive Mac control through a
 fake `cua-driver` / `open` / `lsappinfo` (`tests/fake_cua_driver.py`), and run the installer against a throwaway home
 with `SAMRABBIT_SKIP_LAUNCHCTL=1`. `tests/test_sync.py` covers the conversation store, dedupe, drafts, blobs, the auth
 matrix (R1 token vs desktop token, loopback vs a real LAN peer through this Mac's own address), SSE and screenshots.

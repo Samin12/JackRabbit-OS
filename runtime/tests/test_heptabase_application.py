@@ -64,7 +64,7 @@ class HeptabaseApplicationWiringTest(unittest.TestCase):
                 with urlopen(request, timeout=5) as response:
                     status = json.loads(response.read())
                 self.assertEqual(False, status["connected"])
-                self.assertTrue(status["autoSessions"])
+                self.assertFalse(status["autoSessions"], "a new R1 journals only what the user asks to add")
             finally:
                 application.stop()
             self.assertTrue(Path(directory, "data", "resono.sqlite3").exists())

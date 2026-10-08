@@ -30,6 +30,7 @@ from sam_runtime.tools import ToolCatalog, ToolDefinition, ToolInvocationResult
 from sam_runtime.tools.definitions import ToolInvocationContext
 
 from .client import MacControlClient, MacFailure
+from .google_account import with_google_account
 
 MAC_TOOL_SET = AudienceResource(AudienceResourceKind.DOMAIN_TOOL_SET, "mac")
 MAX_OUTPUT_BYTES = 6500
@@ -57,7 +58,11 @@ MAC_TOOL_SPECS: tuple[tuple[str, str, str, dict[str, object]], ...] = (
         "Open something on the user's Mac so it appears in front: an app (app: its name, e.g. Heptabase), a "
         "website in Chrome (url: a full http or https link; for a search build the link yourself, e.g. "
         "https://www.google.com/search?q=...), or a file or folder in the home folder (path, e.g. ~/Downloads). "
-        "Pass exactly one. Then say in a few words what you opened.",
+        "Pass exactly one. 'My calendar' (in Chrome or not) is Google Calendar: url "
+        "https://calendar.google.com/calendar/r, never app Calendar unless the user says 'the Calendar app'; "
+        "'my email' or Gmail is https://mail.google.com/mail/. Google Calendar, Gmail, Drive, Docs and Meet links "
+        "open in the user's own Google account automatically (do not add /u/0); for another account add "
+        "authuser=<that email> yourself. Each url opens in a new Chrome tab. Then say in a few words what you opened.",
         "external_write",
         {
             "type": "object",
@@ -148,8 +153,10 @@ MAC_TOOL_SPECS: tuple[tuple[str, str, str, dict[str, object]], ...] = (
 
 def register_mac_tools(catalog: ToolCatalog, client: MacControlClient, *, t3: T3Service | None = None,
                        placement: ProjectPlacement | None = None,
-                       owner_name: Callable[[], str | None] = lambda: None) -> "MacToolHandlers":
-    handlers = MacToolHandlers(client, t3=t3, placement=placement, owner_name=owner_name)
+                       owner_name: Callable[[], str | None] = lambda: None,
+                       google_account: Callable[[], str | None] = lambda: None) -> "MacToolHandlers":
+    handlers = MacToolHandlers(client, t3=t3, placement=placement, owner_name=owner_name,
+                               google_account=google_account)
     for name, description, effect, schema in MAC_TOOL_SPECS:
         if name == "mac_task":
             available = lambda _agent: client.configured() and t3 is not None and placement is not None \
@@ -173,11 +180,13 @@ def register_mac_tools(catalog: ToolCatalog, client: MacControlClient, *, t3: T3
 class MacToolHandlers:
     def __init__(self, client: MacControlClient, *, t3: T3Service | None = None,
                  placement: ProjectPlacement | None = None,
-                 owner_name: Callable[[], str | None] = lambda: None) -> None:
+                 owner_name: Callable[[], str | None] = lambda: None,
+                 google_account: Callable[[], str | None] = lambda: None) -> None:
         self._client = client
         self._t3 = t3
         self._placement = placement
         self._owner_name = owner_name
+        self._google_account = google_account  # the user's Google account for Google links (or None)
         self._lock = threading.Lock()
         self._told_vision: set[str] = set()
         self._screenshot_conversation: Callable[[str | None], str | None] = lambda _session: None
@@ -245,7 +254,19 @@ class MacToolHandlers:
         given = {key: value for key, value in given.items() if value}
         if len(given) != 1:
             raise ValueError("Pass exactly one of app, url or path.")
-        return self._client.open(**given)
+        account = None
+        if "url" in given:
+            try:
+                account = self._google_account()
+            except Exception:  # noqa: BLE001 - a missing setting must never block opening the link
+                account = None
+            pinned = with_google_account(given["url"], account)
+            account = account if pinned != given["url"] else None
+            given["url"] = pinned
+        result = self._client.open(**given)
+        if account:
+            result = {**result, "googleAccount": account}
+        return result
 
     def _read(self, arguments: dict[str, object]) -> dict[str, object]:
         limit = arguments.get("max")

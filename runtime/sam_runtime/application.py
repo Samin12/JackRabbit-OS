@@ -90,7 +90,7 @@ from .domains.t3.tools import T3_TOOL_SET, register_t3_tools
 from .domains.t3.voice import T3VoiceContext
 from .domains.t3.placement import OrchestrationSetting, ProjectPlacement
 from .api.t3_routes import T3Routes
-from .domains.mac import MAC_TOOL_SET, MacControlClient, MacVoiceContext, register_mac_tools
+from .domains.mac import MAC_TOOL_SET, GoogleAccountSetting, MacControlClient, MacVoiceContext, register_mac_tools
 from .api.mac_routes import MacRoutes
 from .domains.generated_ui import (GENERATED_UI_TOOL_SET, ArtifactWatcher, GeneratedUiClient,
                                    GeneratedUiVoiceContext, register_generated_ui_tools)
@@ -215,9 +215,12 @@ class RuntimeApplication:
         register_t3_tools(self._tools, self._t3, self._t3_placement)
         # Mac control from Voice: the journal's Mac bridge (same URL and sealed token) plus T3 for mac_task.
         self._mac = MacControlClient(self._heptabase_journal.bridge_store)
-        self._mac_routes = MacRoutes(self._mac)
+        # Google links opened in Chrome go to the user's Google account (setting, else the calendar's account).
+        self._google_account = GoogleAccountSetting(self._database)
+        self._mac_routes = MacRoutes(self._mac, google_account=self._google_account)
         mac_tools = register_mac_tools(self._tools, self._mac, t3=self._t3, placement=self._t3_placement,
-                                       owner_name=lambda: self._profile.profile().display_name)
+                                       owner_name=lambda: self._profile.profile().display_name,
+                                       google_account=self._google_account.email)
         mac_tools.set_screenshot_conversation(self._conversation_sync.screenshot_conversation)
         # Generated UIs from Voice: the same Mac bridge makes the visual; announcements bring it to the app.
         self._generated_ui = GeneratedUiClient(self._heptabase_journal.bridge_store)
