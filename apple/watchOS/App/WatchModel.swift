@@ -1,0 +1,303 @@
+import Foundation
+import Observation
+import SamRabbitKit
+import SwiftUI
+import WatchKit
+
+/// The watch's pages, top to bottom (Digital Crown or swipe).
+enum WatchPage: String, CaseIterable, Hashable {
+    case status, needs, working, upnext, quick
+
+    /// `samrabbit://tab/<name>` from complications (also accepts the iPhone's names).
+    init?(link: String) {
+        switch link.lowercased() {
+        case "status", "home", "ask": self = .status
+        case "needs", "needsyou", "tasks": self = .needs
+        case "working": self = .working
+        case "upnext", "next", "calendar": self = .upnext
+        case "quick", "actions": self = .quick
+        default: return nil
+        }
+    }
+}
+
+/// A short result line shown after an action ("Approved", "Blocked 2:10 – 2:40 PM").
+struct WatchBanner: Equatable, Identifiable {
+    enum Style { case success, failure }
+    let id = UUID()
+    var style: Style
+    var title: String
+    var detail: String?
+}
+
+/// Everything the watch shows and does. One instance, on the main actor.
+@MainActor
+@Observable
+final class WatchModel {
+    let account: BridgeAccount
+    let actions: SamRabbitActions
+    let link: PhoneLink
+
+    var page: WatchPage = .status
+    var paired: Bool
+    var summary: MobileSummary?
+    var summaryDate: Date?
+    var threads: [TaskThread] = []
+    var lastError: BridgeError?
+    var route: PhoneLink.Route = .direct
+    var refreshing = false
+    var connecting = false
+    /// Thread ids (and "block" / "note" / "ask") with a request in flight.
+    var busy: Set<String> = []
+    var banner: WatchBanner?
+
+    private var loop: Task<Void, Never>?
+    private var bannerTask: Task<Void, Never>?
+    private var pairingObserver: (any NSObjectProtocol)?
+
+    init(link: PhoneLink = .shared) {
+        self.link = link
+        // Same storage as `BridgeAccount.shared` (where PhoneLink saves the pairing), plus the
+        // iPhone as the relay for every request.
+        account = BridgeAccount(relay: link)
+        actions = SamRabbitActions(account: account)
+        paired = account.isPaired
+        if let cached = SummaryCache.shared.load() {
+            summary = cached.summary
+            summaryDate = cached.savedAt
+        }
+        if let raw = UserDefaults.standard.string(forKey: "SamRabbitPage"), let page = WatchPage(link: raw) {
+            self.page = page
+        }
+        pairingObserver = NotificationCenter.default.addObserver(forName: .samRabbitPairingChanged, object: nil,
+                                                                 queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.pairingChanged() }
+        }
+    }
+
+    // MARK: - Derived state
+
+    var reachable: Bool { lastError == nil && summary != nil }
+
+    var mood: OrbMood { paired && !rejected ? OrbMood.from(summary, reachable: reachable || isFresh) : .offline }
+
+    /// The cached summary is recent enough to trust while a refresh fails.
+    var isFresh: Bool { summaryDate.map { -$0.timeIntervalSinceNow < 120 } ?? false }
+
+    /// The Mac refused the watch's token (revoked from the Mac): reconnect through the iPhone.
+    var rejected: Bool { lastError == .unauthorized }
+
+    var needsYou: [TaskThread] {
+        let list = threads.isEmpty ? (summary?.t3.threads ?? []) : threads
+        return list.filter(\.status.needsYou)
+    }
+
+    var working: [TaskThread] {
+        let list = threads.isEmpty ? (summary?.t3.threads ?? []) : threads
+        return list.filter { $0.status == .working }
+    }
+
+    var needsYouCount: Int { threads.isEmpty ? (summary?.t3.needsYou ?? 0) : needsYou.count }
+    var workingCount: Int { threads.isEmpty ? (summary?.t3.working ?? 0) : working.count }
+
+    func events(now: Date = .now) -> [CalendarEvent] {
+        (summary?.calendar.next ?? []).filter { ($0.endsAt ?? $0.startsAt ?? .distantFuture) > now }
+    }
+
+    // MARK: - Refresh
+
+    func refresh() async {
+        guard paired, let client = account.client(timeout: 6) else { return }
+        refreshing = true
+        defer { refreshing = false }
+        do {
+            async let summaryCall = client.summary(timeout: 6)
+            async let threadsCall = client.threads()
+            let (fresh, list) = try await (summaryCall, threadsCall)
+            summary = fresh
+            summaryDate = .now
+            threads = list
+            lastError = nil
+            SummaryCache.shared.save(fresh)
+            SamRabbitActions.reloadWidgets()
+        } catch let error as BridgeError {
+            if error != .cancelled { lastError = error }
+        } catch {
+            lastError = .unreachable(error.localizedDescription)
+        }
+        route = link.lastRoute
+    }
+
+    /// Refreshes every 30 seconds while the app is in front.
+    func start() {
+        loop?.cancel()
+        loop = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.refresh()
+                try? await Task.sleep(for: .seconds(30))
+            }
+        }
+    }
+
+    func stop() {
+        loop?.cancel()
+        loop = nil
+    }
+
+    private func pairingChanged() {
+        let nowPaired = account.isPaired
+        defer { paired = nowPaired }
+        if !nowPaired {
+            summary = nil
+            threads = []
+            lastError = nil
+            return
+        }
+        lastError = nil
+        Task { await refresh() }
+    }
+
+    /// Asks the iPhone for the pairing (or for a new token after the Mac rejected the old one).
+    func connect(reissue: Bool = false) async {
+        connecting = true
+        defer { connecting = false }
+        let ok = await link.requestContext(reissue: reissue)
+        paired = account.isPaired
+        if ok {
+            lastError = nil
+            await refresh()
+        } else {
+            show(.failure, link.phoneReachable ? "Pair your iPhone first" : "iPhone not reachable")
+        }
+    }
+
+    // MARK: - Actions
+
+    func ask(_ text: String) async {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        await run("ask") {
+            let created = try await self.actions.ask(trimmed)
+            let title = created.title ?? Formatting.clip(trimmed, 40)
+            self.show(.success, "Started", detail: created.projectName.map { "“\(title)” · \($0)" } ?? "“\(title)”")
+        }
+    }
+
+    func approve(_ thread: TaskThread, _ approve: Bool) async {
+        await run(thread.threadId) {
+            try await self.actions.approve(threadId: thread.threadId, approve)
+            self.drop(thread.threadId)
+            self.show(.success, approve ? "Approved" : "Denied", detail: thread.title)
+        }
+    }
+
+    func answer(_ thread: TaskThread, _ text: String) async {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        await run(thread.threadId) {
+            try await self.actions.answer(threadId: thread.threadId, trimmed)
+            self.drop(thread.threadId)
+            self.show(.success, "Answer sent", detail: thread.title)
+        }
+    }
+
+    /// A message into the thread (a reply while it waits for approval, or a follow-up).
+    func reply(_ thread: TaskThread, _ text: String) async {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        await run(thread.threadId) {
+            try await self.account.requireClient(timeout: 15).sendMessage(threadId: thread.threadId, text: trimmed)
+            self.show(.success, "Reply sent", detail: thread.title)
+        }
+    }
+
+    func stop(_ thread: TaskThread) async {
+        await run(thread.threadId) {
+            try await self.account.requireClient(timeout: 15).stop(threadId: thread.threadId)
+            self.show(.success, "Stopped", detail: thread.title)
+        }
+    }
+
+    func block(minutes: Int = 30) async {
+        await run("block") {
+            let result = try await self.actions.block(minutes: minutes)
+            let range = result.event.map { Formatting.range($0.startsAt, $0.endsAt) } ?? "from now"
+            self.show(.success, "Blocked \(minutes) min", detail: result.dryRun ? "\(range) · test copy" : range)
+        }
+    }
+
+    func note(_ text: String) async {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        await run("note") {
+            let result = try await self.actions.note(trimmed)
+            self.show(.success, result.state == "queued" ? "Note queued" : "Added to journal",
+                      detail: Formatting.clip(trimmed, 50))
+        }
+    }
+
+    /// Runs an action with the busy flag, haptics, a banner on failure and a refresh after.
+    private func run(_ key: String, _ body: @escaping @MainActor () async throws -> Void) async {
+        guard !busy.contains(key) else { return }
+        busy.insert(key)
+        defer { busy.remove(key) }
+        do {
+            try await body()
+            WKInterfaceDevice.current().play(.success)
+            route = link.lastRoute
+            await refresh()
+        } catch let error as BridgeError {
+            if error == .cancelled { return }
+            WKInterfaceDevice.current().play(.failure)
+            if error == .unauthorized { lastError = .unauthorized }
+            show(.failure, error.shortDescription, detail: error.watchDetail)
+        } catch {
+            WKInterfaceDevice.current().play(.failure)
+            show(.failure, "Something went wrong")
+        }
+    }
+
+    /// Removes a thread from what needs you right away (the refresh confirms).
+    private func drop(_ threadId: String) {
+        threads.removeAll { $0.threadId == threadId && $0.status.needsYou }
+    }
+
+    func show(_ style: WatchBanner.Style, _ title: String, detail: String? = nil) {
+        let banner = WatchBanner(style: style, title: title, detail: detail)
+        self.banner = banner
+        bannerTask?.cancel()
+        bannerTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(style == .success ? 3.5 : 6))
+            guard !Task.isCancelled, self?.banner?.id == banner.id else { return }
+            withAnimation { self?.banner = nil }
+        }
+    }
+
+    // MARK: - Links
+
+    /// `samrabbit://tab/<page>`, `samrabbit://ask`, `samrabbit://thread/<id>`.
+    func handle(url: URL) {
+        guard url.scheme?.lowercased() == SamRabbit.urlScheme else { return }
+        let target = (url.host ?? "").lowercased()
+        let first = url.path.split(separator: "/").first.map(String.init) ?? ""
+        switch target {
+        case "tab": if let page = WatchPage(link: first) { self.page = page }
+        case "thread", "task": page = needsYou.contains { $0.threadId == first } ? .needs : .working
+        case "block", "note": page = .quick
+        default: if let page = WatchPage(link: target) { self.page = page }
+        }
+    }
+}
+
+extension BridgeError {
+    /// One short sentence for the watch.
+    var watchDetail: String? {
+        switch self {
+        case .unreachable: "Mac and iPhone are out of reach."
+        case .unauthorized: "Reconnect through your iPhone."
+        case .notPaired: "Pair SamRabbit on your iPhone."
+        case .server(_, _, let message, _): message.isEmpty ? nil : message
+        default: nil
+        }
+    }
+}

@@ -17,3 +17,7 @@ iOS/App/Info.plist
 iOS/App/SamRabbit.entitlements
 iOS/Widgets/Info.plist
 iOS/Widgets/SamRabbitWidgets.entitlements
+watchOS/App/Info.plist
+watchOS/App/SamRabbitWatch.entitlements
+watchOS/Widgets/Info.plist
+watchOS/Widgets/SamRabbitWatchWidgets.entitlements

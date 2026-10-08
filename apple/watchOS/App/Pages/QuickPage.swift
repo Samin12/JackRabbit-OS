@@ -1,0 +1,82 @@
+import SamRabbitKit
+import SwiftUI
+
+/// Page 5: one-tap actions: block the next 30 minutes, add a dictated journal note.
+struct QuickPage: View {
+    @Environment(WatchModel.self) private var model
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 8) {
+                Button {
+                    Task { await model.block(minutes: 30) }
+                } label: {
+                    CapsuleFace(title: "Block 30m", symbol: "calendar.badge.clock",
+                                colors: [SamTheme.violet, Color(hex: 0x5A4BE0)], height: 46,
+                                busy: model.busy.contains("block"))
+                }
+                .buttonStyle(.plain)
+                .disabled(model.busy.contains("block"))
+                .accessibilityIdentifier("block30")
+
+                DictationButton(title: "Journal note", symbol: "book.pages.fill", prompt: "What should I add to today's journal?",
+                                colors: [Color(hex: 0x3FBFA9), Color(hex: 0x2A9C8A)], height: 46,
+                                busy: model.busy.contains("note")) { text in
+                    Task { await model.note(text) }
+                }
+                .accessibilityIdentifier("journalNote")
+
+                ConnectionFooter()
+                    .padding(.top, 4)
+            }
+            .padding(.horizontal, 2)
+        }
+        .navigationTitle("Quick")
+        .withBanner()
+        .samPage(SamTheme.mint)
+    }
+}
+
+/// Which Mac, which route and how fresh, with a refresh button.
+struct ConnectionFooter: View {
+    @Environment(WatchModel.self) private var model
+
+    var body: some View {
+        Button {
+            Task { await model.refresh() }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: model.route == .phone ? "iphone" : "laptopcomputer")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(model.lastError == nil ? SamTheme.orbPale : SamTheme.amber)
+                    .frame(width: 18)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(model.account.pairing?.displayName ?? "Your Mac")
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .foregroundStyle(SamTheme.ink2)
+                        .lineLimit(1)
+                    Text(status).font(.system(size: 11)).foregroundStyle(SamTheme.muted).lineLimit(1)
+                }
+                Spacer(minLength: 0)
+                Group {
+                    if model.refreshing {
+                        ProgressView().scaleEffect(0.5)
+                    } else {
+                        Image(systemName: "arrow.clockwise").font(.system(size: 12, weight: .semibold)).foregroundStyle(SamTheme.muted)
+                    }
+                }
+                .frame(width: 16, height: 16)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color.white.opacity(0.06)))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var status: String {
+        if let error = model.lastError { return error.shortDescription }
+        let route = model.route == .phone ? "via iPhone" : "direct"
+        return "\(route) · \(Formatting.ago(model.summaryDate))"
+    }
+}

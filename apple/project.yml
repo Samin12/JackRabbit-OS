@@ -46,6 +46,9 @@ targets:
       - target: SamRabbitWidgets
         embed: true
         codeSign: true
+      - target: SamRabbitWatch
+        embed: true
+        codeSign: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.samrabbit.mobile
@@ -135,12 +138,107 @@ targets:
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
 
-  # ------------------------------------------------------------------ Apple Watch (next builder)
-  # SamRabbitWatch (com.samrabbit.mobile.watchkitapp, platform watchOS, type application) and
-  # SamRabbitWatchWidgets (com.samrabbit.mobile.watchkitapp.widgets, app-extension with
-  # NSExtensionPointIdentifier com.apple.widgetkit-extension) go here. Both depend on the
-  # SamRabbitKit package and use the App Group group.com.samrabbit.mobile; the iPhone app embeds
-  # the watch app (dependencies: - target: SamRabbitWatch) once it exists.
+  # ------------------------------------------------------------------ Apple Watch app
+  # Embedded in the iPhone app (Watch/). Gets the bridge addresses and its own child token from the
+  # iPhone (WatchConnectivity applicationContext), calls the bridge directly and relays through the
+  # iPhone (sendMessage) when the Mac can't be reached.
+  SamRabbitWatch:
+    type: application
+    platform: watchOS
+    sources:
+      - path: watchOS/App
+      - path: watchOS/ComplicationViews
+      - path: watchOS/Resources
+    dependencies:
+      - package: SamRabbitKit
+      - target: SamRabbitWatchWidgets
+        embed: true
+        codeSign: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.samrabbit.mobile.watchkitapp
+        PRODUCT_NAME: SamRabbitWatch
+        INFOPLIST_KEY_CFBundleDisplayName: SamRabbit
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        TARGETED_DEVICE_FAMILY: "4"
+        SKIP_INSTALL: YES
+        ENABLE_PREVIEWS: YES
+    entitlements:
+      path: watchOS/App/SamRabbitWatch.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.samrabbit.mobile
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)com.samrabbit.mobile
+    info:
+      path: watchOS/App/Info.plist
+      properties:
+        CFBundleDisplayName: SamRabbit
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        WKApplication: true
+        WKCompanionAppBundleIdentifier: com.samrabbit.mobile
+        WKRunsIndependentlyOfCompanionApp: false
+        CFBundleURLTypes:
+          - CFBundleURLName: com.samrabbit.mobile.watchkitapp
+            CFBundleURLSchemes:
+              - samrabbit
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+
+  # ------------------------------------------------------------------ Watch complications
+  SamRabbitWatchWidgets:
+    type: app-extension
+    platform: watchOS
+    sources:
+      - path: watchOS/Widgets
+      - path: watchOS/ComplicationViews
+    dependencies:
+      - package: SamRabbitKit
+      - sdk: WidgetKit.framework
+      - sdk: SwiftUI.framework
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.samrabbit.mobile.watchkitapp.widgets
+        PRODUCT_NAME: SamRabbitWatchWidgets
+        INFOPLIST_KEY_CFBundleDisplayName: SamRabbit
+        TARGETED_DEVICE_FAMILY: "4"
+        SKIP_INSTALL: YES
+        APPLICATION_EXTENSION_API_ONLY: YES
+    entitlements:
+      path: watchOS/Widgets/SamRabbitWatchWidgets.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.samrabbit.mobile
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)com.samrabbit.mobile
+    info:
+      path: watchOS/Widgets/Info.plist
+      properties:
+        CFBundleDisplayName: SamRabbit
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+
+  # ------------------------------------------------------------------ Watch walkthrough (UI tests)
+  # Real taps on the watch simulator against apple/dev/fake_bridge.py (see the test's header).
+  SamRabbitWatchUITests:
+    type: bundle.ui-testing
+    platform: watchOS
+    sources:
+      - path: watchOS/UITests
+    dependencies:
+      - target: SamRabbitWatch
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.samrabbit.mobile.watchkitapp.uitests
+        TEST_TARGET_NAME: SamRabbitWatch
+        GENERATE_INFOPLIST_FILE: YES
+        TARGETED_DEVICE_FAMILY: "4"
 
 schemes:
   SamRabbit:
@@ -164,3 +262,24 @@ schemes:
     run:
       config: Debug
       executable: SamRabbit
+  SamRabbitWatch:
+    build:
+      targets:
+        SamRabbitWatch: all
+        SamRabbitWatchWidgets: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - SamRabbitWatchUITests
+    archive:
+      config: Release
+  SamRabbitWatchWidgets:
+    build:
+      targets:
+        SamRabbitWatchWidgets: all
+        SamRabbitWatch: all
+    run:
+      config: Debug
+      executable: SamRabbitWatch
