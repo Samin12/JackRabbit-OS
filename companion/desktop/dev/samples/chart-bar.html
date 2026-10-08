@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<!-- Sample generated-UI document for the SamRabbit desktop dev server. Derived from the
+     OpenGenerativeUI harness output chart-bar.html (design-system THEME_CSS, MIT, CopilotKit).
+     The dev server fills {{TITLE}}, {{SUBTITLE}}, {{LABELS}}, {{VALUES}}, {{COLORS}}, {{UNIT}}. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="color-scheme" content="dark light">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{TITLE}}</title>
+  <style>
+    
+:root {
+  --color-background-primary: #ffffff;
+  --color-background-secondary: #f7f6f3;
+  --color-background-tertiary: #efeee9;
+  --color-background-info: #E6F1FB;
+  --color-background-danger: #FCEBEB;
+  --color-background-success: #EAF3DE;
+  --color-background-warning: #FAEEDA;
+
+  --color-text-primary: #1a1a1a;
+  --color-text-secondary: #73726c;
+  --color-text-tertiary: #9c9a92;
+  --color-text-info: #185FA5;
+  --color-text-danger: #A32D2D;
+  --color-text-success: #3B6D11;
+  --color-text-warning: #854F0B;
+
+  --color-border-primary: rgba(0, 0, 0, 0.4);
+  --color-border-secondary: rgba(0, 0, 0, 0.3);
+  --color-border-tertiary: rgba(0, 0, 0, 0.15);
+  --color-border-info: #185FA5;
+  --color-border-danger: #A32D2D;
+  --color-border-success: #3B6D11;
+  --color-border-warning: #854F0B;
+
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-serif: Georgia, "Times New Roman", serif;
+  --font-mono: "SF Mono", "Fira Code", "Fira Mono", monospace;
+
+  --border-radius-md: 8px;
+  --border-radius-lg: 12px;
+  --border-radius-xl: 16px;
+
+  --p: var(--color-text-primary);
+  --s: var(--color-text-secondary);
+  --t: var(--color-text-tertiary);
+  --bg2: var(--color-background-secondary);
+  --b: var(--color-border-tertiary);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-background-primary: #1a1a18;
+    --color-background-secondary: #2c2c2a;
+    --color-background-tertiary: #222220;
+    --color-background-info: #0C447C;
+    --color-background-danger: #501313;
+    --color-background-success: #173404;
+    --color-background-warning: #412402;
+
+    --color-text-primary: #e8e6de;
+    --color-text-secondary: #9c9a92;
+    --color-text-tertiary: #73726c;
+    --color-text-info: #85B7EB;
+    --color-text-danger: #F09595;
+    --color-text-success: #97C459;
+    --color-text-warning: #EF9F27;
+
+    --color-border-primary: rgba(255, 255, 255, 0.4);
+    --color-border-secondary: rgba(255, 255, 255, 0.3);
+    --color-border-tertiary: rgba(255, 255, 255, 0.15);
+    --color-border-info: #85B7EB;
+    --color-border-danger: #F09595;
+    --color-border-success: #97C459;
+    --color-border-warning: #EF9F27;
+  }
+}
+
+    body { font-family: system-ui, -apple-system, sans-serif; padding: 20px 24px 24px; max-width: 680px; margin: 0 auto; }
+    @media (prefers-color-scheme: dark) { :root { color-scheme: dark; } }
+    .chart-wrap { position: relative; height: 300px; }
+    h3 { font-size: 20px; font-weight: 700; margin: 0 0 4px; color: var(--color-text-primary); }
+    p { font-size: 14px; color: var(--color-text-secondary); margin: 0 0 20px; }
+    canvas { max-height: 360px; }
+  </style>
+</head>
+<body>
+  <h3>{{TITLE}}</h3>
+  <p>{{SUBTITLE}}</p>
+  <div class="chart-wrap"><canvas id="chart"></canvas></div>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <script>
+    new Chart(document.getElementById('chart'), {
+        type: 'bar',
+        data: {
+          labels: {{LABELS}},
+          datasets: [{
+            data: {{VALUES}},
+            backgroundColor: {{COLORS}},
+            borderRadius: 4,
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { display: false },
+            tooltip: { backgroundColor: '#1f2937', titleColor: '#fff', bodyColor: '#fff', cornerRadius: 8, padding: 10 }
+          },
+          scales: {
+            x: { grid: { display: false }, ticks: { color: '#9c9a92' } },
+            y: { grid: { color: 'rgba(255,255,255,0.07)' }, ticks: { color: '#9c9a92', callback: (v) => v + '{{UNIT}}' } }
+          }
+        }
+      });
+  </script>
+  <script>
+    // Host bridge (same messages as OpenGenerativeUI's MCP renderer): height, links, prompts.
+    (function () {
+      function post(message) { try { window.parent.postMessage(message, '*'); } catch (e) {} }
+      window.sendPrompt = function (text) { post({ type: 'send-prompt', text: String(text) }); };
+      window.openLink = function (url) { post({ type: 'open-link', url: String(url) }); };
+      document.addEventListener('click', function (event) {
+        var link = event.target.closest && event.target.closest('a[href]');
+        if (link && /^https?:/.test(link.href)) { event.preventDefault(); post({ type: 'open-link', url: link.href }); }
+      });
+      function reportHeight() { post({ type: 'widget-resize', height: Math.ceil(document.body.getBoundingClientRect().height) }); }
+      if (window.ResizeObserver) new ResizeObserver(reportHeight).observe(document.body);
+      window.addEventListener('load', reportHeight);
+      var ticks = 0, timer = setInterval(function () { reportHeight(); if (++ticks > 75) clearInterval(timer); }, 200);
+    })();
+  </script>
+</body>
+</html>
