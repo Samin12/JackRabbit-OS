@@ -41,9 +41,13 @@ public final class PixelHeadAtlasTest {
                         PixelHeadAtlas.ACTIVE_W[b], PixelHeadAtlas.ACTIVE_H[b]);
                 assertInside(b, PixelHeadAtlas.BLINK_X[b][pose], PixelHeadAtlas.BLINK_Y[b][pose],
                         PixelHeadAtlas.BLINK_W[b], PixelHeadAtlas.BLINK_H[b]);
+                assertInside(b, PixelHeadAtlas.TALK_X[b][pose], PixelHeadAtlas.TALK_Y[b][pose],
+                        PixelHeadAtlas.TALK_W[b], PixelHeadAtlas.TALK_H[b]);
             }
             assertEquals(PixelHeadAtlas.ACTIVE_W[b] + 2 * PixelHeadAtlas.GUTTER, PixelHeadAtlas.ACTIVE_SLOT_W[b]);
             assertEquals(PixelHeadAtlas.BLINK_H[b] + 2 * PixelHeadAtlas.GUTTER, PixelHeadAtlas.BLINK_SLOT_H[b]);
+            assertEquals(PixelHeadAtlas.TALK_W[b] + 2 * PixelHeadAtlas.GUTTER, PixelHeadAtlas.TALK_SLOT_W[b]);
+            assertEquals(PixelHeadAtlas.TALK_H[b] + 2 * PixelHeadAtlas.GUTTER, PixelHeadAtlas.TALK_SLOT_H[b]);
         }
     }
 
@@ -55,10 +59,12 @@ public final class PixelHeadAtlasTest {
             assertEquals(PixelHeadAtlas.COLUMNS * PixelHeadAtlas.CELL_W[b], idle.width);
             assertEquals(rows * PixelHeadAtlas.CELL_H[b], idle.height);
             Png eyes = Png.read(new File(resDir(), "pixel_head_" + size + "_eyes.png"));
-            int slotW = Math.max(PixelHeadAtlas.ACTIVE_SLOT_W[b], PixelHeadAtlas.BLINK_SLOT_W[b]);
+            int slotW = Math.max(PixelHeadAtlas.TALK_SLOT_W[b],
+                    Math.max(PixelHeadAtlas.ACTIVE_SLOT_W[b], PixelHeadAtlas.BLINK_SLOT_W[b]));
             assertEquals(PixelHeadAtlas.COLUMNS * slotW, eyes.width);
-            assertEquals(PixelHeadAtlas.BLINK_TOP[b] + rows * PixelHeadAtlas.BLINK_SLOT_H[b], eyes.height);
             assertEquals(rows * PixelHeadAtlas.ACTIVE_SLOT_H[b], PixelHeadAtlas.BLINK_TOP[b]);
+            assertEquals(PixelHeadAtlas.BLINK_TOP[b] + rows * PixelHeadAtlas.BLINK_SLOT_H[b], PixelHeadAtlas.TALK_TOP[b]);
+            assertEquals(PixelHeadAtlas.TALK_TOP[b] + rows * PixelHeadAtlas.TALK_SLOT_H[b], eyes.height);
             // 8-bit palette with per-entry alpha: small in the APK, still transparent
             for (Png png : new Png[]{idle, eyes}) {
                 assertEquals(3, png.colorType);

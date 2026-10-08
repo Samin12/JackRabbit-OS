@@ -1,18 +1,23 @@
 """Pack the voxel "Pixel head" orb frames into the compact atlases the app draws from.
 
 Input: rendered RGBA frames for each size bucket (transparent background). A bucket directory is
-either a 48-frame loop (frames_000..047.png, yaw = 28 * sin(2 pi i / 48)) or the 25 unique poses
-(pose_00..24.png, yaw -28 .. +28). Each bucket needs three variants: idle, active (eyes lit) and
-blink (eyes closed), as sibling directories <idle>, <idle>_active, <idle>_blink.
+either a 48-frame loop (frames_000..047.png, yaw = c + a * sin(2 pi i / 48); the v2 art uses
+c = -32, a = 12, see the art's frames_info.json) or the 25 unique poses (pose_00..24.png, yaw
+c - a .. c + a). Each bucket needs three variants: idle, active (eyes lit, earcups glowing) and
+blink (eyes closed), as sibling directories <idle>, <idle>_active, <idle>_blink, plus optionally
+talk (mouth open) as <idle>_talk; every bucket must then have it.
 
 Output (per bucket of frame size S):
   res/drawable-nodpi/pixel_head_S.png        25 idle poses, cropped to the union bounding box
-  res/drawable-nodpi/pixel_head_S_eyes.png   eye patches: 25 "active" then 25 "blink" patches
+  res/drawable-nodpi/pixel_head_S_eyes.png   patches: 25 "active", 25 "blink" (then 25 "talk")
   src/main/java/.../PixelHeadAtlas.java      generated geometry (cells, anchors, patch rects)
 
-Only the eyes differ between variants, so the app draws the idle pose and paints the eye patch
-of the active / blink variant over it. A loop frame i and frame 24 - i have the same yaw, so 25
-poses replace 48 frames. Atlases are palette-quantized (8-bit PNG with alpha) to keep the APK small.
+Only small areas differ between variants, so the app draws the idle pose and paints the patch of
+the active / blink / talk variant over it. Patches are sparse: only changed pixels and a
+PATCH_MARGIN ring of unchanged opaque pixels around them are stored (the rest of the patch rect is
+transparent), so a variant that changes two separate spots (eyes + earcup) stays cheap. A loop
+frame i and frame 24 - i have the same yaw, so 25 poses replace 48 frames. Atlases are
+palette-quantized (8-bit PNG with alpha) to keep the APK small.
 
 Usage (any Python with Pillow + numpy):
   python pack_pixel_head.py --bucket 72=<dir> --bucket 112=<dir> --bucket 176=<dir> --bucket 256=<dir>
@@ -141,11 +146,30 @@ def decode_palette(im: Image.Image) -> np.ndarray:
     return np.asarray(im.convert("RGBA"), np.uint8)
 
 
-def pack_bucket(size: int, idle_dir: str) -> dict:
+def dilate(mask: np.ndarray, r: int) -> np.ndarray:
+    """Square (Chebyshev) dilation of a boolean mask by r pixels."""
+    out = mask.copy()
+    h, w = mask.shape
+    for dy in range(-r, r + 1):
+        for dx in range(-r, r + 1):
+            if dx == 0 and dy == 0:
+                continue
+            ys0, ys1 = max(0, dy), h + min(0, dy)
+            xs0, xs1 = max(0, dx), w + min(0, dx)
+            out[ys0 - dy:ys1 - dy, xs0 - dx:xs1 - dx] |= mask[ys0:ys1, xs0:xs1]
+    return out
+
+
+def has_talk(idle_dir: str) -> bool:
+    return os.path.isdir(idle_dir + "_talk")
+
+
+def pack_bucket(size: int, idle_dir: str, talk: bool) -> dict:
     idle = load_variant(idle_dir)
-    active = load_variant(idle_dir + "_active")
-    blink = load_variant(idle_dir + "_blink")
-    x0, y0, x1, y1 = union_box(idle + active + blink)
+    variants = [("active", load_variant(idle_dir + "_active")), ("blink", load_variant(idle_dir + "_blink"))]
+    if talk:
+        variants.append(("talk", load_variant(idle_dir + "_talk")))
+    x0, y0, x1, y1 = union_box(idle + [f for _, frames in variants for f in frames])
     ix0, iy0, ix1, iy1 = union_box(idle)
     cw, ch = (x1 - x0) + 2 * GUTTER, (y1 - y0) + 2 * GUTTER
     ox, oy = x0 - GUTTER, y0 - GUTTER          # frame coords of a cell's top-left
@@ -159,7 +183,7 @@ def pack_bucket(size: int, idle_dir: str) -> dict:
         atlas[r * ch:(r + 1) * ch, k * cw:(k + 1) * cw] = c
 
     patches = {}
-    for name, frames in (("active", active), ("blink", blink)):
+    for name, frames in variants:
         boxes = []
         for p in range(POSES):
             v = crop(frames[p], ox, oy, cw, ch)
@@ -178,22 +202,27 @@ def pack_bucket(size: int, idle_dir: str) -> dict:
             rects.append((px, py))
         patches[name] = (pw, ph, rects, frames)
 
-    aw, ah = patches["active"][0] + 2 * GUTTER, patches["active"][1] + 2 * GUTTER
-    bw, bh = patches["blink"][0] + 2 * GUTTER, patches["blink"][1] + 2 * GUTTER
-    blink_top = rows * ah
-    eyes = np.zeros((blink_top + rows * bh, COLUMNS * max(aw, bw), 4), np.uint8)
+    slots, top = {}, 0
+    for name, _ in variants:
+        sw, sh = patches[name][0] + 2 * GUTTER, patches[name][1] + 2 * GUTTER
+        slots[name] = (top, sw, sh)
+        top += rows * sh
+    eyes = np.zeros((top, COLUMNS * max(sw for _, sw, _ in slots.values()), 4), np.uint8)
     worst = 0.0
-    for name, top, sw, sh in (("active", 0, aw, ah), ("blink", blink_top, bw, bh)):
+    for name, _ in variants:
+        top, sw, sh = slots[name]
         pw, ph, rects, frames = patches[name]
         for p in range(POSES):
             v = crop(frames[p], ox, oy, cw, ch)
             px, py = rects[p]
             patch = v[py:py + ph, px:px + pw].copy()
             base = cells[p][py:py + ph, px:px + pw]
-            # Keep what changed plus opaque surroundings (opaque over anything is exact); drop
-            # unchanged soft edge pixels, which would double their alpha when drawn twice.
+            # Keep what changed plus a PATCH_MARGIN ring of opaque surroundings (opaque over
+            # anything is exact, and the ring keeps bilinear sampling at the patch edge from
+            # fading the changed pixels); everything else stays transparent. Unchanged soft edge
+            # pixels are dropped too, they would double their alpha when drawn twice.
             changed = np.any(patch != base, axis=2)
-            keep = changed | ((patch[..., 3] == 255) & (base[..., 3] == 255))
+            keep = changed | (dilate(changed, PATCH_MARGIN) & (patch[..., 3] == 255) & (base[..., 3] == 255))
             patch[~keep] = 0
             # A changed soft edge pixel (glow over the silhouette) gets the colour that, drawn
             # over the idle pixel, reproduces the variant ("un-over"); a pure colour shift at equal
@@ -224,17 +253,20 @@ def pack_bucket(size: int, idle_dir: str) -> dict:
     idle_png.save(idle_path, optimize=True, transparency=idle_png.info["transparency"])
     eyes_png.save(eyes_path, optimize=True, transparency=eyes_png.info["transparency"])
     print(f"bucket {size}: cell {cw}x{ch}, atlas {atlas.shape[1]}x{atlas.shape[0]} "
-          f"{os.path.getsize(idle_path) // 1024} KB, eyes {eyes.shape[1]}x{eyes.shape[0]} "
+          f"{os.path.getsize(idle_path) // 1024} KB, patches {eyes.shape[1]}x{eyes.shape[0]} "
           f"{os.path.getsize(eyes_path) // 1024} KB; patch overlay max err {worst:.1f}/255, "
           f"palette err max {q_err:.1f} mean {q_mean:.2f}")
-    return dict(
+    out = dict(
         size=size, cell_w=cw, cell_h=ch,
         anchor_x=size / 2.0 - ox, anchor_y=size / 2.0 - oy,
-        head_h=float(iy1 - iy0),
-        active_w=patches["active"][0], active_h=patches["active"][1],
-        blink_w=patches["blink"][0], blink_h=patches["blink"][1],
-        active_slot_w=aw, active_slot_h=ah, blink_slot_w=bw, blink_slot_h=bh, blink_top=blink_top,
-        active_xy=patches["active"][2], blink_xy=patches["blink"][2])
+        head_h=float(iy1 - iy0))
+    for name, _ in variants:
+        top, sw, sh = slots[name]
+        out.update({f"{name}_w": patches[name][0], f"{name}_h": patches[name][1],
+                    f"{name}_slot_w": sw, f"{name}_slot_h": sh, f"{name}_top": top,
+                    f"{name}_xy": patches[name][2]})
+    out["blink_top"] = slots["blink"][0]
+    return out
 
 
 def ints(values) -> str:
@@ -245,17 +277,30 @@ def floats(values) -> str:
     return "{" + ", ".join(f"{v:.2f}f" for v in values) + "}"
 
 
-def write_java(buckets: list[dict]) -> None:
+def write_java(buckets: list[dict], talk: bool) -> None:
     def table(key, idx):
         rows = ",\n            ".join(ints(xy[idx] for xy in b[key]) for b in buckets)
         return "{\n            " + rows + "}"
+
+    talk_src = ""
+    if talk:
+        talk_src = f'''
+    static final int[] TALK_W = {ints(b["talk_w"] for b in buckets)};
+    static final int[] TALK_H = {ints(b["talk_h"] for b in buckets)};
+    static final int[] TALK_SLOT_W = {ints(b["talk_slot_w"] for b in buckets)};
+    static final int[] TALK_SLOT_H = {ints(b["talk_slot_h"] for b in buckets)};
+    /** Top of the talk (mouth open) patch grid inside the patch atlas, below the blink grid. */
+    static final int[] TALK_TOP = {ints(b["talk_top"] for b in buckets)};
+    static final int[][] TALK_X = {table("talk_xy", 0)};
+    static final int[][] TALK_Y = {table("talk_xy", 1)};'''
 
     src = f'''package com.resonolabs.ui.design;
 
 /**
  * Geometry of the packed Pixel head atlases. GENERATED by core/design/art/pack_pixel_head.py;
- * do not edit by hand. Buckets are ordered smallest first; poses run from yaw -28 (0) through
- * front (12) to +28 degrees (24). All coordinates are bucket pixels.
+ * do not edit by hand. Buckets are ordered smallest first; poses 0..24 run through the head's
+ * sway from one extreme (0) through the centre pose (12) to the other (24). All coordinates are
+ * bucket pixels.
  */
 final class PixelHeadAtlas {{
     private PixelHeadAtlas() {{}}
@@ -270,7 +315,7 @@ final class PixelHeadAtlas {{
     /** The head's centre (middle of its swing extents) inside a cell. */
     static final float[] ANCHOR_X = {floats(b["anchor_x"] for b in buckets)};
     static final float[] ANCHOR_Y = {floats(b["anchor_y"] for b in buckets)};
-    /** Wing tip to neck height of the head, the size the app scales to. */
+    /** Height of the head art (top of the band / wings to the hair ends), the size the app scales to. */
     static final float[] HEAD_H = {floats(b["head_h"] for b in buckets)};
     static final int[] ACTIVE_W = {ints(b["active_w"] for b in buckets)};
     static final int[] ACTIVE_H = {ints(b["active_h"] for b in buckets)};
@@ -280,13 +325,13 @@ final class PixelHeadAtlas {{
     static final int[] BLINK_H = {ints(b["blink_h"] for b in buckets)};
     static final int[] BLINK_SLOT_W = {ints(b["blink_slot_w"] for b in buckets)};
     static final int[] BLINK_SLOT_H = {ints(b["blink_slot_h"] for b in buckets)};
-    /** Top of the blink patch grid inside the eyes atlas (active patches start at 0). */
+    /** Top of the blink patch grid inside the patch atlas (active patches start at 0). */
     static final int[] BLINK_TOP = {ints(b["blink_top"] for b in buckets)};
-    /** Per pose: where the eye patch goes inside the idle cell. */
+    /** Per pose: where each patch goes inside the idle cell. */
     static final int[][] ACTIVE_X = {table("active_xy", 0)};
     static final int[][] ACTIVE_Y = {table("active_xy", 1)};
     static final int[][] BLINK_X = {table("blink_xy", 0)};
-    static final int[][] BLINK_Y = {table("blink_xy", 1)};
+    static final int[][] BLINK_Y = {table("blink_xy", 1)};{talk_src}
 }}
 '''
     with open(JAVA, "w") as f:
@@ -299,8 +344,12 @@ def main() -> None:
     ap.add_argument("--bucket", action="append", required=True, help="SIZE=DIR (idle frames dir)")
     args = ap.parse_args()
     specs = sorted((int(s.split("=", 1)[0]), s.split("=", 1)[1]) for s in args.bucket)
-    buckets = [pack_bucket(size, os.path.expanduser(d)) for size, d in specs]
-    write_java(buckets)
+    dirs = [(size, os.path.expanduser(d)) for size, d in specs]
+    talk = [has_talk(d) for _, d in dirs]
+    if any(talk) and not all(talk):
+        raise SystemExit("either every bucket has an <idle>_talk sibling or none does")
+    buckets = [pack_bucket(size, d, all(talk)) for size, d in dirs]
+    write_java(buckets, all(talk))
 
 
 if __name__ == "__main__":
