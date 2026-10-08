@@ -92,6 +92,9 @@ from .domains.t3.placement import OrchestrationSetting, ProjectPlacement
 from .api.t3_routes import T3Routes
 from .domains.mac import MAC_TOOL_SET, MacControlClient, MacVoiceContext, register_mac_tools
 from .api.mac_routes import MacRoutes
+from .domains.generated_ui import (GENERATED_UI_TOOL_SET, ArtifactWatcher, GeneratedUiClient,
+                                   GeneratedUiVoiceContext, register_generated_ui_tools)
+from .api.generated_ui_routes import GeneratedUiRoutes
 from .domains.heptabase_journal import JOURNAL_TOOL_SET, HeptabaseJournalService, register_journal_tools
 from .api.heptabase_routes import HeptabaseRoutes
 
@@ -209,6 +212,12 @@ class RuntimeApplication:
         self._mac_routes = MacRoutes(self._mac)
         register_mac_tools(self._tools, self._mac, t3=self._t3, placement=self._t3_placement,
                            owner_name=lambda: self._profile.profile().display_name)
+        # Generated UIs from Voice: the same Mac bridge makes the visual; announcements bring it to the app.
+        # Integration: pass conversation_lookup=<voiceSessionId -> conversationId> from conversation sync.
+        self._generated_ui = GeneratedUiClient(self._heptabase_journal.bridge_store)
+        self._generated_ui_watcher = ArtifactWatcher(self._generated_ui, self._announcements, self._database)
+        self._generated_ui_routes = GeneratedUiRoutes(self._generated_ui)
+        register_generated_ui_tools(self._tools, self._generated_ui, self._generated_ui_watcher)
         self._background_agent_runs = AgentRunRepository(self._database)
         self._background_agent_settings = BackgroundAgentSettingsRepository(self._database)
         self._run_workspaces = RunWorkspaceRegistry(config.background_runs_path)
@@ -329,7 +338,8 @@ class RuntimeApplication:
             ),
             voice_skill_instructions=self._instruction_documents.voice_instructions,
             voice_modes=self._voice_modes,
-            t3_voice_context=_joined(T3VoiceContext(self._t3).render, MacVoiceContext(self._mac).render),
+            t3_voice_context=_joined(T3VoiceContext(self._t3).render, MacVoiceContext(self._mac).render,
+                                     GeneratedUiVoiceContext(self._generated_ui).render),
         )
         self._text_runner = AgentsSdkTextRunner(
             credentials=credentials,
@@ -448,6 +458,13 @@ class RuntimeApplication:
                 changed_by="runtime-bootstrap",
                 reason="enable control of the user's Mac for Voice (shown only when the Mac bridge is configured)",
             )
+        if self._audience_router.binding_for(GENERATED_UI_TOOL_SET) is None:
+            self._audience_router.set_audience(
+                GENERATED_UI_TOOL_SET,
+                AgentAudience.VOICE,
+                changed_by="runtime-bootstrap",
+                reason="enable generated visuals for Voice (shown only when the Mac bridge is configured)",
+            )
         if self._audience_router.binding_for(JOURNAL_TOOL_SET) is None:
             self._audience_router.set_audience(
                 JOURNAL_TOOL_SET,
@@ -500,6 +517,7 @@ class RuntimeApplication:
             announcements=self._announcement_routes,
             heptabase=self._heptabase_routes,
             mac=self._mac_routes,
+            generated_ui=self._generated_ui_routes,
         )
         self._server.start()
         self._background_agent.start()
@@ -507,6 +525,7 @@ class RuntimeApplication:
         self._calendar_scheduler.start()
         self._t3_sync.start()
         self._heptabase_journal.start()
+        self._generated_ui_watcher.start()
         self._events.publish(
             "runtime.ready",
             {"status": "ready", "startCount": int(record.value)},
@@ -520,6 +539,7 @@ class RuntimeApplication:
         self._calendar_scheduler.stop()
         self._t3_sync.stop()
         self._heptabase_journal.stop()
+        self._generated_ui_watcher.stop()
         if self._server is not None:
             self._server.stop()
             self._server = None

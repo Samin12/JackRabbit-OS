@@ -29,6 +29,7 @@ from .t3_routes import T3Routes
 from .announcement_routes import AnnouncementRoutes
 from .heptabase_routes import HeptabaseRoutes
 from .mac_routes import MacRoutes
+from .generated_ui_routes import GeneratedUiRoutes
 
 if TYPE_CHECKING:
     from .http_server import HealthReader, RestartRequest
@@ -102,6 +103,7 @@ class RuntimeRoutes:
         announcements: AnnouncementRoutes | None = None,
         heptabase: HeptabaseRoutes | None = None,
         mac: MacRoutes | None = None,
+        generated_ui: GeneratedUiRoutes | None = None,
     ) -> None:
         self._health = health
         self._lifecycle = lifecycle
@@ -129,6 +131,7 @@ class RuntimeRoutes:
         self._announcements = announcements
         self._heptabase = heptabase
         self._mac = mac
+        self._generated_ui = generated_ui
 
     def handle_get(self, req: RouteRequest) -> None:
         path = req.path.split("?", 1)[0]
@@ -168,6 +171,7 @@ class RuntimeRoutes:
         if self._announcements is not None and self._announcements.handle_get(req, pairing): return
         if self._heptabase is not None and self._heptabase.handle_get(req, pairing): return
         if self._mac is not None and self._mac.handle_get(req, pairing): return
+        if self._generated_ui is not None and self._generated_ui.handle_get(req, pairing): return
         if path == "/v1/health":
             req.respond_json(200, self._health())
             return
