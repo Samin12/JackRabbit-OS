@@ -6,7 +6,14 @@
 #   companion/mac-bridge/install.sh [--port 3780] [--host 0.0.0.0] [--python /usr/bin/python3]
 #
 # Environment (tests): SAMRABBIT_HOME (default $HOME), SAMRABBIT_SKIP_LAUNCHCTL=1, SAMRABBIT_COMPOSIO (the Composio
-# CLI to record instead of searching PATH, ~/.local/bin, /opt/homebrew/bin and /usr/local/bin).
+# CLI to record instead of searching PATH, ~/.local/bin, /opt/homebrew/bin and /usr/local/bin), SAMRABBIT_T3_CLI /
+# SAMRABBIT_T3_URL (a stand-in T3 CLI and server for the one-time T3 pairing; without SAMRABBIT_T3_CLI the pairing
+# is skipped whenever SAMRABBIT_SKIP_LAUNCHCTL=1, so a test install never pairs with the real T3 Code),
+# SAMRABBIT_SKIP_T3_PAIR=1.
+#
+# The iPhone / Apple Watch API (/v1/mobile/*) is part of the bridge. The bridge pairs with T3 Code by itself (its
+# own session, "SamRabbit bridge", token in ~/.config/samrabbit/t3-token); this script does that once. To pair a
+# phone: SamRabbit (desktop app) > Pair iPhone..., or companion/mac-bridge/pair-phone.sh.
 set -euo pipefail
 
 LABEL=com.samrabbit.bridge
@@ -29,6 +36,8 @@ HOME_DIR=${SAMRABBIT_HOME:-$HOME}
 CONFIG_DIR="$HOME_DIR/.config/samrabbit"
 TOKEN_FILE="$CONFIG_DIR/bridge-token"
 DESKTOP_TOKEN_FILE="$CONFIG_DIR/desktop-token"
+MOBILE_DEVICES_FILE="$CONFIG_DIR/mobile-devices.json"
+T3_TOKEN_FILE="$CONFIG_DIR/t3-token"
 SYNC_DIR="$HOME_DIR/Library/Application Support/SamRabbit/sync"
 APP_DIR="$HOME_DIR/Library/Application Support/SamRabbit/bridge"
 LOG_FILE="$HOME_DIR/Library/Logs/samrabbit-bridge.log"
@@ -92,6 +101,8 @@ install -m 0644 "$SOURCE_DIR/samrabbit_mac.py" "$APP_DIR/samrabbit_mac.py"
 install -m 0644 "$SOURCE_DIR/samrabbit_sync.py" "$APP_DIR/samrabbit_sync.py"
 install -m 0644 "$SOURCE_DIR/samrabbit_genui.py" "$APP_DIR/samrabbit_genui.py"
 install -m 0644 "$SOURCE_DIR/samrabbit_calendar.py" "$APP_DIR/samrabbit_calendar.py"
+install -m 0644 "$SOURCE_DIR/samrabbit_mobile.py" "$APP_DIR/samrabbit_mobile.py"  # iPhone / Apple Watch API
+install -m 0644 "$SOURCE_DIR/samrabbit_t3.py" "$APP_DIR/samrabbit_t3.py"          # its T3 Code client
 rm -rf "$APP_DIR/genui"; mkdir -p "$APP_DIR/genui"
 for asset in "$SOURCE_DIR"/genui/*; do install -m 0644 "$asset" "$APP_DIR/genui/"; done
 install -m 0644 "$SOURCE_DIR/samrabbit_app.py" "$APP_DIR/samrabbit_app.py"  # desktop web UI at /app/
@@ -100,9 +111,10 @@ if [ "$(stat -f %z "$LOG_FILE" 2>/dev/null || echo 0)" -gt 5242880 ]; then : > "
 
 # 3. LaunchAgent plist (written with plistlib so every path is escaped correctly).
 "$PYTHON" - "$PLIST" "$LABEL" "$PYTHON" "$APP_DIR/samrabbit_bridge.py" "$HOST" "$PORT" "$TOKEN_FILE" "$LOG_FILE" \
-    "$APP_DIR" "$SYNC_DIR" "$DESKTOP_TOKEN_FILE" "$COMPOSIO" <<'EOF'
+    "$APP_DIR" "$SYNC_DIR" "$DESKTOP_TOKEN_FILE" "$COMPOSIO" "$MOBILE_DEVICES_FILE" "$T3_TOKEN_FILE" <<'EOF'
 import os, plistlib, sys
-plist, label, python, script, host, port, token, log, workdir, sync_dir, desktop_token, composio = sys.argv[1:]
+(plist, label, python, script, host, port, token, log, workdir, sync_dir, desktop_token, composio, mobile_devices,
+ t3_token) = sys.argv[1:]
 environment = {"PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"}
 if composio:
     environment["SAMRABBIT_COMPOSIO"] = composio
@@ -111,7 +123,8 @@ value = {
     # --cli auto: the installed bridge is the one that writes to the real Heptabase journal (any other copy
     # of the bridge, e.g. a test or dev run from a checkout, defaults to a dry-run CLI).
     "ProgramArguments": [python, "-I", script, "--host", host, "--port", port, "--token-file", token,
-                         "--sync-dir", sync_dir, "--desktop-token-file", desktop_token, "--cli", "auto"],
+                         "--sync-dir", sync_dir, "--desktop-token-file", desktop_token, "--cli", "auto",
+                         "--mobile-devices-file", mobile_devices, "--t3-token-file", t3_token],
     "EnvironmentVariables": environment,
     "WorkingDirectory": workdir,
     "RunAtLoad": True,
@@ -128,11 +141,26 @@ os.replace(tmp, plist)
 EOF
 echo "wrote $PLIST"
 
+# 4. T3 Code: the bridge's own session for the phone's Tasks tab, paired once now (the bridge pairs again by
+#    itself when the token expires or is revoked). Kept when it is still good; the token is never printed.
+if [ "${SAMRABBIT_SKIP_T3_PAIR:-0}" != 1 ] && { [ -n "${SAMRABBIT_T3_CLI:-}" ] || [ "${SAMRABBIT_SKIP_LAUNCHCTL:-0}" != 1 ]; }; then
+  T3_ARGS=(--token-file "$T3_TOKEN_FILE")
+  [ -n "${SAMRABBIT_T3_URL:-}" ] && T3_ARGS+=(--url "$SAMRABBIT_T3_URL")
+  [ -n "${SAMRABBIT_T3_CLI:-}" ] && T3_ARGS+=(--cli "$SAMRABBIT_T3_CLI")
+  if T3_LINE=$("$PYTHON" -I "$APP_DIR/samrabbit_t3.py" ensure-paired "${T3_ARGS[@]}" 2>&1); then
+    echo "$T3_LINE"
+  else
+    echo "install.sh: warning: $T3_LINE; the bridge pairs with T3 Code by itself once T3 Code is running." >&2
+  fi
+else
+  echo "skipping the T3 pairing (test install)"
+fi
+
 if [ "${SAMRABBIT_SKIP_LAUNCHCTL:-0}" = 1 ]; then
   echo "skipping launchctl (SAMRABBIT_SKIP_LAUNCHCTL=1)"; exit 0
 fi
 
-# 4. (Re)load the agent.
+# 5. (Re)load the agent.
 DOMAIN="gui/$(id -u)"
 launchctl bootout "$DOMAIN/$LABEL" >/dev/null 2>&1 || true
 for attempt in 1 2 3 4 5 6 7 8 9 10; do
@@ -143,7 +171,7 @@ done
 launchctl enable "$DOMAIN/$LABEL" >/dev/null 2>&1 || true
 launchctl kickstart -k "$DOMAIN/$LABEL" >/dev/null
 
-# 5. Wait for the bridge and report (the token is read from the file, never echoed).
+# 6. Wait for the bridge and report (the token is read from the file, never echoed).
 "$PYTHON" - "$PORT" "$TOKEN_FILE" <<'EOF'
 import json, sys, time, urllib.request
 port, token_file = sys.argv[1], sys.argv[2]
@@ -183,7 +211,14 @@ print(f"calendar changes: {'on' if cal.get('available') else 'OFF'} (Composio CL
       f"{cal.get('path') or 'missing'}, Google calendar {cal.get('calendarId') or 'primary'}"
       f"{', account ' + cal['account'] if cal.get('account') else ''}"
       f"{', problem ' + cal['lastError'] if cal.get('lastError') and not cal.get('available') else ''})")
+phone = health.get("mobile") or {}
+t3_state = phone.get("t3") or {}
+devices = int(phone.get("devices") or 0)
+print(f"mobile: {'on' if phone.get('available') else 'OFF'} (T3 {'paired' if t3_state.get('paired') else 'not paired'}"
+      f"{'' if t3_state.get('ok', True) or not t3_state.get('paired') else ', T3 not answering'}, "
+      f"{devices} device{'' if devices == 1 else 's'})")
 EOF
 IP=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || echo "<this Mac's IP>")
 echo "Bridge URL: http://$IP:$PORT"
 echo "Token file: $TOKEN_FILE"
+echo "Pair an iPhone: SamRabbit (desktop app) > Pair iPhone..., or $SOURCE_DIR/pair-phone.sh"

@@ -236,7 +236,7 @@ class MacControlTest(unittest.TestCase):
     def test_health_reports_capabilities_and_the_screen_vision_fix(self) -> None:
         status, health = self.call("GET", "/health")
         self.assertEqual(200, status)
-        self.assertEqual("1.1.0", health["version"])
+        self.assertEqual(bridge.VERSION, health["version"])
         capabilities = health["mac"]
         self.assertTrue(capabilities["driver"]["available"])
         self.assertEqual("9.8.7", capabilities["driver"]["version"])

@@ -437,6 +437,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, WKNaviga
             dragStrip.passThrough = rects
         case "status", "diag", "ready":
             onPageStatus?(body)
+        case "pairPhone":
+            AppModel.shared.openPairing()
         default:
             break
         }

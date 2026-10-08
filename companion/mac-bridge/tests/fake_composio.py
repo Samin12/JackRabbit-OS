@@ -47,6 +47,22 @@ def _not_found() -> dict:
             "logId": "log_fake"}
 
 
+def _part(value: object) -> str:
+    if isinstance(value, dict):
+        return str(value.get("dateTime") or (value.get("date", "") + "T00:00:00-04:00" if value.get("date") else ""))
+    return ""
+
+
+def _instant(value: str):
+    from datetime import datetime, timezone
+
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
 def _when(value: str, zone: str | None) -> dict:
     part = {"dateTime": value}
     if zone:
@@ -96,6 +112,16 @@ def _tool(slug: str, args: dict, state: dict) -> dict:
         else:
             return _not_found()
         return _ok({})
+    if slug == "GOOGLECALENDAR_EVENTS_LIST" and args.get("iCalUID") is None and args.get("timeMin"):
+        # An agenda window (the mobile API): whole events overlapping [timeMin, timeMax), by start time.
+        low, high = _instant(args["timeMin"]), _instant(args.get("timeMax") or "9999-12-31T00:00:00Z")
+        found = []
+        for event in events.values():
+            start, end = _instant(_part(event.get("start"))), _instant(_part(event.get("end")))
+            if start is not None and end is not None and end > low and start < high:
+                found.append(event)
+        found.sort(key=lambda item: _instant(_part(item.get("start"))))
+        return _ok({"items": found[:int(args.get("maxResults") or 250)], "timeZone": args.get("timeZone")})
     if slug == "GOOGLECALENDAR_EVENTS_LIST":
         uid = args.get("iCalUID")
         items = [{"id": event["id"], "status": event.get("status", "confirmed"),

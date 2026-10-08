@@ -48,7 +48,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 xcrun swiftc -O -swift-version 5 -parse-as-library -target "$TARGET" \
   "$HERE"/Sources/*.swift -o "$APP/Contents/MacOS/SamRabbit" \
-  -framework SwiftUI -framework WebKit -framework AppKit -framework UserNotifications
+  -framework SwiftUI -framework WebKit -framework AppKit -framework UserNotifications -framework CoreImage
 
 # 3. Bundle: Info.plist, icon, web UI.
 cat > "$APP/Contents/Info.plist" <<PLIST

@@ -21,6 +21,7 @@ final class AppModel: ObservableObject {
     let monitor = SyncMonitor()
     let notifier = Notifier()
     private(set) var window: MainWindowController?
+    private var pairing: PairingWindowController?
     private var listTimer: Timer?
     private var refreshPending = false
     private var firstListDone = false
@@ -61,6 +62,12 @@ final class AppModel: ObservableObject {
         guard let window else { return }
         window.show()
         window.openConversation(conversation)
+    }
+
+    /// "Pair iPhone…": the QR code and one-time code for the SamRabbit iPhone app, and the paired devices.
+    func openPairing() {
+        if pairing == nil { pairing = PairingWindowController() }
+        pairing?.show()
     }
 
     func reload() {
@@ -225,6 +232,7 @@ struct MenuContent: View {
         }
         Button("Open SamRabbit") { model.openMainWindow() }
             .keyboardShortcut("o")
+        Button("Pair iPhone…") { model.openPairing() }
         if !model.notificationsAllowed {
             Button("Turn On Notifications…") { model.openNotificationSettings() }
         }
@@ -278,6 +286,8 @@ struct SamRabbitApp: App {
             CommandGroup(replacing: .newItem) {
                 Button("Open SamRabbit Window") { model.openMainWindow() }
                     .keyboardShortcut("0")
+                Button("Pair iPhone…") { model.openPairing() }
+                    .keyboardShortcut("p", modifiers: [.command, .shift])
             }
             CommandGroup(after: .toolbar) {
                 Button("Reload") { model.reload() }

@@ -13,6 +13,9 @@ shortcuts, and screenshots once screen vision is allowed). See "Mac control" bel
 It also keeps a live copy of every R1 voice conversation for the SamRabbit desktop app.
 See "Conversation sync" below.
 
+And it is the hub for the SamRabbit iPhone app, its widgets and the Apple Watch app (`/v1/mobile/*`, with
+per-device tokens, T3 Code tasks through the bridge's own T3 session). See "Mobile API" below.
+
 ```
 R1 runtime ──HTTP (LAN, bearer token)──▶ samrabbit_bridge.py on the Mac ──▶ heptabase CLI ──▶ Heptabase app
 ```
@@ -41,13 +44,17 @@ You can run it again at any time. It:
    the same for `~/.config/samrabbit/desktop-token` (the desktop app's own token), and creates the conversation store
    folder `~/Library/Application Support/SamRabbit/sync/` (0700);
 2. copies the bridge (`samrabbit_bridge.py` and its modules: `samrabbit_mac.py`, `samrabbit_sync.py`, `samrabbit_genui.py`,
-   `samrabbit_calendar.py`, `samrabbit_app.py`) to
+   `samrabbit_calendar.py`, `samrabbit_app.py`, `samrabbit_mobile.py`, `samrabbit_t3.py`) to
    `~/Library/Application Support/SamRabbit/bridge/`;
 3. writes `~/Library/LaunchAgents/com.samrabbit.bridge.plist` (RunAtLoad, KeepAlive, a PATH that includes
    `/opt/homebrew/bin`, `--sync-dir`, `--desktop-token-file` and `--cli auto` (the real Heptabase CLI; see "Which
    Heptabase CLI" below), the Composio CLI's absolute path as
-   `SAMRABBIT_COMPOSIO` when it is found, and logs to `~/Library/Logs/samrabbit-bridge.log`);
-4. reloads the agent (`launchctl bootout`/`bootstrap`/`kickstart`), waits for `/health`, and prints the bridge URL.
+   `SAMRABBIT_COMPOSIO` when it is found, `--mobile-devices-file` and `--t3-token-file`, and logs to
+   `~/Library/Logs/samrabbit-bridge.log`);
+4. pairs the bridge with T3 Code once (`samrabbit_t3.py ensure-paired`: only when there is no good token yet; see
+   "Mobile API" below), printing `T3 paired (expires …)` or a warning (the bridge then pairs by itself later);
+5. reloads the agent (`launchctl bootout`/`bootstrap`/`kickstart`), waits for `/health`, prints one status line per
+   feature (ending with `mobile: on (T3 paired, N devices)`), the bridge URL, and how to pair an iPhone.
 
 Then point the R1 at the bridge from the R1's management page (Connections > Heptabase journal >
 "Connect through your Mac"), and paste the URL and token.
@@ -57,7 +64,8 @@ Mac: `python3 companion/mac-bridge/heptabase-connect.py --r1 https://<R1 address
 It pairs a management session, listens on the loopback redirect the R1 returns, opens Heptabase's Allow screen,
 and forwards the one-time code to the R1, which does the token exchange itself. It uses only the standard library.
 
-`uninstall.sh` stops and removes the agent and keeps the tokens. `uninstall.sh --purge` also deletes both tokens.
+`uninstall.sh` stops and removes the agent and keeps the tokens. `uninstall.sh --purge` also deletes both tokens,
+the bridge's T3 token and the list of paired phones.
 Neither ever deletes the synced conversations in `~/Library/Application Support/SamRabbit/sync/`.
 
 To update an installed bridge (for example to add conversation sync), run `install.sh` again: it keeps both tokens
@@ -272,6 +280,63 @@ calendar named) go here right away and are copied into the R1's calendar store a
 so the next iCal refresh updates that row instead of adding a second one. `calendar_delete_event` still asks the user
 first (`calendar_confirm_action`).
 
+## Mobile API (iPhone, widgets, Apple Watch)
+
+`samrabbit_mobile.py` answers `/v1/mobile/*` for the SamRabbit iPhone app (CONTRACTS-WAVE4); T3 goes through
+`samrabbit_t3.py`. One hub, one token per device:
+
+- **Peers:** loopback, private LAN (10/8, 172.16/12, 192.168/16, link-local) and Tailscale (100.64.0.0/10,
+  fd7a:115c:a1e0::/48) only; anything else gets 403. (The R1 routes stay LAN-only; Tailscale is accepted here so
+  the phone keeps working away from home once Tailscale is signed in.)
+- **Tokens:** every route except `pair` needs `Authorization: Bearer <mobile token>`. The bridge keeps only SHA-256
+  hashes in `~/.config/samrabbit/mobile-devices.json` (0600): `{deviceId, name, platform, createdAt, lastSeenAt,
+  tokenHash[, parentId]}`. The R1's bridge token and the desktop token open none of these routes.
+- **Pairing:** the desktop app (SamRabbit > **Pair iPhone…**) or `companion/mac-bridge/pair-phone.sh` calls
+  `POST /v1/mobile/pairing/start` (loopback + desktop token, like the desktop sync API) and shows
+  `{code, expiresAt, pairUrl, hosts}`: an 8-character code (A–Z and 2–9 without I, O, 0, 1; single use; 10 minutes;
+  a new code replaces the previous one), the LAN address (+ the Tailscale address when there is one) and
+  `samrabbit://pair?h=<host:port>[,<host2:port>]&c=<code>&n=<Mac name>` (the QR). The phone answers with
+  `POST /v1/mobile/pair {code, deviceName, platform: "ios"|"watchos"}` → `{token, deviceId, bridgeName,
+  bridgeVersion}`. Ten wrong codes in ten minutes lock pairing (429 `pairing_rate_limited`) until the window passes.
+- **Devices:** `GET /v1/mobile/devices` and `DELETE /v1/mobile/devices/<id>` (desktop app only) list and revoke
+  (revoking a phone also revokes its watch). The phone mints its watch's own token with
+  `POST /v1/mobile/devices/child {name, platform: "watchos"}` (provisioning the same watch again replaces its old
+  token); `POST /v1/mobile/unpair` lets a device forget itself.
+
+Routes (all JSON unless noted; errors `{"error": {code, message, retryable}}`; times are ISO 8601, except the reused
+sync routes, which keep epoch milliseconds):
+
+| Route | What |
+|---|---|
+| `GET /v1/mobile/summary` | `{generatedAt, mac: {name, online, screenLocked}, r1: {lastSeenAt, live, liveConversationId, liveTitle}, t3: {available, needsYou, working, threads: [top 5 {threadId, title, project, status, updatedAt, summary}]}, calendar: {available, next: [≤3 {title, startsAt, endsAt, allDay, location, meetingUrl}]}, latestConversation: {conversationId, title, lastAt, preview, live}, journal: {available}}`. Served from caches (< 300 ms) that a worker refreshes while a device is active (T3 every 10 s, calendar every 120 s, journal every 120 s, screen lock every 15 s); a part that can't be read says `available: false` with a `reason`. |
+| `GET /v1/mobile/conversations?limit=&before=&q=`, `GET /v1/mobile/conversations/<id>[/events?after=]`, `GET /v1/mobile/stream?after=` (SSE), `GET /v1/mobile/blobs/<sha256>` | the desktop sync API's own handlers (same JSON and SSE format), authorized by the mobile token |
+| `GET /v1/mobile/ui/artifacts/<id>` (+ `/image` JPEG, `/document` HTML with the generated-UI CSP) | a generated UI's status and content |
+| `POST /v1/mobile/ui/generate {prompt, data?}` | → `202 {artifactId, status, conversationId}`; the request and the result are recorded in the day's **"Phone"** conversation (`phone-YYYYMMDD`, never live), so the desktop app shows them too |
+| `GET /v1/mobile/t3/threads?filter=needs_you\|working\|recent` | `{threads: [{threadId, title, projectId, projectName, status: needs_approval\|needs_input\|working\|done\|error\|idle, statusLabel, updatedAt, summary, settled, pending?: {kind: approval\|question, text, options, requestId, …}}]}` (idle = never ran a turn) |
+| `GET /v1/mobile/t3/threads/<id>` | `{thread, messages: [{role: user\|assistant\|tool, text, at}], pending, activeTurnId}` (a run of tool steps is one `tool` line) |
+| `POST /v1/mobile/t3/threads/<id>/message {text}` · `/respond {decision: "approve"\|"deny"}` or `{answer}` (or `{answers: {questionId: …}}`) · `/stop` | `thread.turn.start` / `thread.approval.respond` (approve → accept, deny → decline) / `thread.user-input.respond` (option values as T3 expects) / `thread.turn.interrupt` |
+| `POST /v1/mobile/t3/threads {text, projectId?, title?}` | `thread.create` + `thread.turn.start` → `{threadId, title, projectId, projectName, placement}`. Without `projectId`: a project the request names, coding work to the most recently active code project, everything else to the orchestration project (`SAMRABBIT_T3_ORCHESTRATION_PROJECT` id, else the project titled `SAMRABBIT_T3_ORCHESTRATION_TITLE`, default T3's agent project "Hermes", else T3's agent workspace project, else the most recent one). |
+| `GET /v1/mobile/t3/projects` | `{projects: [{projectId, name, orchestration}], orchestrationProjectId}` |
+| `GET /v1/mobile/calendar/agenda?hours=24` | Composio `GOOGLECALENDAR_EVENTS_LIST` (single events, by start time) on the bridge's calendar (`primary`), cached 120 s: `{available, timezone, from, to, events: [{eventId, title, startsAt, endsAt, allDay, location, meetingUrl}], cached}` (no cancelled, declined or working-location entries) |
+| `POST /v1/mobile/calendar/block {minutes, title?}` | an event from now (rounded down to the minute) for `minutes` (5–720), in `SAMRABBIT_TIMEZONE` (default America/New_York), default title "Focus" |
+| `POST /v1/mobile/calendar/events {title, startsAt, endsAt}` | the same writer as `/v1/calendar/events` |
+| `POST /v1/mobile/journal {text}` | appends `**HH:MM** <text>` (the words escaped, nothing added) to today's Heptabase journal; explicit notes only |
+| `GET /v1/mobile/mac/state` · `POST /v1/mobile/mac/open {app\|url}` · `GET /v1/mobile/mac/screenshot?max=` | Mac control (`open` pins Google links to the account in `SAMRABBIT_GOOGLE_ACCOUNT` / the calendar's account with `authuser=`); the screenshot is a JPEG, or 409 `screen_locked` / `screen_recording_required` |
+
+`/health` adds `mobile: {available, devices, t3: {paired, ok}}`.
+
+**T3 Code.** The bridge has its own T3 session ("SamRabbit bridge", scopes `orchestration:read orchestration:operate`),
+separate from the R1's. It mints a pairing credential with the CLI inside the T3 Code app
+(`ELECTRON_RUN_AS_NODE=1 "/Applications/T3 Code (Alpha).app/Contents/MacOS/T3 Code (Alpha)" …/app.asar/apps/server/dist/bin.mjs
+auth pairing create --label "SamRabbit bridge" --ttl 10m --base-url http://127.0.0.1:3773 --json`), exchanges it
+at `POST /oauth/token` and keeps the 30-day token in `~/.config/samrabbit/t3-token` (0600, JSON with its expiry and
+session id). It pairs again by itself when the token is missing, has less than a day left, or T3 answers 401 (once per
+request; a failed pairing is not retried for a minute, and a token T3 refuses right after it was minted is not
+replaced in a loop). `install.sh` pairs once; `python3 -I samrabbit_t3.py status` shows the state. Options:
+`--t3-url`, `--t3-cli`, `--t3-token-file` (`SAMRABBIT_T3_URL`, `SAMRABBIT_T3_CLI`, `SAMRABBIT_T3_TOKEN_FILE`).
+A copy of the bridge run from a checkout never talks to T3 unless given `--t3-url` (it answers 503 `t3_dev_copy`),
+just as it never changes Google Calendar (`calendar_dev_copy`) or writes the journal (dry run).
+
 ## Desktop app page (`/app/`)
 
 `samrabbit_app.py` serves the SamRabbit desktop app's web UI (see `companion/desktop/README.md`) at
@@ -296,6 +361,9 @@ first (`calendar_confirm_action`).
   are written; conversation text and image bytes never are.
   Generated UIs log only the artifact id, the outcome and timings: never the prompt, the data or the widget.
   Calendar changes log only the route, the status and an error code: never a title, a time or Composio's output.
+  Mobile routes are logged as templates (`/v1/mobile/t3/threads/{id}/respond`) with the status and an error code:
+  never a mobile token, a pairing code, a device id, thread text, prompts, notes, events or images; T3 pairing logs
+  only "t3 paired (expires <date>)".
 - Error replies never repeat the CLI's own messages, because they could quote journal content.
 - The token file is re-read when it changes. To rotate it, delete the file, run `install.sh`, and connect the R1
   again.
@@ -324,7 +392,12 @@ The tests pass a fake `heptabase` executable by path (`tests/fake_heptabase.py`)
 They drive Mac control through a fake `cua-driver` / `open` / `lsappinfo` (`tests/fake_cua_driver.py`), generate UIs
 with a fake `claude` (`tests/fake_claude.py`) and a fake renderer (one test renders for real when agent-browser is
 installed), change a fake Google calendar through a fake `composio` (`tests/fake_composio.py`; no test ever runs the
-real CLI), and run the installer against a throwaway home with `SAMRABBIT_SKIP_LAUNCHCTL=1`. `tests/test_sync.py`
+real CLI), and run the installer against a throwaway home with `SAMRABBIT_SKIP_LAUNCHCTL=1`. `tests/test_mobile.py`
+drives the mobile API against a fake T3 server and CLI (`tests/fake_t3.py`, `tests/fake_t3_cli.py`), the fake
+Composio, Heptabase and cua-driver above, temp tokens and a fake clock: pairing (single use, expiry, rate limit, peer
+check), auth on every route, the summary and its caches, T3 status mapping, dispatch payloads, placement and
+re-pairing, the block math across daylight-saving changes, the journal format, the reused conversation routes and
+the "Phone" conversation. `tests/test_t3.py` covers the T3 port and a Python 3.9 `-I` import check. `tests/test_sync.py`
 covers the conversation store, dedupe, drafts, blobs, the auth matrix (R1 token vs desktop token, loopback vs a real
 LAN peer through this Mac's own address), SSE and screenshots.
 

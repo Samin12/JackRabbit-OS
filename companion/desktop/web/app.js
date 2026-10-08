@@ -49,6 +49,14 @@ const els = {
 };
 els.searchIcon.append(icon('search', { size: 14 }));
 
+// "Pair iPhone…" (native window with the QR code); only inside the desktop app.
+const pairButton = $('pair-phone');
+if (pairButton && nativeHandler) {
+  pairButton.hidden = false;
+  pairButton.append(icon('phone', { size: 15 }));
+  pairButton.addEventListener('click', () => postNative({ type: 'pairPhone' }));
+}
+
 const store = new ConversationStore();
 const state = {
   selectedId: null,

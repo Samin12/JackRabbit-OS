@@ -23,6 +23,9 @@ and the SamRabbit desktop app reads it back over loopback with its own token.
 Google Calendar changes (``samrabbit_calendar.py``): the R1 adds, moves and cancels events through the
 signed-in Composio CLI: ``POST /v1/calendar/events`` (+ ``/update``, ``/delete``), ``GET /v1/calendar/status``.
 
+The iPhone app, its widgets and the Apple Watch (``samrabbit_mobile.py``, T3 through ``samrabbit_t3.py``) use
+``/v1/mobile/*`` with their own per-device tokens (see that module); ``/health`` reports ``mobile``.
+
 Every route needs ``Authorization: Bearer <token>`` (the token lives in
 ``~/.config/samrabbit/bridge-token``, mode 0600). Journal text and the token are
 never logged. Stdlib only; runs on the macOS system Python 3.9+.
@@ -76,7 +79,14 @@ try:  # Google Calendar changes through Composio; optional so the bridge runs wi
 except Exception:  # noqa: BLE001  # pragma: no cover
     gcal = None  # type: ignore[assignment]
 
-VERSION = "1.1.0"
+try:  # the iPhone / Apple Watch API (/v1/mobile/*); optional so the bridge runs without it
+    import samrabbit_mobile as mobile  # noqa: E402
+    import samrabbit_t3 as t3  # noqa: E402
+except Exception:  # noqa: BLE001  # pragma: no cover
+    mobile = None  # type: ignore[assignment]
+    t3 = None  # type: ignore[assignment]
+
+VERSION = "1.2.0"
 SERVICE = "samrabbit-bridge"
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 3780
@@ -487,7 +497,7 @@ class BridgeServer(ThreadingHTTPServer):
                  mac_control: Optional[mac.MacControl] = None, sync_dir: Optional[str] = None,
                  desktop_token_file: Optional[str] = None,
                  genui_service: Optional[genui.GenUiService] = None,
-                 calendar_writer: Any = None) -> None:
+                 calendar_writer: Any = None, mobile_service: Any = None) -> None:
         self.token = token
         self.cli = cli
         self.mac = mac_control or mac.MacControl(mac.CuaDriver())
@@ -503,7 +513,10 @@ class BridgeServer(ThreadingHTTPServer):
         self.calendar: Any = calendar_writer  # samrabbit_calendar.CalendarWriter (or UnavailableWriter)
         if self.calendar is None and gcal is not None:
             self.calendar = gcal.make_writer_or_unavailable()
+        self.mobile: Any = mobile_service  # samrabbit_mobile.MobileService (its worker starts in main() or tests)
         super().__init__(address, BridgeHandler)
+        if self.mobile is not None:
+            self.mobile.attach(self)
         if sync is not None and sync_dir:
             try:
                 self.sync = sync.SyncService(sync_dir, desktop_token_file or sync.DEFAULT_DESKTOP_TOKEN_FILE,
@@ -519,6 +532,8 @@ class BridgeServer(ThreadingHTTPServer):
             self.sync.close()
         if self.calendar is not None:
             self.calendar.close()
+        if self.mobile is not None:
+            self.mobile.close()
         self.genui.stop()
 
     @property
@@ -561,6 +576,12 @@ class BridgeServer(ThreadingHTTPServer):
             except Exception:  # calendar changes must never break the journal's health check
                 _LOG.warning("calendar capabilities failed")
                 calendar_write = {"available": False}
+            try:
+                mobile_health: Dict[str, Any] = self.mobile.health() if self.mobile is not None \
+                    else {"available": False}
+            except Exception:  # the mobile API must never break the journal's health check
+                _LOG.warning("mobile health failed")
+                mobile_health = {"available": False}
             value: Dict[str, Any] = {
                 "ok": True, "service": SERVICE, "version": VERSION,
                 "cli": {"available": version is not None, "version": version,
@@ -571,6 +592,7 @@ class BridgeServer(ThreadingHTTPServer):
                 "sync": self.sync.health() if self.sync is not None else {"available": False},
                 "genui": generated_ui,
                 "calendarWrite": calendar_write,
+                "mobile": mobile_health,
                 "checkedAt": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
             }
             self._health = (time.monotonic(), value)
@@ -650,6 +672,12 @@ class BridgeHandler(BaseHTTPRequestHandler):
             desktop_app.serve(self, method)  # its own auth (loopback + desktop token) and logging
             return
         status = 500
+        if self.server.mobile is not None and self.server.mobile.handles(route):
+            # /v1/mobile/*: per-device tokens from LAN or Tailscale peers (its own auth, errors and logging).
+            status, code = self.server.mobile.serve(self, method, route)
+            _LOG.info("%s %s %s %dms%s", method, self.server.mobile.route_label(route), status,
+                      int((time.monotonic() - started) * 1000), f" {code}" if code else "")
+            return
         if self.server.sync is not None and self.server.sync.handles(route):
             # /v1/sync/*: bearer + private peer from the R1, loopback + desktop token for the app.
             status, code = self.server.sync.serve(self, method, route)
@@ -813,9 +841,15 @@ def make_server(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, *, token_fil
                 genui_service: Optional[genui.GenUiService] = None, artifacts_dir: Optional[str] = None,
                 claude: Optional[str] = None, agent_browser: Optional[str] = None,
                 genui_model: Optional[str] = None, composio: Optional[str] = None,
-                calendar_id: Optional[str] = None, calendar_writer: Any = None) -> BridgeServer:
+                calendar_id: Optional[str] = None, calendar_writer: Any = None,
+                mobile_devices_file: Optional[str] = None, t3_url: Optional[str] = None,
+                t3_cli: Optional[str] = None, t3_token_file: Optional[str] = None, t3_hub: Any = None,
+                mobile_timezone: Optional[str] = None, google_account: Optional[str] = None,
+                mobile_hosts: Optional[List[str]] = None, mobile_service: Any = None) -> BridgeServer:
     """Conversation sync runs only with a ``sync_dir`` (the command line passes the default one). ``cli`` is a
-    path, ``auto`` or ``dry-run``; without it only the installed copy uses the real CLI (``cli_for``)."""
+    path, ``auto`` or ``dry-run``; without it only the installed copy uses the real CLI (``cli_for``). T3 for the
+    mobile API: the installed copy (or one given ``t3_url``) pairs with T3 Code itself; a copy run from a checkout
+    answers ``t3_dev_copy`` and never reaches T3."""
     if calendar_writer is None and gcal is not None and composio is None and default_cli_choice() == CLI_DRY_RUN:
         # A copy run from a checkout (tests, dev) never changes the real Google Calendar unless given --composio.
         calendar_writer = gcal.UnavailableWriter("calendar_dev_copy", "This copy of the Mac bridge is not the "
@@ -824,6 +858,15 @@ def make_server(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, *, token_fil
     if calendar_writer is None and gcal is not None:
         # A bad SAMRABBIT_CALENDAR_ID or an unusable temp folder turns calendar changes off, never the bridge.
         calendar_writer = gcal.make_writer_or_unavailable(composio, calendar_id=calendar_id)
+    if mobile_service is None and mobile is not None:
+        if t3_hub is None and (t3_url or default_cli_choice() == CLI_AUTO):
+            t3_hub = t3.make_hub(t3_url or t3.DEFAULT_SERVER_URL, token_file=t3_token_file or t3.DEFAULT_TOKEN_FILE,
+                                 cli=t3_cli)
+        mobile_service = mobile.MobileService(devices_file=mobile_devices_file or mobile.DEFAULT_DEVICES_FILE,
+                                              t3_hub=t3_hub, desktop_token_file=desktop_token_file,
+                                              timezone_name=mobile_timezone,
+                                              google_account=google_account, hosts=mobile_hosts,
+                                              bridge_version=VERSION)
     return BridgeServer((host, port), token=TokenFile(token_file), cli=cli_for(cli),
                         cli_timeout=cli_timeout, allow_any_client=allow_any_client,
                         mac_control=mac_control or mac.MacControl(mac.CuaDriver(driver)),
@@ -831,7 +874,7 @@ def make_server(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, *, token_fil
                         genui_service=genui_service or genui.GenUiService.create(
                             artifacts_dir or genui.DEFAULT_ARTIFACTS_DIR, claude=claude,
                             agent_browser=agent_browser, model=genui_model),
-                        calendar_writer=calendar_writer)
+                        calendar_writer=calendar_writer, mobile_service=mobile_service)
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -865,6 +908,15 @@ def main(argv: Optional[List[str]] = None) -> int:
                         help="conversation sync store (empty turns sync off)")
     parser.add_argument("--desktop-token-file", default=os.environ.get("SAMRABBIT_DESKTOP_TOKEN_FILE") or None,
                         help="token the SamRabbit desktop app sends (default ~/.config/samrabbit/desktop-token)")
+    parser.add_argument("--mobile-devices-file", default=os.environ.get("SAMRABBIT_MOBILE_DEVICES_FILE") or None,
+                        help="paired iPhones and watches (token hashes; default ~/.config/samrabbit/mobile-devices.json)")
+    parser.add_argument("--t3-url", default=os.environ.get("SAMRABBIT_T3_URL") or None,
+                        help="T3 Code server for the mobile API (default http://127.0.0.1:3773 for the installed "
+                             "copy; a copy run from a checkout talks to T3 only when given this)")
+    parser.add_argument("--t3-cli", default=os.environ.get("SAMRABBIT_T3_CLI") or None,
+                        help="the T3 CLI used to pair: 'auto' (inside the T3 Code app) or a path")
+    parser.add_argument("--t3-token-file", default=os.environ.get("SAMRABBIT_T3_TOKEN_FILE") or None,
+                        help="the bridge's own T3 token (default ~/.config/samrabbit/t3-token)")
     options = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stderr)
     try:
@@ -874,7 +926,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                              desktop_token_file=options.desktop_token_file,
                              artifacts_dir=options.artifacts_dir, claude=options.claude,
                              agent_browser=options.agent_browser, genui_model=options.genui_model,
-                             composio=options.composio, calendar_id=options.calendar_id)
+                             composio=options.composio, calendar_id=options.calendar_id,
+                             mobile_devices_file=options.mobile_devices_file, t3_url=options.t3_url,
+                             t3_cli=options.t3_cli, t3_token_file=options.t3_token_file)
     except (OSError, ValueError) as error:
         _LOG.error("cannot start: %s", error)
         return 2
@@ -886,14 +940,21 @@ def main(argv: Optional[List[str]] = None) -> int:
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     server.genui.start()
+    if server.mobile is not None:
+        server.mobile.start()
     cli_path = server.cli.executable()
     if server.dry_run:
         _LOG.warning("heptabase CLI: dry-run, journal writes stay in this process and never reach Heptabase "
                      "(pass --cli auto for the real CLI)")
     composio_found = server.calendar is not None and server.calendar.cli.executable() is not None
-    _LOG.info("%s %s listening on %s:%d (cli %s, cua-driver %s, sync %s, composio %s)", SERVICE, VERSION, options.host,
-              server.server_address[1], cli_path or "missing", "found" if server.mac.driver.executable() else "missing",
-              "on" if server.sync is not None else "off", "found" if composio_found else "missing")
+    mobile_line = "off"
+    if server.mobile is not None:
+        mobile_health = server.mobile.health()
+        mobile_line = f"{mobile_health['devices']} devices, T3 {'paired' if mobile_health['t3']['paired'] else 'not paired'}"
+    _LOG.info("%s %s listening on %s:%d (cli %s, cua-driver %s, sync %s, composio %s, mobile %s)", SERVICE, VERSION,
+              options.host, server.server_address[1], cli_path or "missing",
+              "found" if server.mac.driver.executable() else "missing", "on" if server.sync is not None else "off",
+              "found" if composio_found else "missing", mobile_line)
     server.serve_forever(poll_interval=0.5)
     _LOG.info("stopped")
     return 0

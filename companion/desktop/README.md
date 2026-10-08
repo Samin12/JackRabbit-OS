@@ -66,6 +66,23 @@ Log: `~/Library/Logs/samrabbit-desktop.log` (0600) — states, HTTP statuses and
 conversation content. Lines like `page loaded`, `page: status api=ok conversations=12 live=1` and
 `page: diag images=3 imagesFailed=0 frames=2` confirm what the window loaded.
 
+## Pair iPhone
+
+**Pair iPhone…** (menu bar extra, the app menu with ⇧⌘P, or the phone button in the sidebar header) opens a native
+window (`Sources/PairingWindow.swift`) that pairs the SamRabbit iPhone app with this Mac's bridge:
+
+- it calls `POST /v1/mobile/pairing/start` (loopback + the desktop token, like the rest of the app) and shows the
+  answer: a QR code of the `samrabbit://pair?h=<host:port>&c=<code>&n=<Mac name>` link (CoreImage
+  `CIQRCodeGenerator`), the 8-character code, this Mac's name and address, and a countdown (codes are single use and
+  last 10 minutes; **New Code** makes another and the old one stops working);
+- below it, the paired iPhones and watches (`GET /v1/mobile/devices`, polled every 2 s while the window is open, so a
+  phone that just paired shows "… is paired") with **Revoke** (`DELETE /v1/mobile/devices/<id>`; a phone's watch goes
+  with it);
+- if the bridge is missing, too old (404) or refuses the desktop token, it says which installer to run.
+
+The code is shown only in this window; the log says just "pairing code shown". Without the desktop app,
+`companion/mac-bridge/pair-phone.sh` prints a code and the link in the terminal.
+
 ## Developing the UI
 
 `dev/fake_sync_server.py` is a stdlib stand-in for the bridge's sync API with realistic sample conversations

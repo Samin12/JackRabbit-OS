@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import plistlib
@@ -9,10 +10,16 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(HERE))
+
+DESKTOP = "desktop-token-" + "p" * 32
+BRIDGE = "bridge-token-" + "q" * 32
 
 
 @unittest.skipUnless(sys.platform == "darwin", "the installer targets macOS")
@@ -62,10 +69,16 @@ class InstallTest(unittest.TestCase):
 
         self.assertTrue((script.parent / "samrabbit_app.py").is_file(), "the desktop web UI module is installed too")
 
+        config = token_file.parent
         self.assertEqual(["--host", "0.0.0.0", "--port", "3780", "--token-file", str(token_file),
                           "--sync-dir", str(sync_dir), "--desktop-token-file", str(desktop_token_file),
-                          "--cli", "auto"],
+                          "--cli", "auto", "--mobile-devices-file", str(config / "mobile-devices.json"),
+                          "--t3-token-file", str(config / "t3-token")],
                          plist["ProgramArguments"][3:], "the installed bridge, and only it, uses the real CLI")
+        for module in ("samrabbit_mobile.py", "samrabbit_t3.py"):
+            self.assertTrue((script.parent / module).is_file(), module)
+        self.assertIn("skipping the T3 pairing (test install)", output, "a test install never pairs with T3")
+        self.assertFalse((config / "t3-token").exists())
         self.assertTrue(plist["StandardErrorPath"].endswith("Library/Logs/samrabbit-bridge.log"))
 
         (sync_dir / "conversations.db").write_text("kept")
@@ -105,6 +118,68 @@ class InstallTest(unittest.TestCase):
         with plist_path.open("rb") as handle:
             self.assertNotIn("SAMRABBIT_COMPOSIO", plistlib.load(handle)["EnvironmentVariables"])
         self.assertIn("Composio CLI was not found", output)
+
+    def test_install_pairs_with_t3_once_and_never_prints_the_token(self) -> None:
+        from fake_t3 import FakeT3
+
+        state = Path(self.home, "t3-state")
+        state.mkdir()
+        fake = FakeT3(str(state))
+        self.addCleanup(fake.close)
+        cli = Path(self.home, "t3-cli")
+        cli.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{HERE / "fake_t3_cli.py"}" --state "{state}" "$@"\n')
+        cli.chmod(0o755)
+        env = {"SAMRABBIT_T3_CLI": str(cli), "SAMRABBIT_T3_URL": fake.url}
+        output = self.run_script("install.sh", env=env)
+        self.assertIn("T3 paired (expires 2026-11-07)", output)
+        token_file = Path(self.home, ".config/samrabbit/t3-token")
+        self.assertEqual(0o600, stat.S_IMODE(token_file.stat().st_mode))
+        token = json.loads(token_file.read_text())["token"]
+        self.assertNotIn(token, output)
+        self.assertEqual("SamRabbit bridge", fake.exchanges[0]["client_label"])
+        output = self.run_script("install.sh", env=env)
+        self.assertEqual(1, len((state / "cli-calls.jsonl").read_text().splitlines()), "paired once, then kept")
+        (state / "cli-mode").write_text("fail")
+        token_file.unlink()
+        output = self.run_script("install.sh", env=env)
+        self.assertIn("warning: T3 not paired: t3_cli_failed", output, "a failed pairing never fails the install")
+        self.run_script("uninstall.sh", "--purge")
+        self.assertFalse(Path(self.home, ".config/samrabbit/mobile-devices.json").exists())
+
+    def test_pair_phone_prints_a_code_from_the_running_bridge(self) -> None:
+        import samrabbit_bridge as bridge
+        import samrabbit_mobile as mobile
+
+        config = Path(self.home, ".config/samrabbit")
+        config.mkdir(parents=True)
+        for name, value in (("desktop-token", DESKTOP), ("bridge-token", BRIDGE)):
+            (config / name).write_text(value + "\n")
+            (config / name).chmod(0o600)
+        server = bridge.make_server("127.0.0.1", 0, token_file=str(config / "bridge-token"),
+                                    desktop_token_file=str(config / "desktop-token"), driver="/nonexistent/driver",
+                                    mobile_devices_file=str(config / "mobile-devices.json"),
+                                    mobile_hosts=["192.168.1.99"])
+        thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        port = str(server.server_address[1])
+        done = subprocess.run([str(ROOT / "pair-phone.sh"), "--port", port],
+                              env={**os.environ, "SAMRABBIT_HOME": self.home}, capture_output=True, text=True,
+                              timeout=60)
+        self.assertEqual(0, done.returncode, done.stderr)
+        code_line = next(line for line in done.stdout.splitlines() if line.strip().startswith("Code:"))
+        code = "".join(code_line.split(":", 1)[1].split("(")[0].split())
+        self.assertEqual(8, len(code))
+        self.assertTrue(set(code) <= set(mobile.CODE_ALPHABET))
+        self.assertIn(f"Host:  192.168.1.99:{port}", done.stdout)
+        self.assertIn(f"samrabbit://pair?h=192.168.1.99:{port}&c={code}&n=", done.stdout)
+        self.assertTrue(server.mobile.codes.redeem(code), "the printed code pairs")
+        done = subprocess.run([str(ROOT / "pair-phone.sh"), "--port", "1"],
+                              env={**os.environ, "SAMRABBIT_HOME": self.home}, capture_output=True, text=True,
+                              timeout=60)
+        self.assertNotEqual(0, done.returncode)
+        self.assertNotIn(DESKTOP, done.stdout + done.stderr)
 
     def test_install_rejects_a_bad_port(self) -> None:
         env = {**os.environ, "SAMRABBIT_HOME": self.home, "SAMRABBIT_SKIP_LAUNCHCTL": "1"}
