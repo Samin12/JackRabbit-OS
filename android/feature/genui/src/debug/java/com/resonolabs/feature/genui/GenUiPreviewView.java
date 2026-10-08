@@ -26,7 +26,7 @@ final class GenUiPreviewView extends View implements GenUiController.Host {
     private static final float[] BAR_X = {64f, 152f, 240f, 328f, 416f};
 
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final FluidOrb orb = new FluidOrb();
+    private final FluidOrb orb = new FluidOrb().hero(getContext());
     private final RectF rect = new RectF();
     private GenUiPreviewScenes.Scene scene;
     private int sceneIndex;

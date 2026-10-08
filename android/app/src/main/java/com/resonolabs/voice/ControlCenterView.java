@@ -45,7 +45,7 @@ final class ControlCenterView extends View {
     private final Runnable openSettings;
     private final Runnable onClosed;
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final FluidOrb orb = new FluidOrb().setEnergy(0.2f).setSpeed(0.6f);
+    private final FluidOrb orb = new FluidOrb().hero(getContext()).setEnergy(0.2f).setSpeed(0.6f);
     private final SimpleDateFormat time = new SimpleDateFormat("h:mm", Locale.getDefault());
     private final SimpleDateFormat date = new SimpleDateFormat("EEEE, MMM d", Locale.getDefault());
     private boolean open;

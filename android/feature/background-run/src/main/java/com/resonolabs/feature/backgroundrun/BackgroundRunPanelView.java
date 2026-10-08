@@ -29,7 +29,7 @@ public final class BackgroundRunPanelView extends View implements UiInputTarget 
     private final Consumer<List<BackgroundRunSnapshot>> observer;
     private final Runnable close;
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final FluidOrb orb = new FluidOrb();
+    private final FluidOrb orb = new FluidOrb().hero(getContext());
     private final Handler handler = new Handler(Looper.getMainLooper());
     private List<BackgroundRunSnapshot> runs = List.of();
     private boolean started;
