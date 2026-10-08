@@ -53,13 +53,16 @@ public struct SamRabbitActions: Sendable {
         try await account.requireClient(timeout: 20).openOnMac(app: app, url: url)
     }
 
-    public func approve(threadId: String, _ approve: Bool) async throws {
-        try await account.requireClient().respond(threadId: threadId, approve: approve)
+    /// Approves or denies exactly the request `requestId` (the one the person saw). Throws
+    /// `BridgeError.isStaleRequest` when it is no longer open.
+    public func approve(threadId: String, requestId: String, _ approve: Bool) async throws {
+        try await account.requireClient().respond(threadId: threadId, requestId: requestId, approve: approve)
         await refreshQuietly()
     }
 
-    public func answer(threadId: String, _ answer: String) async throws {
-        try await account.requireClient().respond(threadId: threadId, answer: answer)
+    /// Answers exactly the question request `requestId`. Throws `BridgeError.isStaleRequest` when stale.
+    public func answer(threadId: String, requestId: String, _ answer: String) async throws {
+        try await account.requireClient().respond(threadId: threadId, requestId: requestId, answer: answer)
         await refreshQuietly()
     }
 
@@ -200,7 +203,10 @@ public enum AlertPlanner {
         return Plan(alerts: alerts, announced: nextAnnounced, tracked: remaining)
     }
 
+    /// One key per T3 request when its id is known (a new request is announced, the same one never
+    /// twice); threads without pending details (summary threads) fall back to their status and text.
     static func needsYouKey(_ thread: TaskThread) -> String {
+        if let requestId = thread.pending?.requestId { return "\(thread.threadId)|\(requestId)" }
         let text = thread.pending?.text ?? ""
         return "\(thread.threadId)|\(thread.status.rawValue)|\(text.prefix(60))"
     }

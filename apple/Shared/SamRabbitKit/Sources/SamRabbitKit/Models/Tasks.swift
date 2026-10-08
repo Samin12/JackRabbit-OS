@@ -82,6 +82,11 @@ public struct PendingOption: Codable, Sendable, Hashable, Identifiable {
 }
 
 /// What a thread is waiting on: an approval (approve / deny) or a question (an answer).
+///
+/// `requestId` names the T3 request this card shows. Approve, Deny and Answer always send it, so the
+/// bridge answers exactly that request, or refuses with 409 `t3_request_not_pending` when it was
+/// answered elsewhere and T3 has asked something new in the meantime. Without an id (a summary
+/// thread, which carries no pending details) nothing may be answered from the card: open the thread.
 public struct PendingAction: Codable, Sendable, Equatable {
     public enum Kind: String, Codable, Sendable {
         case approval
@@ -92,11 +97,18 @@ public struct PendingAction: Codable, Sendable, Equatable {
     public var kind: Kind
     public var text: String
     public var options: [PendingOption]
+    /// The T3 request (`pending.requestId`).
+    public var requestId: String?
+    /// The question being asked (`pending.questionId`, else the first of `pending.questions`).
+    public var questionId: String?
 
-    public init(kind: Kind, text: String, options: [PendingOption] = []) {
+    public init(kind: Kind, text: String, options: [PendingOption] = [], requestId: String? = nil,
+                questionId: String? = nil) {
         self.kind = kind
         self.text = text
         self.options = options
+        self.requestId = requestId
+        self.questionId = questionId
     }
 
     public init(from decoder: Decoder) throws {
@@ -105,7 +117,12 @@ public struct PendingAction: Codable, Sendable, Equatable {
         kind = raw.hasPrefix("approv") ? .approval : (raw.hasPrefix("question") || raw == "input") ? .question : .unknown
         text = c.text("text", "question", "detail") ?? ""
         options = c.list(PendingOption.self, "options")
+        requestId = c.text("requestId")
+        questionId = c.text("questionId") ?? c.list(JSONValue.self, "questions").first?["id"].text
     }
+
+    /// Approve / Deny / Answer can be sent from this card (it knows which request it shows).
+    public var canRespond: Bool { requestId != nil }
 }
 
 /// A T3 Code thread (`/v1/mobile/t3/threads` items and `summary.t3.threads`).

@@ -14,6 +14,7 @@ final class PhoneRelayStandIn: BridgeRelay, @unchecked Sendable {
         var down = false
         var answerZero = false
         var relayed: [String] = []
+        var bodies: [String] = []
         var direct: [Bool] = []
     }
 
@@ -32,7 +33,10 @@ final class PhoneRelayStandIn: BridgeRelay, @unchecked Sendable {
         guard let decoded = WatchRelay.Request(message: WatchRelay.Request(request).message), decoded.allowed else {
             return (400, Data())
         }
-        state.withLock { $0.relayed.append("\(decoded.method) \(decoded.path)") }
+        state.withLock {
+            $0.relayed.append("\(decoded.method) \(decoded.path)")
+            $0.bodies.append(decoded.body.map { String(decoding: $0, as: UTF8.self) } ?? "")
+        }
         if zero { return (0, Data()) }
         let answer: WatchRelay.Response
         do {
@@ -110,7 +114,11 @@ struct RelayTests {
         let summary = try await watch.summary()
         #expect(summary.mac.name == "Samin's MacBook Pro")
         // POSTs that never connected are relayed too, once.
-        try await watch.respond(threadId: "t_deploy24", approve: true)
+        try await watch.respond(threadId: "t_deploy24", requestId: "req_deploy_1", approve: true)
+        // The request id travels through the phone unchanged.
+        let sent = try JSONDecoder().decode(JSONValue.self, from: Data(relay.state.withLock { $0.bodies[1] }.utf8))
+        #expect(sent["requestId"].string == "req_deploy_1")
+        #expect(sent["decision"].string == "approve")
         let threads = try await watch.threads(filter: .needsYou)
         #expect(!threads.contains { $0.threadId == "t_deploy24" && $0.status == .needsApproval })
         #expect(relay.state.withLock { $0.relayed } == [
@@ -141,6 +149,14 @@ struct RelayTests {
             _ = try await watch.thread("nope")
         }
         _ = bridge
+    }
+
+    @Test func aStaleApprovalRelayedThroughThePhoneIsRefused() async throws {
+        let closed = try SilentPort(listening: false)
+        let (bridge, _, watch) = try await setUp(watchHost: closed.host)
+        _ = try await bridge.control("rerequest", ["threadId": "t_deploy24"])
+        await #expect { try await watch.respond(threadId: "t_deploy24", requestId: "req_deploy_1", approve: true) }
+            throws: { ($0 as? BridgeError)?.isStaleRequest == true }
     }
 
     @Test func aRelayThatCouldNotReachTheMacIsNotRetriedDirectly() async throws {

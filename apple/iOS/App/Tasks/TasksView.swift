@@ -14,8 +14,10 @@ struct TasksView: View {
             VStack(spacing: 24) {
                 if !model.isPaired {
                     PairPromptCard()
+                } else if let problem = model.tasksProblem {
+                    TasksNotice(error: problem, showingLast: !model.threads.isEmpty)
                 } else if model.threads.isEmpty {
-                    EmptyTasks(loading: model.refreshing || model.lastError == nil)
+                    EmptyTasks(loading: !model.threadsLoaded && (model.refreshing || model.lastError == nil))
                 }
                 if !needs.isEmpty {
                     VStack(spacing: 12) {
@@ -88,7 +90,43 @@ struct EmptyTasks: View {
     }
 }
 
-/// Approve / Deny, or the answers to a question (Home cards and the thread detail).
+/// "T3 not connected": the Mac answers but T3 Code on it does not, so only the task areas are out
+/// of date (the last list stays visible underneath).
+struct TasksNotice: View {
+    let error: BridgeError
+    var showingLast = false
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: error.isTaskServiceDown ? "bolt.horizontal.circle.fill" : "exclamationmark.circle.fill")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(SamTheme.amber)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(error.isTaskServiceDown ? "T3 not connected" : "Tasks didn't update")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(SamTheme.ink)
+                Text(detail)
+                    .font(.system(size: 13))
+                    .foregroundStyle(SamTheme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .glassCard(radius: 18, tint: SamTheme.amber, padding: 14)
+        .accessibilityElement(children: .combine)
+    }
+
+    var detail: String {
+        let reason = error.isTaskServiceDown
+            ? (error.errorDescription.flatMap { $0.isEmpty ? nil : $0 } ?? "T3 Code on your Mac isn't answering.")
+            : (error.errorDescription ?? "")
+        return showingLast ? reason + " Showing the last tasks." : reason
+    }
+}
+
+/// Approve / Deny, or the answers to a question (Home cards and the thread detail). Every answer
+/// names the request it was shown for; a card that doesn't know it (a summary thread) only opens
+/// the thread, so nothing is ever approved blind.
 struct PendingActionBar: View {
     @Environment(AppModel.self) private var model
     let thread: TaskThread
@@ -101,26 +139,35 @@ struct PendingActionBar: View {
     var body: some View {
         let busy = model.busyThreads.contains(thread.threadId)
         let action = pending ?? thread.pending
+        let approval = action?.kind == .approval || (action?.kind != .question && thread.status == .needsApproval)
         VStack(alignment: .leading, spacing: 10) {
-            if thread.status == .needsApproval || action?.kind == .approval {
+            if action?.canRespond != true, thread.status.needsYou || action != nil {
+                Button {
+                    model.openThread(thread.threadId)
+                } label: {
+                    Label(approval ? "Review and approve" : "Open to answer", systemImage: "arrow.up.right")
+                        .lineLimit(1).frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.glass)
+                .controlSize(.large)
+            } else if approval {
                 HStack(spacing: 10) {
                     Button {
-                        Task { await model.approve(thread, true) }
+                        Task { await model.approve(thread, true, pending: action) }
                     } label: {
                         Label("Approve", systemImage: "checkmark").lineLimit(1).fixedSize().frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.glassProminent)
                     .tint(SamTheme.green.mix(with: .black, by: 0.15))
                     Button(role: .destructive) {
-                        Task { await model.approve(thread, false) }
+                        Task { await model.approve(thread, false, pending: action) }
                     } label: {
                         Label("Deny", systemImage: "xmark").lineLimit(1).fixedSize().frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.glass)
                     if compact {
                         Button {
-                            model.tab = .tasks
-                            model.tasksPath.append(ThreadRoute(threadId: thread.threadId))
+                            model.openThread(thread.threadId)
                         } label: {
                             Image(systemName: "arrowshape.turn.up.left.fill")
                         }
@@ -135,7 +182,7 @@ struct PendingActionBar: View {
                     FlowLayout(spacing: 8) {
                         ForEach(options) { option in
                             Button(option.label) {
-                                Task { _ = await model.answer(thread, option.value) }
+                                Task { _ = await model.answer(thread, option.value, pending: action) }
                             }
                             .font(.system(size: 15, weight: .medium))
                             .buttonStyle(.glass)
@@ -164,7 +211,7 @@ struct PendingActionBar: View {
                         Button {
                             let text = custom
                             Task {
-                                if await model.answer(thread, text) { custom = "" }
+                                if await model.answer(thread, text, pending: action) { custom = "" }
                             }
                         } label: {
                             Image(systemName: "arrow.up").font(.system(size: 15, weight: .bold))

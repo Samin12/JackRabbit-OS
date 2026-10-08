@@ -91,16 +91,23 @@ enum BackgroundRefresh {
             SummaryCache.shared.save(summary)
             SamRabbitActions.reloadWidgets()
             var threads = summary.t3.threads
+            // What waits for you comes from the thread list: its entries carry the request ids the
+            // notifications are keyed on (summary threads don't, and would be announced again).
+            var complete = true
+            if summary.t3.needsYou > 0 {
+                if let waiting = try? await client.threads(filter: .needsYou) {
+                    let ids = Set(waiting.map(\.threadId))
+                    threads = waiting + threads.filter { !ids.contains($0.threadId) && !$0.status.needsYou }
+                } else {
+                    complete = false
+                }
+            }
             // Tasks started from the phone that fell out of the summary's top five.
             let known = Set(threads.map(\.threadId))
             for task in TaskTracker.shared.tasks where !known.contains(task.threadId) {
                 if let detail = try? await client.thread(task.threadId) { threads.append(detail.thread) }
             }
-            if summary.t3.needsYou > threads.filter(\.status.needsYou).count,
-               let waiting = try? await client.threads(filter: .needsYou) {
-                threads += waiting.filter { !known.contains($0.threadId) }
-            }
-            await NotificationController().check(threads: threads)
+            if complete { await NotificationController().check(threads: threads) }
             await LiveActivityController().update(with: threads)
         } catch {
             log.notice("background refresh failed")

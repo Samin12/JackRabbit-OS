@@ -34,6 +34,10 @@ final class WatchWalkthroughTests: XCTestCase {
         add(attachment)
     }
 
+    private func element(_ app: XCUIApplication, labelContains text: String) -> XCUIElement {
+        app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", text)).firstMatch
+    }
+
     /// Lets the data settle and animations finish before a screenshot.
     private func settle(_ seconds: TimeInterval = 1.2) {
         _ = XCUIApplication().wait(for: .runningForeground, timeout: seconds)
@@ -70,6 +74,35 @@ final class WatchWalkthroughTests: XCTestCase {
         XCTAssertTrue(element(app, labelBeginsWith: "Answer sent").waitForExistence(timeout: 15))
         settle(0.5)
         snap("watch-2-needs-you-answered")
+    }
+
+    /// `POST 127.0.0.1:3799/__fake/<name>` (the fake bridge's loopback helpers).
+    private func fake(_ name: String, _ body: [String: Any] = [:]) async throws -> [String: Any] {
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:3799/__fake/\(name)")!)
+        request.httpMethod = "POST"
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, _) = try await URLSession.shared.data(for: request)
+        return (try JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
+    }
+
+    /// The card shows approval A; on the Mac A was answered elsewhere and T3 asked approval B. Tapping
+    /// Approve on the stale card must not approve B: the bridge refuses A's id (409), the watch says
+    /// so and shows B instead.
+    func test2b_StaleApprovalIsRefused() async throws {
+        _ = try await fake("reset")
+        let app = try launch(page: "needs")
+        let approve = app.buttons["approve-t_deploy24"]
+        XCTAssertTrue(approve.waitForExistence(timeout: 10))
+        XCTAssertTrue(element(app, labelContains: "deploy.sh staging").waitForExistence(timeout: 5))
+        _ = try await fake("rerequest", ["threadId": "t_deploy24",
+                                         "text": "Run ./deploy.sh production (pushes build 2.4.0-rc1 to production)"])
+        approve.tap()
+        XCTAssertTrue(element(app, labelBeginsWith: "Request changed").waitForExistence(timeout: 15))
+        XCTAssertTrue(element(app, labelContains: "deploy.sh production").waitForExistence(timeout: 15))
+        XCTAssertTrue(app.buttons["approve-t_deploy24"].exists, "B still waits for an answer")
+        settle(0.4)
+        snap("watch-2b-request-changed")
+        _ = try await fake("reset")
     }
 
     func test3_WorkingAndThreadDetail() throws {

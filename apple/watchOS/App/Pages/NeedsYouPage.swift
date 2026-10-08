@@ -8,7 +8,10 @@ struct NeedsYouPage: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 8) {
-                if model.needsYou.isEmpty {
+                if let problem = model.tasksProblem { TasksNoticeRow(error: problem) }
+                if model.needsYou.isEmpty, model.tasksProblem != nil {
+                    EmptyView()
+                } else if model.needsYou.isEmpty {
                     EmptyNote(symbol: "checkmark.circle.fill", title: "Nothing needs you",
                               detail: model.workingCount > 0 ? "\(Formatting.count(model.workingCount, "task")) working." : nil)
                 } else {
@@ -32,7 +35,10 @@ struct NeedsYouCard: View {
     var body: some View {
         let style = StatusStyle(thread.status)
         let busy = model.busy.contains(thread.threadId)
-        let approval = thread.status == .needsApproval || thread.pending?.kind == .approval
+        let pending = thread.pending
+        let approval = pending?.kind == .approval || (pending?.kind != .question && thread.status == .needsApproval)
+        // Only a card that knows its request may answer it (summary threads don't): open it first.
+        let canRespond = pending?.canRespond == true
         VStack(alignment: .leading, spacing: 6) {
             NavigationLink(value: ThreadRoute(threadId: thread.threadId, title: thread.title)) {
                 VStack(alignment: .leading, spacing: 3) {
@@ -57,10 +63,16 @@ struct NeedsYouCard: View {
             }
             .buttonStyle(.plain)
 
-            if approval {
+            if !canRespond {
+                NavigationLink(value: ThreadRoute(threadId: thread.threadId, title: thread.title)) {
+                    Label(approval ? "Review" : "Open", systemImage: "arrow.up.right")
+                        .font(.system(size: 14, weight: .semibold)).frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+            } else if approval {
                 HStack(spacing: 6) {
                     Button {
-                        Task { await model.approve(thread, true) }
+                        Task { await model.approve(thread, true, pending: pending) }
                     } label: {
                         Text("Approve").font(.system(size: 15, weight: .semibold)).frame(maxWidth: .infinity)
                     }
@@ -68,7 +80,7 @@ struct NeedsYouCard: View {
                     .tint(SamTheme.green.opacity(0.85))
                     .accessibilityIdentifier("approve-\(thread.threadId)")
                     Button {
-                        Task { await model.approve(thread, false) }
+                        Task { await model.approve(thread, false, pending: pending) }
                     } label: {
                         Text("Deny").font(.system(size: 15, weight: .semibold)).frame(maxWidth: .infinity)
                     }
@@ -83,7 +95,7 @@ struct NeedsYouCard: View {
             } else {
                 ForEach((thread.pending?.options ?? []).prefix(4)) { option in
                     Button {
-                        Task { await model.answer(thread, option.value) }
+                        Task { await model.answer(thread, option.value, pending: pending) }
                     } label: {
                         Text(option.label).font(.system(size: 14, weight: .medium)).frame(maxWidth: .infinity)
                     }
@@ -92,7 +104,7 @@ struct NeedsYouCard: View {
                 }
                 DictationButton(title: "Answer", prompt: thread.pending?.text ?? "Your answer",
                                 colors: [SamTheme.violet.opacity(0.9), SamTheme.violet.opacity(0.6)], height: 38) { text in
-                    Task { await model.answer(thread, text) }
+                    Task { await model.answer(thread, text, pending: pending) }
                 }
             }
         }

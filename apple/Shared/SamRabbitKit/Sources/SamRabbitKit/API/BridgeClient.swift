@@ -226,15 +226,18 @@ public final class BridgeClient: Sendable {
         try await send(.post("/v1/mobile/t3/threads/\(Self.segment(threadId))/message", body: ["text": .string(text)]))
     }
 
-    /// Approve or deny the pending approval: `POST .../respond {decision}`.
-    public func respond(threadId: String, approve: Bool) async throws {
+    /// Approve or deny one approval: `POST .../respond {decision, requestId}`. The bridge answers 409
+    /// `t3_request_not_pending` (`BridgeError.isStaleRequest`) when `requestId` is no longer the open
+    /// request, so a stale card never approves something else.
+    public func respond(threadId: String, requestId: String, approve: Bool) async throws {
         try await send(.post("/v1/mobile/t3/threads/\(Self.segment(threadId))/respond",
-                             body: ["decision": .string(approve ? "approve" : "deny")]))
+                             body: ["decision": .string(approve ? "approve" : "deny"), "requestId": .string(requestId)]))
     }
 
-    /// Answer the pending question: `POST .../respond {answer}`.
-    public func respond(threadId: String, answer: String) async throws {
-        try await send(.post("/v1/mobile/t3/threads/\(Self.segment(threadId))/respond", body: ["answer": .string(answer)]))
+    /// Answer one question: `POST .../respond {answer, requestId}` (409 `t3_request_not_pending` when stale).
+    public func respond(threadId: String, requestId: String, answer: String) async throws {
+        try await send(.post("/v1/mobile/t3/threads/\(Self.segment(threadId))/respond",
+                             body: ["answer": .string(answer), "requestId": .string(requestId)]))
     }
 
     /// `POST .../stop`

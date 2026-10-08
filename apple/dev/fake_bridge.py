@@ -20,8 +20,15 @@ What is in it:
 * An agenda relative to now, Block / new events, an in-memory journal, Mac state, open and a
   screenshot JPEG, and generated UIs (``/ui/generate`` is ready after about four seconds).
 
+Pending approvals and questions carry a ``requestId`` (and questions a ``questionId``) like the real
+bridge's; ``respond`` with a ``requestId`` that is no longer the open one answers 409
+``t3_request_not_pending``, as the real bridge does.
+
 Fake-only helpers (loopback, no token): ``POST /__fake/reset``, ``GET /__fake/journal``,
-``POST /__fake/chatter``, ``POST /__fake/settle`` (finish every pending simulated step now).
+``POST /__fake/chatter``, ``POST /__fake/settle`` (finish every pending simulated step now),
+``POST /__fake/rerequest {threadId, text?}`` (the open request was answered elsewhere and T3 asks a new one:
+same thread, new ``requestId``), ``POST /__fake/t3 {available}`` (T3 Code stops or starts answering: the summary
+says ``t3.available=false`` and every ``/v1/mobile/t3/*`` route answers 503 ``t3_unavailable``).
 Stdlib only, Python 3.9.
 """
 
@@ -221,6 +228,8 @@ class FakeBridge:
             self.event_counter = 0
             self.chatter_count = 0
             self.r1_seen = time.time() - 40
+            self.t3_available = True
+            self.request_seq = 0
             now = time.time()
             self.focus_jpg = self.put_blob(read_fixture("genui-focus.jpg"))
             self.release_jpg = self.put_blob(read_fixture("genui-release.jpg"))
@@ -254,15 +263,17 @@ class FakeBridge:
                     ("assistant", "All **42 tests** pass on `main`. The release build is ready:\n\n"
                                   "- version `2.4.0-rc1`\n- 3 migrations (all reversible)\n- changelog updated\n\n"
                                   "I need your approval to run the staging deploy.")],
-                   {"kind": "approval", "text": "Run ./deploy.sh staging (pushes build 2.4.0-rc1 to staging)"}),
+                   {"kind": "approval", "requestId": "req_deploy_1", "requestKind": "command",
+                    "text": "Run ./deploy.sh staging (pushes build 2.4.0-rc1 to staging)"}),
             thread("t_loginfix", "Fix login redirect", "Website", "needs_input", 300,
                    "The open redirect is fixed; one question about the default page.",
                    [("user", "Logged-out users bounce to a blank page after login. Fix it."),
                     ("assistant", "Found it: `redirectAfterLogin` trusted the `next` parameter. It now only "
                                   "accepts same-site paths.\n\n```js\nreturn next.startsWith('/') ? next : '/home'\n```"),
                     ("assistant", "Where should people land when there is no `next`?")],
-                   {"kind": "question", "text": "Where should logged-out users land after signing in?",
-                    "options": ["/home", "/pricing", "/dashboard"]}),
+                   {"kind": "question", "requestId": "req_login_1", "questionId": "q_landing",
+                    "header": "Landing page", "text": "Where should logged-out users land after signing in?",
+                    "options": ["/home", "/pricing", "/dashboard"], "allowCustom": True, "multiSelect": False}),
             thread("t_weekly", "Weekly report from Linear", "Assistant", "working", 40,
                    "Collecting closed issues for the week…",
                    [("user", "Write my weekly report from Linear and put it in a doc."),
@@ -540,6 +551,10 @@ class FakeBridge:
             raise ApiError(404, "thread_not_found", "No such task.")
         return thread
 
+    def next_request_id(self, prefix: str = "req") -> str:
+        self.request_seq += 1
+        return "%s_%d_%s" % (prefix, self.request_seq, uuid.uuid4().hex[:6])
+
     def say(self, t: Dict[str, Any], role: str, text: str) -> None:
         t["messages"].append({"role": role, "text": text, "at": time.time()})
         t["updatedAt"] = time.time()
@@ -591,7 +606,9 @@ class FakeBridge:
             "t3": {"available": True,
                    "needsYou": sum(1 for t in threads if t["status"] in ("needs_approval", "needs_input")),
                    "working": sum(1 for t in threads if t["status"] == "working"),
-                   "threads": [self.thread_view(t, for_summary=True) for t in threads[:5]]},
+                   "threads": [self.thread_view(t, for_summary=True) for t in threads[:5]]}
+            if self.t3_available else
+            {"available": False, "needsYou": 0, "working": 0, "threads": [], "reason": "t3_unavailable"},
             "calendar": {"available": True, "next": self.upcoming(36, include_all_day=False)[:3]},
             "latestConversation": {"conversationId": latest["conversationId"], "title": latest["title"],
                                    "lastAt": latest["lastAt"], "preview": latest["preview"]} if latest else None,
@@ -744,6 +761,26 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/__fake/settle" and method == "POST":
             b.settle()
             return self.send_json(200, {"ok": True})
+        if path == "/__fake/rerequest" and method == "POST":
+            body = self.body()
+            with b.lock:
+                t = b.thread_or_404(str(body.get("threadId") or ""))
+                old = t["pending"] or {"kind": "approval"}
+                fresh = dict(old)
+                fresh["requestId"] = b.next_request_id("req")
+                if old["kind"] == "question":
+                    fresh["questionId"] = "q_" + uuid.uuid4().hex[:6]
+                fresh["text"] = str(body.get("text") or "") or (
+                    "Run ./deploy.sh production (pushes build 2.4.0-rc1 to production)"
+                    if old["kind"] == "approval" else "Which page should signed-in users land on?")
+                t["pending"] = fresh
+                t["status"] = "needs_input" if fresh["kind"] == "question" else "needs_approval"
+                t["updatedAt"] = time.time()
+                return self.send_json(200, {"ok": True, "requestId": fresh["requestId"]})
+        if path == "/__fake/t3" and method == "POST":
+            with b.lock:
+                b.t3_available = bool(self.body().get("available", True))
+            return self.send_json(200, {"ok": True, "available": b.t3_available})
         raise ApiError(404, "not_found", "Not found.")
 
     def mobile(self, method: str, path: str) -> None:
@@ -990,6 +1027,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def t3(self, method: str, rest: str) -> None:
         b = self.bridge
+        if not b.t3_available:  # what the real bridge answers while T3 Code is not running
+            raise ApiError(503, "t3_unavailable", "T3 Code on the Mac is not answering. Is the T3 Code app running?",
+                           retryable=True)
         if rest == "t3/projects":
             self.only(method, "GET")
             return self.send_json(200, {"projects": b.projects})
@@ -1069,11 +1109,19 @@ class Handler(BaseHTTPRequestHandler):
                 t["status"], t["summary"] = "idle", "Stopped from iPhone."
                 b.say(t, "assistant", "Stopped.")
                 return self.send_json(200, {"ok": True})
-            # respond
+            # respond: like the real bridge, a requestId that is not the open request is refused (409), and
+            # without one the open request of the right kind is answered.
             pending = t["pending"]
-            if not pending:
-                raise ApiError(409, "nothing_pending", "That task is not waiting for you.")
-            if pending["kind"] == "approval":
+            wanted = body.get("requestId")
+            if wanted is not None and not isinstance(wanted, str):
+                raise ApiError(400, "invalid_request", "requestId must be a string.")
+            if body.get("decision") is None and body.get("answer") is None:
+                raise ApiError(400, "invalid_request", "Send {decision: approve|deny} or {answer}.")
+            approving = body.get("decision") is not None
+            kind = "approval" if approving else "question"
+            if not pending or pending["kind"] != kind or wanted not in (None, pending.get("requestId")):
+                raise ApiError(409, "t3_request_not_pending", "That %s is no longer pending." % kind)
+            if approving:
                 decision = body.get("decision")
                 if decision not in ("approve", "deny"):
                     raise ApiError(400, "invalid_decision", "decision must be approve or deny.")

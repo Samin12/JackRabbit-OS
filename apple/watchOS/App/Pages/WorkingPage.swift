@@ -8,7 +8,10 @@ struct WorkingPage: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 7) {
-                if model.working.isEmpty {
+                if let problem = model.tasksProblem { TasksNoticeRow(error: problem) }
+                if model.working.isEmpty, model.tasksProblem != nil {
+                    EmptyView()
+                } else if model.working.isEmpty {
                     EmptyNote(symbol: "moon.zzz.fill", title: "Nothing running", detail: "Ask from the first page.",
                               tint: SamTheme.cyan)
                 } else {
@@ -94,11 +97,14 @@ struct ThreadDetailView: View {
     @ViewBuilder private func actions(for detail: ThreadDetail) -> some View {
         let thread = detail.thread
         let busy = model.busy.contains(thread.threadId)
-        if thread.status == .needsApproval {
+        if thread.status == .needsApproval, let pending = detail.pending, pending.canRespond {
+            if !pending.text.isEmpty {
+                Text(pending.text).font(.system(size: 12.5)).foregroundStyle(SamTheme.ink2)
+            }
             HStack(spacing: 6) {
-                Button("Approve") { Task { await model.approve(thread, true); await load() } }
+                Button("Approve") { Task { await model.approve(thread, true, pending: pending); await load() } }
                     .buttonStyle(.borderedProminent).tint(SamTheme.green.opacity(0.85))
-                Button("Deny") { Task { await model.approve(thread, false); await load() } }
+                Button("Deny") { Task { await model.approve(thread, false, pending: pending); await load() } }
                     .buttonStyle(.bordered).tint(SamTheme.red)
             }
             .disabled(busy)
@@ -108,7 +114,7 @@ struct ThreadDetailView: View {
                         colors: [SamTheme.orb2, SamTheme.orb], height: 40, busy: busy) { text in
             Task {
                 if thread.status == .needsInput {
-                    await model.answer(thread, text)
+                    await model.answer(thread, text, pending: detail.pending)
                 } else {
                     await model.reply(thread, text)
                 }

@@ -4,21 +4,28 @@ import WebKit
 
 /// A generated UI, interactive, in a locked-down web view: JavaScript only, no storage, no
 /// cookies, no access to app data, and no network except the four CDNs the documents may import
-/// from (the bridge's own CSP lists the same ones). Links open in Safari.
+/// from (`GeneratedUISandbox`, enforced by a WebKit content rule list). The rule list is compiled
+/// before anything loads; when it cannot be compiled the document is not shown at all (fail
+/// closed). Links open in Safari.
 struct GeneratedUIViewer: View {
     let artifactId: String
     var title: String = ""
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
-    @State private var html: String?
+    @State private var loaded: (html: String, rules: WKContentRuleList)?
     @State private var error: BridgeError?
+    @State private var lockdownFailed = false
 
     var body: some View {
         NavigationStack {
             ZStack {
                 SamBackdrop()
-                if let html {
-                    SandboxedWebView(html: html).ignoresSafeArea(edges: .bottom)
+                if let loaded {
+                    SandboxedWebView(html: loaded.html, rules: loaded.rules).ignoresSafeArea(edges: .bottom)
+                } else if lockdownFailed {
+                    ContentUnavailableView("Can't open this safely", systemImage: "lock.trianglebadge.exclamationmark",
+                                           description: Text("SamRabbit couldn't switch on the network lock for "
+                                                             + "generated UIs, so it won't open this one."))
                 } else if let error {
                     ContentUnavailableView(error.shortDescription, systemImage: "exclamationmark.triangle",
                                            description: Text(error.errorDescription ?? ""))
@@ -40,8 +47,15 @@ struct GeneratedUIViewer: View {
         .preferredColorScheme(.dark)
         .task {
             guard let client = model.client else { return }
+            let rules: WKContentRuleList
             do {
-                html = try await client.artifactDocument(artifactId)
+                rules = try await SandboxedWebView.compileRules()
+            } catch {
+                lockdownFailed = true
+                return
+            }
+            do {
+                loaded = (try await client.artifactDocument(artifactId), rules)
             } catch let failure as BridgeError {
                 error = failure
             } catch {}
@@ -49,24 +63,27 @@ struct GeneratedUIViewer: View {
     }
 }
 
+/// A `WKWebView` that can only exist with the compiled lockdown rules installed.
 struct SandboxedWebView: UIViewRepresentable {
     let html: String
+    let rules: WKContentRuleList
 
-    static let allowedHosts = ["cdnjs.cloudflare.com", "esm.sh", "cdn.jsdelivr.net", "unpkg.com"]
-
-    /// Blocks every load except the CDNs, data:, blob: and about: URLs.
-    static let rules = """
-    [{"trigger":{"url-filter":".*"},"action":{"type":"block"}},
-     {"trigger":{"url-filter":"^(data|blob|about):"},"action":{"type":"ignore-previous-rules"}},
-     {"trigger":{"url-filter":"^https://(cdnjs\\\\.cloudflare\\\\.com|esm\\\\.sh|cdn\\\\.jsdelivr\\\\.net|unpkg\\\\.com)/"},
-      "action":{"type":"ignore-previous-rules"}}]
-    """
+    /// Compiles `GeneratedUISandbox.contentRules` (throws when WebKit rejects them; never load then).
+    @MainActor
+    static func compileRules() async throws -> WKContentRuleList {
+        let store: WKContentRuleListStore = WKContentRuleListStore.default()
+        guard let list = try await store.compileContentRuleList(forIdentifier: GeneratedUISandbox.ruleListIdentifier,
+                                                                encodedContentRuleList: GeneratedUISandbox.contentRules)
+        else { throw URLError(.cannotLoadFromNetwork) }
+        return list
+    }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeUIView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
+        configuration.userContentController.add(rules)
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
         configuration.allowsInlineMediaPlayback = true
@@ -79,7 +96,7 @@ struct SandboxedWebView: UIViewRepresentable {
         view.navigationDelegate = context.coordinator
         view.uiDelegate = context.coordinator
         view.allowsLinkPreview = false
-        context.coordinator.load(html, into: view)
+        view.loadHTMLString(html, baseURL: nil)
         return view
     }
 
@@ -87,25 +104,14 @@ struct SandboxedWebView: UIViewRepresentable {
 
     @MainActor
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
-        func load(_ html: String, into view: WKWebView) {
-            WKContentRuleListStore.default().compileContentRuleList(forIdentifier: "samrabbit.genui",
-                                                                    encodedContentRuleList: SandboxedWebView.rules) { list, _ in
-                Task { @MainActor in
-                    if let list { view.configuration.userContentController.add(list) }
-                    view.loadHTMLString(html, baseURL: nil)
-                }
-            }
-        }
-
         func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction) async -> WKNavigationActionPolicy {
             guard let url = action.request.url else { return .cancel }
-            if url.scheme == "about" || url.scheme == "data" || url.scheme == "blob" { return .allow }
+            if let scheme = url.scheme?.lowercased(), GeneratedUISandbox.allowedSchemes.contains(scheme) { return .allow }
             if action.navigationType == .linkActivated, url.scheme == "https" || url.scheme == "http" {
                 await UIApplication.shared.open(url)
             }
             // Sub-frames from the CDNs are allowed; the document itself never navigates away.
-            if action.targetFrame?.isMainFrame == false, let host = url.host,
-               SandboxedWebView.allowedHosts.contains(host) {
+            if action.targetFrame?.isMainFrame == false, GeneratedUISandbox.allows(url) {
                 return .allow
             }
             return .cancel

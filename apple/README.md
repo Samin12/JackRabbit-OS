@@ -54,12 +54,16 @@ everything in memory (only pairings persist, in `apple/dev/.state/`). Approving,
 threads along on their own; new tasks run about 45 s (so the Live Activity has something to show); the live R1
 conversation gets a streamed exchange every minute (`--no-chatter` turns that off). Loopback helpers:
 `POST /__fake/reset`, `POST /__fake/settle` (finish every pending step), `POST /__fake/chatter`,
-`GET /__fake/journal`.
+`GET /__fake/journal`, `POST /__fake/rerequest {threadId, text?}` (the open approval or question was answered
+elsewhere and T3 asks a new one: same thread, new `requestId`) and `POST /__fake/t3 {available}` (T3 Code stops
+answering: the summary says `t3.available=false`, every `/v1/mobile/t3/*` route answers 503 `t3_unavailable`).
+Pending approvals and questions carry `requestId` (questions also `questionId`) and `respond` refuses a stale id
+with 409 `t3_request_not_pending`, exactly like the real bridge.
 
 ## Tests
 
 ```sh
-cd apple/Shared/SamRabbitKit && swift test          # 47 tests on macOS, including the client against the fake bridge
+cd apple/Shared/SamRabbitKit && swift test          # 56 tests on macOS, including the client against the fake bridge
 xcodebuild -project apple/SamRabbit.xcodeproj -scheme SamRabbit \
   -destination 'platform=iOS Simulator,name=iPhone 18 Pro' test   # the same suite minus the fake-bridge tests, on iOS
 curl -X POST 127.0.0.1:3799/__fake/reset             # then the watch walkthrough (real taps, screenshots attached):
@@ -69,14 +73,16 @@ xcodebuild -project apple/SamRabbit.xcodeproj -scheme SamRabbitWatch \
 
 The fake-bridge tests start `fake_bridge.py` on a free port per test (macOS only: the iOS simulator cannot spawn
 processes). They cover pairing (bad codes, host failover and promotion), the summary, threads
-(approve/answer/reply/stop/create), conversations and events into the timeline, SSE, blobs, generated UIs,
+(approve/answer/reply/stop/create, a stale card refused with 409, T3 down while the summary works), conversations
+and events into the timeline, SSE, blobs, generated UIs,
 calendar, the journal, the Mac, child (watch) tokens and the shared actions/notification planning. The relay tests
 run the watch's `BridgeClient` against a closed port, a port that never answers and the fake bridge, with the iPhone's
 half of the relay in process: reads and unsent writes go through the phone, a write that may have reached the Mac
 (a POST that timed out) is never sent twice, and the bridge's error envelope survives the relay.
 
 The watch walkthrough (`watchOS/UITests/WatchWalkthroughTests.swift`, needs the fake bridge and the paired simulators)
-opens every page, approves, answers a question, opens a task, blocks 30 minutes, types a journal note and an Ask into
+opens every page, approves, answers a question, taps Approve on a card whose request was replaced on the Mac
+(refused: "Request changed", the new request shows), opens a task, blocks 30 minutes, types a journal note and an Ask into
 the system input sheet, runs a request through the iPhone (`-SamRabbitRoute phone`) and, after the watch's token is
 revoked on the bridge, reconnects through the iPhone. `WatchFaceTests` (opt-in, `TEST_RUNNER_SAMRABBIT_FACES=setup`)
 adds Infograph, Modular and Activity Digital faces with the SamRabbit complications and screenshots them.
@@ -122,7 +128,10 @@ on every Mac that builds the app.
 **The app**: Home (orb header, quick actions, Needs you with inline Approve/Deny/answers, Working, Up next,
 latest conversation), Chats (search, live badges, timeline with cards/images/generated UIs, live over SSE,
 generated UIs open interactive in a `WKWebView` with a non-persistent store and a content rule list that only
-allows the four CDNs the documents import from), Tasks (sections, Markdown thread detail, approve/deny/answer,
+allows the four CDNs the documents import from: `GeneratedUISandbox`, one rule per scheme and host because WebKit
+rejects `|` in `url-filter`; the list is compiled before anything loads and the viewer refuses to open the document
+when it does not compile; `SandboxTests` compile it and, on macOS, check in a real web view that a page reaches a
+local server without the list and nothing with it), Tasks (sections, Markdown thread detail, approve/deny/answer,
 composer with dictation, Stop, New task with a project picker), Mac (state, open app or link, screenshot with
 pinch zoom, Generate UI), Settings (QR scan via VisionKit, manual entry, `samrabbit://pair` links, bridge
 addresses, notifications, widget gallery). Dictation: the keyboard mic everywhere, plus a mic button
@@ -154,6 +163,8 @@ defaulted, alternative names accepted), so these are the shapes `fake_bridge.py`
 - Dates: ISO-8601 text (with or without fractional seconds or an offset) or epoch milliseconds.
 - `GET /conversations` → `{conversations:[{conversationId,title,startedAt,lastAt,endedAt,live,messageCount,preview,device,cursor}],cursor,nextBefore?}`; events → `{events:[{…,cursor}],cursor,more}`; `/stream` like the desktop stream (`: ready <cursor>`, `id:`/`event: sync`/`data:`).
 - `GET /t3/projects` → `{projects:[{projectId|id, name|title}]}`. `POST /t3/threads` → `{threadId,title,projectName}`. Message/respond/stop → any 2xx.
+- `pending` → `{kind:"approval"|"question", requestId, questionId?, text, options?}`. Approve / Deny / Answer send `{decision, requestId}` / `{answer, requestId}` for the request the card shows; 409 `t3_request_not_pending` means it changed: the app and the watch say "That request changed, check it again" and refresh. A card without a `requestId` (summary threads carry no pending details) only opens the thread.
+- The summary and the thread list are fetched side by side and fail on their own: while T3 Code is not running (`/t3/threads` 503 `t3_unavailable`, `t3_app_missing`, …) Home, the orb, the calendar and the widgets stay fresh and only Needs you / Tasks (and the watch's task pages) say "T3 not connected", over the last list.
 - `pending.options` for questions: strings or `{value|decision, label}` objects.
 - `GET /calendar/agenda` → `{events:[{eventId?,title,startsAt,endsAt,allDay,location,meetingUrl}]}`; block/events → `{event:{…}}` (an optional `dryRun:true` is shown as "test copy").
 - `POST /journal` → `{recorded,state:"sent"|"queued",date}`.
@@ -208,5 +219,7 @@ context requests and can reissue the child token.
 `~/Movies/SamRabbit-tests/wave4/ios-*.png` (each tab, thread detail, chats with a generated UI, pairing,
 Home Screen and Lock Screen widgets added in the simulator, Live Activity) and `widget-renders/` (the
 `-SamRabbitRenderWidgets` launch argument renders every widget face with `ImageRenderer` into the app's
-Documents/renders). The watch: `watch-1…9-*.png` (every page and action from the walkthrough) and
+Documents/renders), `ios-stale-request-refused.png`, `ios-home-t3-down.png`, `ios-tasks-t3-down.png`. The watch:
+`watch-1…9-*.png` (every page and action from the walkthrough, `watch-2b-request-changed.png` the stale approval
+refused), `watch-needs-you-t3-down.png` and
 `watch-face-*.png` (the complications on Infograph, Modular and Activity Digital faces), plus `watch-renders/`.

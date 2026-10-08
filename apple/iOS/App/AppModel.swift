@@ -51,9 +51,15 @@ final class AppModel {
     var pairing: BridgePairing?
     var summary: MobileSummary?
     var summaryDate: Date?
+    /// The Mac itself did not answer (or refused the token) on the last refresh.
     var lastError: BridgeError?
     var refreshing = false
+    /// The last thread list that loaded (kept while T3 Code is not answering).
     var threads: [TaskThread] = []
+    /// The thread list failed while the Mac answered (T3 Code not running, ...): only the task areas say so.
+    var tasksError: BridgeError?
+    /// A thread list has loaded since launch or pairing.
+    var threadsLoaded = false
     var projects: [TaskProject] = []
 
     var tab: AppTab = .home
@@ -90,34 +96,53 @@ final class AppModel {
 
     var orbMood: OrbMood { isPaired ? OrbMood.from(summary, reachable: reachable) : .offline }
 
+    /// Why the task areas may be out of date while the rest of the Mac works (nil when the whole Mac
+    /// is unreachable: `lastError` says so already).
+    var tasksProblem: BridgeError? { lastError == nil ? tasksError : nil }
+
     var client: BridgeClient? { account.client() }
 
     // MARK: - Refresh
 
     /// Refreshes the summary and the thread list (and runs the notification / Live Activity checks).
+    ///
+    /// The two fail on their own: while T3 Code is not running the bridge answers the thread list
+    /// with 503 `t3_unavailable` but the summary still works, so the orb, the calendar, the R1 and
+    /// the widgets stay fresh and only the task areas say "T3 not connected" (with the last list).
     func refresh(quiet: Bool = true) async {
         guard isPaired, let client else { return }
         refreshing = true
         defer { refreshing = false }
-        do {
-            async let summaryCall = client.summary()
-            async let threadsCall = client.threads()
-            let (fresh, list) = try await (summaryCall, threadsCall)
+        async let summaryCall = BridgeError.capture { try await client.summary() }
+        async let threadsCall = BridgeError.capture { try await client.threads() }
+        let (summaryResult, threadsResult) = await (summaryCall, threadsCall)
+        switch summaryResult {
+        case .success(let fresh):
             summary = fresh
             summaryDate = .now
-            threads = list
             lastError = nil
             SummaryCache.shared.save(fresh)
             SamRabbitActions.reloadWidgets()
-            await notifications.check(threads: list)
-            await liveActivities.update(with: list)
-        } catch let error as BridgeError {
+        case .failure(let error):
             if error == .cancelled { return }
             lastError = error
             if error == .unauthorized { handleUnauthorized() }
             if !quiet { show(error) }
-        } catch {
-            lastError = .unreachable(error.localizedDescription)
+        }
+        switch threadsResult {
+        case .success(let list):
+            threads = list
+            threadsLoaded = true
+            tasksError = nil
+            await notifications.check(threads: list)
+            await liveActivities.update(with: list)
+        case .failure(let error):
+            if error == .cancelled { return }
+            tasksError = error
+            // Only the task areas say so (no toast). Notifications wait for a real list (summary
+            // threads carry no requests: they would announce again what was announced); Live
+            // Activities can move on with the summary.
+            if lastError == nil, let summary { await liveActivities.update(with: summary.t3.threads) }
         }
     }
 
@@ -178,6 +203,8 @@ final class AppModel {
         pairing = nil
         summary = nil
         threads = []
+        threadsLoaded = false
+        tasksError = nil
         lastError = nil
         stopRefreshing()
         SamRabbitActions.reloadWidgets()
@@ -229,32 +256,61 @@ final class AppModel {
         }
     }
 
-    func approve(_ thread: TaskThread, _ approve: Bool) async {
+    /// Approves or denies exactly the request the card shows (`pending.requestId`). A card that does
+    /// not know its request (a summary thread) opens the thread instead of answering blind.
+    func approve(_ thread: TaskThread, _ approve: Bool, pending: PendingAction?) async {
+        guard let requestId = (pending ?? thread.pending)?.requestId else {
+            openThread(thread.threadId)
+            return
+        }
         busyThreads.insert(thread.threadId)
         defer { busyThreads.remove(thread.threadId) }
         do {
-            try await actions.approve(threadId: thread.threadId, approve)
+            try await actions.approve(threadId: thread.threadId, requestId: requestId, approve)
             Haptics.success()
             show(.success, approve ? "Approved" : "Denied", detail: thread.title)
             await refresh()
         } catch {
-            fail(error)
+            await failResponding(error)
         }
     }
 
-    func answer(_ thread: TaskThread, _ text: String) async -> Bool {
+    /// Answers exactly the question the card shows (see `approve`).
+    func answer(_ thread: TaskThread, _ text: String, pending: PendingAction?) async -> Bool {
+        guard let requestId = (pending ?? thread.pending)?.requestId else {
+            openThread(thread.threadId)
+            return false
+        }
         busyThreads.insert(thread.threadId)
         defer { busyThreads.remove(thread.threadId) }
         do {
-            try await actions.answer(threadId: thread.threadId, text)
+            try await actions.answer(threadId: thread.threadId, requestId: requestId, text)
             Haptics.success()
             show(.success, "Answer sent", detail: thread.title)
             await refresh()
             return true
         } catch {
-            fail(error)
+            await failResponding(error)
             return false
         }
+    }
+
+    /// The request was answered elsewhere or T3 asked something new: show the new state, never act on it.
+    private func failResponding(_ error: Error) async {
+        guard let bridge = error as? BridgeError, bridge.isStaleRequest else {
+            fail(error)
+            return
+        }
+        Haptics.error()
+        show(.failure, "That request changed", detail: "Check it again.")
+        await refresh()
+    }
+
+    /// The Tasks tab with this thread open.
+    func openThread(_ threadId: String) {
+        tab = .tasks
+        tasksPath = NavigationPath()
+        tasksPath.append(ThreadRoute(threadId: threadId))
     }
 
     func reply(to threadId: String, _ text: String) async -> Bool {

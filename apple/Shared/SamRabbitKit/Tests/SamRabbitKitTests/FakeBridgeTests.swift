@@ -51,6 +51,16 @@ final class FakeBridgeProcess: @unchecked Sendable {
         _ = try await URLSession.shared.data(for: request)
     }
 
+    /// `POST /__fake/<name>` with a JSON body (rerequest, t3); returns the answer.
+    @discardableResult
+    func control(_ name: String, _ body: [String: JSONValue]) async throws -> JSONValue {
+        var request = URLRequest(url: base.appendingPathComponent("__fake/\(name)"))
+        request.httpMethod = "POST"
+        request.httpBody = try JSONEncoder().encode(JSONValue.object(body))
+        let (data, _) = try await URLSession.shared.data(for: request)
+        return try JSONDecoder().decode(JSONValue.self, from: data)
+    }
+
     func journal() async throws -> [String] {
         let (data, _) = try await URLSession.shared.data(from: base.appendingPathComponent("__fake/journal"))
         return try JSONDecoder().decode(JSONValue.self, from: data)["lines"].array?.compactMap(\.string) ?? []
@@ -120,14 +130,17 @@ struct FakeBridgeTests {
         #expect(Set(needing.map(\.threadId)) == ["t_deploy24", "t_loginfix"])
         let question = try #require(needing.first { $0.pending?.kind == .question })
         #expect(question.pending?.options.map(\.value) == ["/home", "/pricing", "/dashboard"])
+        #expect(question.pending?.requestId == "req_login_1")
+        #expect(question.pending?.questionId == "q_landing")
 
         let detail = try await client.thread("t_deploy24")
         #expect(detail.pending?.kind == .approval)
+        #expect(detail.pending?.requestId == "req_deploy_1")
         #expect(detail.messages.count == 2)
 
-        try await client.respond(threadId: "t_deploy24", approve: true)
+        try await client.respond(threadId: "t_deploy24", requestId: try #require(detail.pending?.requestId), approve: true)
         #expect(try await client.thread("t_deploy24").thread.status == .working)
-        try await client.respond(threadId: "t_loginfix", answer: "/home")
+        try await client.respond(threadId: "t_loginfix", requestId: "req_login_1", answer: "/home")
         try await bridge.control("settle")
         #expect(try await client.thread("t_deploy24").thread.status == .done)
         #expect(try await client.thread("t_loginfix").thread.status == .done)
@@ -143,6 +156,70 @@ struct FakeBridgeTests {
         #expect(projects.map(\.name) == ["Assistant", "Website", "SamRabbit"])
         let all = try await client.threads()
         #expect(all.count == 8)
+    }
+
+    /// Approval A was answered on another device and T3 asked approval B: the card still showing A
+    /// must never approve B. The bridge refuses A's id with 409 `t3_request_not_pending`.
+    @Test func aStaleCardNeverAnswersTheNextRequest() async throws {
+        let bridge = try FakeBridgeProcess()
+        let (client, _) = try await bridge.pairedClient()
+        let seen = try #require(try await client.threads(filter: .needsYou).first { $0.threadId == "t_deploy24" }?.pending)
+        let next = try #require(try await bridge.control("rerequest", ["threadId": "t_deploy24"])["requestId"].string)
+        #expect(next != seen.requestId)
+
+        await #expect {
+            try await client.respond(threadId: "t_deploy24", requestId: try #require(seen.requestId), approve: true)
+        } throws: { error in
+            (error as? BridgeError)?.isStaleRequest == true && (error as? BridgeError)?.shortDescription == "That request changed"
+        }
+        // B is still waiting, untouched, and shows its own id and text.
+        let fresh = try await client.thread("t_deploy24")
+        #expect(fresh.thread.status == .needsApproval)
+        #expect(fresh.pending?.requestId == next)
+        #expect(fresh.pending?.text.contains("production") == true)
+        try await client.respond(threadId: "t_deploy24", requestId: next, approve: false)
+        #expect(try await client.thread("t_deploy24").thread.status == .done)
+
+        // The same for questions, and for a decision sent to a thread that only asks a question.
+        let question = try #require(try await client.thread("t_loginfix").pending)
+        await #expect { try await client.respond(threadId: "t_loginfix", requestId: try #require(question.requestId),
+                                                 approve: true) } throws: { ($0 as? BridgeError)?.isStaleRequest == true }
+        _ = try await bridge.control("rerequest", ["threadId": "t_loginfix"])
+        await #expect { try await client.respond(threadId: "t_loginfix", requestId: try #require(question.requestId),
+                                                 answer: "/home") } throws: { ($0 as? BridgeError)?.isStaleRequest == true }
+        #expect(try await client.thread("t_loginfix").thread.status == .needsInput)
+        // The shared actions send the id too.
+        let account = try await bridge.pairedClient().1
+        let actions = SamRabbitActions(account: account, cache: SummaryCache(container: .temporary()),
+                                       tracker: TaskTracker(container: .temporary()))
+        await #expect { try await actions.answer(threadId: "t_loginfix", requestId: try #require(question.requestId), "/home") }
+            throws: { ($0 as? BridgeError)?.isStaleRequest == true }
+        let current = try #require(try await client.thread("t_loginfix").pending?.requestId)
+        try await actions.answer(threadId: "t_loginfix", requestId: current, "/pricing")
+        #expect(try await client.thread("t_loginfix").thread.status == .working)
+    }
+
+    /// T3 Code not running: the summary still answers (t3.available = false), the thread list
+    /// answers 503 `t3_unavailable`, which only the task areas show.
+    @Test func t3DownLeavesTheSummaryWorking() async throws {
+        let bridge = try FakeBridgeProcess()
+        let (client, _) = try await bridge.pairedClient()
+        try await bridge.control("t3", ["available": false])
+        let summary = try await client.summary()
+        #expect(!summary.t3.available)
+        #expect(summary.mac.name == "Samin's MacBook Pro")
+        #expect(!summary.calendar.next.isEmpty)
+        let failure = await BridgeError.capture { try await client.threads() }
+        guard case .failure(let error) = failure else { Issue.record("the thread list should fail"); return }
+        #expect(error.code == "t3_unavailable")
+        #expect(error.isTaskServiceDown)
+        #expect(error.shortDescription == "T3 not connected")
+        #expect(!BridgeError.unreachable("x").isTaskServiceDown)
+        #expect(!BridgeError.server(status: 409, code: "t3_request_not_pending", message: "", retryable: false).isTaskServiceDown)
+        let back = try await bridge.control("t3", ["available": true])
+        #expect(back["available"].bool == true)
+        #expect(try await client.threads().count == 7)
+        #expect(try await client.summary().t3.available)
     }
 
     @Test func conversationsEventsAndTheTimeline() async throws {

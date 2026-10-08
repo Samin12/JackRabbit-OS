@@ -84,6 +84,47 @@ struct DecodingTests {
         #expect(list.threads[1].pending?.options.map(\.value) == ["approve", "deny"])
         #expect(list.threads[1].pending?.options.map(\.label) == ["Approve", "Deny"])
         #expect(list.threads[2].pending == nil)
+        #expect(list.threads[0].pending?.requestId == nil)
+        #expect(list.threads[0].pending?.canRespond == false)
+    }
+
+    /// The real bridge's `pending_view`: the request and question ids decode and survive the cache.
+    @Test func pendingCarriesTheRequestIds() throws {
+        let json = """
+        {"threads":[
+          {"threadId":"a","title":"A","status":"needs_approval",
+           "pending":{"kind":"approval","requestId":"req-a1","requestKind":"command","text":"Run it?",
+                      "options":[{"decision":"accept","label":"Yes"},{"decision":"decline","label":"No"}]}},
+          {"threadId":"b","title":"B","status":"needs_input",
+           "pending":{"kind":"question","requestId":"req-b1","header":"Page","text":"Where?","options":["/home"],
+                      "allowCustom":true,"multiSelect":false,
+                      "questions":[{"id":"q-1","header":"Page","text":"Where?","options":["/home"]}]}},
+          {"threadId":"c","title":"C","status":"needs_input",
+           "pending":{"kind":"question","requestId":"req-c1","questionId":"q-9","text":"Why?"}}]}
+        """
+        let list = try BridgeJSON.decode(ThreadList.self, from: Data(json.utf8))
+        #expect(list.threads.map { $0.pending?.requestId } == ["req-a1", "req-b1", "req-c1"])
+        #expect(list.threads.map { $0.pending?.questionId } == [nil, "q-1", "q-9"])
+        #expect(list.threads.allSatisfy { $0.pending?.canRespond == true })
+        let summary = MobileSummary(t3: TaskOverview(available: true, needsYou: 3, threads: list.threads))
+        let cache = SummaryCache(container: .temporary())
+        cache.save(summary)
+        #expect(cache.load()?.summary.t3.threads.map { $0.pending?.requestId } == ["req-a1", "req-b1", "req-c1"])
+        #expect(cache.load()?.summary.t3.threads[1].pending?.questionId == "q-1")
+    }
+
+    /// One notification per T3 request: the same request is never announced twice, a new one is.
+    @Test func needsYouIsAnnouncedOncePerRequest() {
+        func thread(_ requestId: String, _ text: String) -> TaskThread {
+            TaskThread(threadId: "t", title: "Deploy", status: .needsApproval,
+                       pending: PendingAction(kind: .approval, text: text, requestId: requestId))
+        }
+        let first = AlertPlanner.plan(threads: [thread("r1", "Run deploy")], announced: [], tracked: [])
+        #expect(first.alerts.count == 1)
+        let again = AlertPlanner.plan(threads: [thread("r1", "Run deploy (edited)")], announced: first.announced, tracked: [])
+        #expect(again.alerts.isEmpty)
+        let next = AlertPlanner.plan(threads: [thread("r2", "Run deploy")], announced: again.announced, tracked: [])
+        #expect(next.alerts.count == 1)
     }
 
     @Test func threadDetailDecodes() throws {

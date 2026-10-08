@@ -243,9 +243,13 @@ struct NeedsYouSection: View {
     }
 
     var body: some View {
-        if !threads.isEmpty {
+        let problem = model.tasksProblem
+        if !threads.isEmpty || problem != nil {
             VStack(spacing: 12) {
-                SectionHeader("Needs you", count: threads.count, symbol: "hand.raised.fill")
+                if !threads.isEmpty {
+                    SectionHeader("Needs you", count: threads.count, symbol: "hand.raised.fill")
+                }
+                if let problem { TasksNotice(error: problem, showingLast: !threads.isEmpty) }
                 ForEach(threads) { thread in
                     NeedsYouCard(thread: thread)
                 }
@@ -279,8 +283,7 @@ struct NeedsYouCard: View {
                 StatusChip(thread.status)
             }
             Button {
-                model.tab = .tasks
-                model.tasksPath.append(ThreadRoute(threadId: thread.threadId))
+                model.openThread(thread.threadId)
             } label: {
                 Text(thread.title)
                     .font(.system(size: 17, weight: .semibold))

@@ -42,8 +42,12 @@ final class WatchModel {
     var paired: Bool
     var summary: MobileSummary?
     var summaryDate: Date?
+    /// The last thread list that loaded (kept while T3 Code is not answering).
     var threads: [TaskThread] = []
+    /// The Mac itself did not answer (or refused the token).
     var lastError: BridgeError?
+    /// The thread list failed while the Mac answered (T3 Code not running, ...).
+    var tasksError: BridgeError?
     var route: PhoneLink.Route = .direct
     var refreshing = false
     var connecting = false
@@ -87,6 +91,9 @@ final class WatchModel {
     /// The Mac refused the watch's token (revoked from the Mac): reconnect through the iPhone.
     var rejected: Bool { lastError == .unauthorized }
 
+    /// T3 Code is not answering while the Mac does: only the task pages say so.
+    var tasksProblem: BridgeError? { lastError == nil ? tasksError : nil }
+
     var needsYou: [TaskThread] {
         let list = threads.isEmpty ? (summary?.t3.threads ?? []) : threads
         return list.filter(\.status.needsYou)
@@ -106,24 +113,31 @@ final class WatchModel {
 
     // MARK: - Refresh
 
+    /// The summary and the thread list, each with its own error: T3 Code not running (the list
+    /// answers 503) leaves the orb, Up next and the complications fresh.
     func refresh() async {
         guard paired, let client = account.client(timeout: 6) else { return }
         refreshing = true
         defer { refreshing = false }
-        do {
-            async let summaryCall = client.summary(timeout: 6)
-            async let threadsCall = client.threads()
-            let (fresh, list) = try await (summaryCall, threadsCall)
+        async let summaryCall = BridgeError.capture { try await client.summary(timeout: 6) }
+        async let threadsCall = BridgeError.capture { try await client.threads() }
+        let (summaryResult, threadsResult) = await (summaryCall, threadsCall)
+        switch summaryResult {
+        case .success(let fresh):
             summary = fresh
             summaryDate = .now
-            threads = list
             lastError = nil
             SummaryCache.shared.save(fresh)
             SamRabbitActions.reloadWidgets()
-        } catch let error as BridgeError {
+        case .failure(let error):
             if error != .cancelled { lastError = error }
-        } catch {
-            lastError = .unreachable(error.localizedDescription)
+        }
+        switch threadsResult {
+        case .success(let list):
+            threads = list
+            tasksError = nil
+        case .failure(let error):
+            if error != .cancelled { tasksError = error }
         }
         route = link.lastRoute
     }
@@ -151,6 +165,7 @@ final class WatchModel {
             summary = nil
             threads = []
             lastError = nil
+            tasksError = nil
             return
         }
         lastError = nil
@@ -183,19 +198,30 @@ final class WatchModel {
         }
     }
 
-    func approve(_ thread: TaskThread, _ approve: Bool) async {
+    /// Approves or denies exactly the request the card shows (`pending.requestId`); the pages only
+    /// offer it when the card knows its request.
+    func approve(_ thread: TaskThread, _ approve: Bool, pending: PendingAction? = nil) async {
+        guard let requestId = (pending ?? thread.pending)?.requestId else {
+            show(.failure, "Open the task", detail: "Check what it asks first.")
+            return
+        }
         await run(thread.threadId) {
-            try await self.actions.approve(threadId: thread.threadId, approve)
+            try await self.actions.approve(threadId: thread.threadId, requestId: requestId, approve)
             self.drop(thread.threadId)
             self.show(.success, approve ? "Approved" : "Denied", detail: thread.title)
         }
     }
 
-    func answer(_ thread: TaskThread, _ text: String) async {
+    /// Answers exactly the question the card shows (see `approve`).
+    func answer(_ thread: TaskThread, _ text: String, pending: PendingAction? = nil) async {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        guard let requestId = (pending ?? thread.pending)?.requestId else {
+            show(.failure, "Open the task", detail: "Check what it asks first.")
+            return
+        }
         await run(thread.threadId) {
-            try await self.actions.answer(threadId: thread.threadId, trimmed)
+            try await self.actions.answer(threadId: thread.threadId, requestId: requestId, trimmed)
             self.drop(thread.threadId)
             self.show(.success, "Answer sent", detail: thread.title)
         }
@@ -236,7 +262,8 @@ final class WatchModel {
         }
     }
 
-    /// Runs an action with the busy flag, haptics, a banner on failure and a refresh after.
+    /// Runs an action with the busy flag, haptics, a banner on failure and a refresh after (after a
+    /// refusal from the bridge too, so a card that went stale is replaced by what is true now).
     private func run(_ key: String, _ body: @escaping @MainActor () async throws -> Void) async {
         guard !busy.contains(key) else { return }
         busy.insert(key)
@@ -250,7 +277,17 @@ final class WatchModel {
             if error == .cancelled { return }
             WKInterfaceDevice.current().play(.failure)
             if error == .unauthorized { lastError = .unauthorized }
-            show(.failure, error.shortDescription, detail: error.watchDetail)
+            if error.isStaleRequest {
+                // Answered elsewhere, or T3 asked something new: never act on the old card.
+                drop(key)
+                show(.failure, "Request changed", detail: "Check it again.")
+            } else {
+                show(.failure, error.shortDescription, detail: error.watchDetail)
+            }
+            if case .server = error {
+                route = link.lastRoute
+                await refresh()
+            }
         } catch {
             WKInterfaceDevice.current().play(.failure)
             show(.failure, "Something went wrong")

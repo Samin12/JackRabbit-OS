@@ -35,6 +35,22 @@ public enum BridgeError: Error, Sendable, Equatable, LocalizedError {
         }
     }
 
+    /// The approval or question this answered is no longer the open one (answered elsewhere, or T3
+    /// moved on to a new request): refresh and let the person look again.
+    public var isStaleRequest: Bool { code == "t3_request_not_pending" }
+
+    /// The Mac answered, but T3 Code behind it did not (not running, not installed, not paired with
+    /// the bridge): only the task areas are affected, the rest of the Mac works.
+    public var isTaskServiceDown: Bool {
+        guard case .server(_, let code, _, _) = self else { return false }
+        return Self.taskServiceDownCodes.contains(code)
+    }
+
+    static let taskServiceDownCodes: Set<String> = [
+        "t3_unavailable", "t3_app_missing", "t3_not_connected", "t3_unauthorized", "t3_pairing_rejected",
+        "t3_cli_failed", "t3_cli_timeout", "t3_request_failed", "t3_bad_answer", "t3_url_invalid", "t3_dev_copy",
+    ]
+
     public var isRetryable: Bool {
         switch self {
         case .server(_, _, _, let retryable): retryable
@@ -50,7 +66,9 @@ public enum BridgeError: Error, Sendable, Equatable, LocalizedError {
         case .unauthorized: "Pair again"
         case .unreachable: "Mac unreachable"
         case .server(_, let code, _, _):
-            code == "screen_locked" ? "Screen locked" : code == "t3_not_connected" ? "T3 not connected" : "Mac error"
+            code == "screen_locked" ? "Screen locked"
+                : isStaleRequest ? "That request changed"
+                : isTaskServiceDown ? "T3 not connected" : "Mac error"
         case .invalidResponse: "Unexpected answer"
         case .cancelled: "Cancelled"
         }
@@ -67,5 +85,21 @@ public enum BridgeError: Error, Sendable, Equatable, LocalizedError {
         }
         if status == 401 { return .unauthorized }
         return .server(status: status, code: "http_\(status)", message: "", retryable: status >= 500)
+    }
+}
+
+extension BridgeError {
+    /// Runs `body` and returns its value or the `BridgeError` it failed with (any other error counts
+    /// as unreachable), so calls made side by side can fail on their own.
+    public static func capture<T: Sendable>(_ body: @Sendable () async throws -> T) async -> Result<T, BridgeError> {
+        do {
+            return .success(try await body())
+        } catch let error as BridgeError {
+            return .failure(error)
+        } catch is CancellationError {
+            return .failure(.cancelled)
+        } catch {
+            return .failure(.unreachable(error.localizedDescription))
+        }
     }
 }

@@ -156,6 +156,27 @@ struct EmptyNote: View {
     }
 }
 
+/// "T3 not connected" above the task pages while the Mac answers but T3 Code on it does not.
+struct TasksNoticeRow: View {
+    let error: BridgeError
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 6) {
+            Image(systemName: "bolt.horizontal.circle.fill").font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(SamTheme.amber)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(error.isTaskServiceDown ? "T3 not connected" : "Tasks didn't update")
+                    .font(.system(size: 13.5, weight: .semibold)).foregroundStyle(SamTheme.ink)
+                Text(error.isTaskServiceDown ? "Open T3 Code on your Mac." : (error.watchDetail ?? "Try again soon."))
+                    .font(.system(size: 11.5)).foregroundStyle(SamTheme.muted)
+            }
+            Spacer(minLength: 0)
+        }
+        .watchCard(tint: SamTheme.amber)
+        .accessibilityIdentifier("t3-notice")
+    }
+}
+
 /// "Assistant · 2 min ago"
 struct ThreadMeta: View {
     var thread: TaskThread
