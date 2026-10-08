@@ -1,6 +1,5 @@
 package com.resonolabs.feature.settings;
 
-import com.resonolabs.ui.design.OrbStyle;
 import com.resonolabs.ui.input.UiInputIntent;
 
 /** Input rules that keep the R1 wheel separate from device-setting mutations. */
@@ -13,13 +12,13 @@ final class SettingsInputPolicy {
     }
 
     /**
-     * On the Display page the wheel picks the orb style (down = Pixel head, up = Orb): a purely
-     * visual, instantly reversible choice, unlike brightness, which stays on its buttons.
+     * Settings > Theme: the wheel only moves focus between the preview tiles (down = the next
+     * tile, clamped at both ends); applying takes a tap or ACTIVATE. Other intents keep focus.
      */
-    static OrbStyle orbStyleForWheel(String page, UiInputIntent intent) {
-        if (!"Display".equals(page)) return null;
-        if (intent == UiInputIntent.NEXT) return OrbStyle.PIXEL_HEAD;
-        if (intent == UiInputIntent.PREVIOUS) return OrbStyle.FLUID;
-        return null;
+    static int themeFocusForWheel(int focus, int tiles, UiInputIntent intent) {
+        int current = Math.max(0, Math.min(tiles - 1, focus));
+        if (intent == UiInputIntent.NEXT) return Math.min(tiles - 1, current + 1);
+        if (intent == UiInputIntent.PREVIOUS) return Math.max(0, current - 1);
+        return current;
     }
 }

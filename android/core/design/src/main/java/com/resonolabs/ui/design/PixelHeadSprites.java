@@ -6,12 +6,14 @@ import android.graphics.BitmapFactory;
 import android.util.Log;
 
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReferenceArray;
 
 /**
  * Decoded Pixel head atlases, shared by every head in the process. Each size bucket is decoded
  * once (inScaled=false, so no density scaling) on first use or by a background preload as soon
- * as the Pixel head style is active, and dropped again when the style goes back to the orb.
+ * as the Pixel head style is active, and dropped again when the style goes back to the orb, unless
+ * a preview pinned to the head (Settings > Theme) still {@link #hold holds} it.
  */
 final class PixelHeadSprites {
     private static final String TAG = "PixelHead";
@@ -40,6 +42,8 @@ final class PixelHeadSprites {
     private static final Object[] LOCKS = {new Object(), new Object(), new Object(), new Object()};
     private static final boolean[] FAILED = new boolean[IDLE_RES.length];
     private static final AtomicBoolean PRELOADING = new AtomicBoolean();
+    /** Pinned Pixel head previews on screen; while any holds, decoded art is kept whatever the style. */
+    private static final AtomicInteger HOLDS = new AtomicInteger();
     private static volatile Context app;
 
     private PixelHeadSprites() {}
@@ -58,7 +62,7 @@ final class PixelHeadSprites {
             OrbStyleSetting.init(app);
             OrbStyleSetting.addListener(style -> {
                 if (style == OrbStyle.PIXEL_HEAD) preload();
-                else release();
+                else if (HOLDS.get() == 0) release();
             });
         }
         if (OrbStyleSetting.current() == OrbStyle.PIXEL_HEAD) preload();
@@ -73,7 +77,7 @@ final class PixelHeadSprites {
             if (art != null || FAILED[bucket]) return art;
             art = decode(bucket);
             if (art == null) FAILED[bucket] = true;
-            else if (OrbStyleSetting.current() == OrbStyle.PIXEL_HEAD) ART.set(bucket, art);
+            else if (keepsArt(OrbStyleSetting.current(), HOLDS.get())) ART.set(bucket, art);
         }
         return art;
     }
@@ -99,6 +103,27 @@ final class PixelHeadSprites {
             Log.w(TAG, "pixel head art failed for bucket " + bucket, error);
             return null;
         }
+    }
+
+    /**
+     * Decoded art is cached while the head is the user's style or a pinned preview holds it;
+     * otherwise a decode serves one frame and is dropped (a preview drawing the head every frame
+     * without a hold would decode every frame).
+     */
+    static boolean keepsArt(OrbStyle style, int holds) {
+        return style == OrbStyle.PIXEL_HEAD || holds > 0;
+    }
+
+    /** A preview pinned to the head is showing: keep its art even while the user's style is the orb. */
+    static void hold() {
+        HOLDS.incrementAndGet();
+    }
+
+    /** That preview left the screen; the last one out drops the art if the style is the orb. */
+    static void unhold() {
+        int left = HOLDS.decrementAndGet();
+        if (left < 0) HOLDS.compareAndSet(left, 0);
+        if (left <= 0 && OrbStyleSetting.current() != OrbStyle.PIXEL_HEAD) release();
     }
 
     /** Decodes every bucket on a background thread (once at a time). */

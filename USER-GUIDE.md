@@ -209,11 +209,12 @@ Reasoning Logs do not contain hidden chain-of-thought, tool arguments, or tool r
 
 - **Wi-Fi:** Scan and connect to wireless networks.
 - **Bluetooth:** Change the Bluetooth enabled state.
+- **Theme:** Pick how the assistant looks: the blue **Orb** or the voxel **Pixel head**. Both tiles show a live preview; tap one to apply it everywhere at once (Voice, Control Center, About and the other places the orb appears). The row shows the current choice.
 - **Management:** View the local address and pairing code, and refresh management status.
 - **AI:** View or change provider access, models, and reasoning; enter a Platform key.
 - **Creations:** Open native Creation import.
 - **Sound:** Adjust the device media volume.
-- **Display:** Adjust screen brightness. The wheel navigates; use touch to change the slider.
+- **Display:** Adjust screen brightness. The wheel navigates; use touch to change the slider. The Theme line under it opens the Theme page.
 - **About:** View runtime information and request a runtime restart.
 
 ## Troubleshooting

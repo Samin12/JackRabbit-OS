@@ -7,7 +7,7 @@ import android.util.Log;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
- * The process-wide orb style (Settings > Display > Orb style). Hero orbs read {@link #current()}
+ * The process-wide orb style (Settings > Theme). Hero orbs read {@link #current()}
  * on every draw, so a change shows up on the next frame everywhere; views that do not redraw on
  * their own can {@link #addListener listen}. Persisted in device-protected SharedPreferences.
  */

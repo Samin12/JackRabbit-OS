@@ -9,9 +9,12 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.graphics.Canvas;
+import android.graphics.Color;
 import android.graphics.LinearGradient;
 import android.graphics.Paint;
 import android.graphics.Path;
+import android.graphics.PorterDuff;
+import android.graphics.PorterDuffXfermode;
 import android.graphics.RadialGradient;
 import android.graphics.RectF;
 import android.graphics.Shader;
@@ -24,8 +27,10 @@ import android.net.wifi.WifiConfiguration;
 import android.os.SystemClock;
 import android.provider.Settings;
 import android.view.MotionEvent;
+import android.view.VelocityTracker;
 import android.view.View;
 import android.view.WindowManager;
+import android.widget.OverScroller;
 
 import com.resonolabs.feature.compose.ComposeSheet;
 import com.resonolabs.ui.design.FluidOrb;
@@ -45,8 +50,6 @@ import java.util.List;
 public final class SettingsPanelView extends View implements UiInputTarget {
     private static final float DESIGN_WIDTH = 480f;
     private static final float DESIGN_HEIGHT = 640f;
-    private static final float ROW_TOP = 88f;
-    private static final float ROW_STEP = 66f;
     private static final float AI_PROVIDER_TOP = 100f;
     private static final float AI_PROVIDER_BOTTOM = 180f;
     private static final float AI_ACCESS_TOP = 196f;
@@ -61,16 +64,35 @@ public final class SettingsPanelView extends View implements UiInputTarget {
     /** Sound page: the "Always-on voice" switch row between the volume hero and -/+. */
     private static final float ALWAYS_ON_TOP = 396f;
     private static final float ALWAYS_ON_BOTTOM = 472f;
-    private static final List<String> ROWS = List.of(
-            "Wi-Fi", "Bluetooth", "Management", "AI", "Creations", "Sound", "Display", "About");
-    // Display page: brightness (value, bar, -/+) and the orb style picker with a live preview.
+    static final String THEME = "Theme";
+    /**
+     * Theme sits right under the two radios: the first personal setting, high enough to be seen
+     * without scrolling. Nine rows overflow 640 px, so the list scrolls (SettingsListLayout).
+     */
+    static final List<String> ROWS = List.of(
+            "Wi-Fi", "Bluetooth", THEME, "Management", "AI", "Creations", "Sound", "Display", "About");
+    /** Drag distance (design px) before a touch on the list scrolls instead of tapping. */
+    private static final float TOUCH_SLOP = 10f;
+    /** Rows fade out over this many px where they slide under the header / off the bottom. */
+    private static final float FADE_TOP = 20f;
+    private static final float FADE_BOTTOM = 20f;
+    // Display page: brightness (value, bar, -/+) and a link row to Settings > Theme.
     private static final RectF DISPLAY_BRIGHTNESS = new RectF(20f, 100f, 460f, 250f);
     private static final RectF DISPLAY_MINUS = new RectF(20f, 262f, 230f, 326f);
     private static final RectF DISPLAY_PLUS = new RectF(250f, 262f, 460f, 326f);
-    private static final RectF ORB_STYLE_PANEL = new RectF(20f, 342f, 460f, 562f);
-    private static final RectF ORB_STYLE_TRACK = new RectF(36f, 482f, 444f, 546f);
-    private static final float ORB_PREVIEW_Y = 418f;
-    private static final float ORB_PREVIEW_RADIUS = 44f;
+    private static final RectF DISPLAY_THEME_LINK = new RectF(20f, 342f, 460f, 406f);
+    // Theme page copy, per OrbStyle.values() (built once: the page redraws every frame).
+    private static final String[] THEME_NAMES = new String[ThemePageLayout.TILES];
+    private static final String[] THEME_APPLIED = new String[ThemePageLayout.TILES];
+    private static final String[] THEME_LINES = {"Fluid blue sphere", "Retro voxel head"};
+    static {
+        for (OrbStyle style : OrbStyle.values()) {
+            THEME_NAMES[style.ordinal()] = style.label();
+            THEME_APPLIED[style.ordinal()] = style.label() + " applied";
+        }
+    }
+    /** Dark "screen" behind each Theme preview, like the Voice page it stands for. */
+    private static final int STAGE_FILL = 0xE106080C;   // argb(225, 6, 8, 12), a literal so unit tests can load the class
     private static final RectF BACK_DISC = new RectF(10f, 22f, 54f, 66f);
     private static final RectF CLOSE_DISC = new RectF(414f, 20f, 462f, 68f);
 
@@ -82,10 +104,44 @@ public final class SettingsPanelView extends View implements UiInputTarget {
     private final ManagementOpenAiSource openAiSource;
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final FluidOrb aboutOrb = new FluidOrb().hero(getContext());
-    /** Live preview of the chosen orb style on the Display page. */
-    private final FluidOrb styleOrb = new FluidOrb().hero(getContext());
+    /** Theme previews: a plain orb is always fluid; the head one is pinned while the page shows. */
+    private final FluidOrb themeOrb = new FluidOrb().setColor(SamTheme.ORB_BLUE).setSpeed(0.6f);
+    private final FluidOrb themeHead = new FluidOrb().setColor(SamTheme.ORB_BLUE).setSpeed(0.6f);
+    private final RadialGradient[] stageGlows = new RadialGradient[ThemePageLayout.TILES];
+    private final int[] stageGlowColors = new int[ThemePageLayout.TILES];
     private final GlassPainter glassPainter = new GlassPainter();
-    private final RectF segment = new RectF();
+    /** Erases list rows toward the viewport edges (DST_OUT, unit-height gradient, opaque at y=0). */
+    private final Paint edgeFade = new Paint();
+    private final Path glyph = new Path();
+    private final OverScroller scroller;
+    private VelocityTracker velocity;
+    /** List scroll (design px): where it is and where the wheel's glide is heading. */
+    private float scroll;
+    private float scrollTarget;
+    private float downX;
+    private float downY;
+    private float lastY;
+    private boolean dragging;
+    /** The touch stopped a moving list, so lifting it is not also a tap. */
+    private boolean caughtMotion;
+    private int themeFocus;
+    private OrbStyle themeApplied = OrbStyle.FLUID;
+    private long themeAppliedAt = -1L;
+    /** Page that BACK returns to from Theme ("Display" when its link opened it), else the list. */
+    private String themeReturn;
+    private boolean onScreen;
+    /**
+     * The one pending animation frame (Theme previews, About orb, Display re-read). Re-posted
+     * from onDraw after removing any earlier one: every input invalidate() also draws, and a
+     * postInvalidateDelayed per draw would start another self-sustaining chain each time, so
+     * a few taps on Theme took it from ~30 to the full 60 fps.
+     */
+    private final Runnable frameTick = this::invalidate;
+    /** About's rows, read when the page opens (it animates; no per-frame PackageManager calls). */
+    private SettingValue[] aboutValues;
+    private final RectF buttonRect = new RectF();
+    private final android.graphics.Typeface medium =
+            android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL);
     private final LinearGradient brightnessFill = new LinearGradient(64f, 0f, 416f, 0f,
             SamTheme.ORB_PALE, SamTheme.ORB_BLUE, Shader.TileMode.CLAMP);
     private float displayLevel;
@@ -131,6 +187,16 @@ public final class SettingsPanelView extends View implements UiInputTarget {
         this.openCreationImport = openCreationImport;
         this.managementPairing = managementPairing;
         this.openAiSource = openAiSource;
+        this.scroller = new OverScroller(activity);
+        edgeFade.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.DST_OUT));
+        edgeFade.setShader(new LinearGradient(0f, 0f, 0f, 1f, Color.BLACK, Color.TRANSPARENT,
+                Shader.TileMode.CLAMP));
+        setFocusable(true);
+        // Take focus even in touch mode: the R1 wheel sends key events, which leave touch mode,
+        // and focus parked on the full-screen HOME root would draw the framework focus highlight
+        // over everything (a grey wash). Settings draws its own focus.
+        setFocusableInTouchMode(true);
+        setDefaultFocusHighlightEnabled(false);
         this.wifiScanner = new WifiNetworkScanner(activity, (state, networks) -> {
             wifiScanState = state;
             wifiNetworks = List.copyOf(networks);
@@ -140,43 +206,108 @@ public final class SettingsPanelView extends View implements UiInputTarget {
     }
 
     @Override protected void onDraw(Canvas canvas) {
+        boolean moving = openPage == null && stepScroll();
         canvas.save();
         canvas.scale(getWidth() / DESIGN_WIDTH, getHeight() / DESIGN_HEIGHT);
         boolean about = "About".equals(openPage);
+        boolean theme = THEME.equals(openPage);
         if (about) SamTheme.background(canvas, paint, DESIGN_WIDTH, DESIGN_HEIGHT,
                 240f, 168f, 230f, SamTheme.ORB_BLUE);
         else SamTheme.background(canvas, paint, DESIGN_WIDTH, DESIGN_HEIGHT,
                 90f, 20f, 300f, SamTheme.ORB_BLUE);
         if (openPage == null) drawIndex(canvas); else drawPage(canvas);
         canvas.restore();
-        // Only the About hero orb and the Display orb style preview animate; other pages are static.
-        if ((about || "Display".equals(openPage)) && isShown()) postInvalidateDelayed(33L);
+        removeCallbacks(frameTick);
+        if (!isShown()) return;
+        // The list glides at vsync while it scrolls; the About orb and the Theme previews animate
+        // at ~30 fps; Display re-reads the brightness twice a second; other pages are static.
+        if (moving) postInvalidateOnAnimation();
+        else if (about || theme) postDelayed(frameTick, 33L);
+        else if ("Display".equals(openPage)) postDelayed(frameTick, 500L);
+    }
+
+    /** Moves the list one frame along a fling or the wheel's glide; true while it still moves. */
+    private boolean stepScroll() {
+        int rows = ROWS.size();
+        if (scroller.computeScrollOffset()) {
+            scroll = SettingsListLayout.clamp(scroller.getCurrY(), rows);
+            scrollTarget = scroll;
+            return true;
+        }
+        scrollTarget = SettingsListLayout.clamp(scrollTarget, rows);
+        if (Math.abs(scrollTarget - scroll) > 0.5f) {
+            scroll += (scrollTarget - scroll) * 0.3f;
+            return true;
+        }
+        scroll = scrollTarget;
+        return false;
+    }
+
+    /** Scrolls so the focused row is fully on screen (gliding, or at once when coming back). */
+    private void revealSelected(boolean glide) {
+        scroller.forceFinished(true);
+        scrollTarget = SettingsListLayout.reveal(selected, scrollTarget, ROWS.size());
+        if (!glide) scroll = scrollTarget;
     }
 
     private void drawIndex(Canvas canvas) {
+        int rows = ROWS.size();
+        float max = SettingsListLayout.maxScroll(rows);
+        boolean above = scroll > 0.5f;
+        boolean below = scroll < max - 0.5f;
+        // Rows scroll under the fixed header; the first and last rows clamp (no overscroll). Where
+        // rows are cut off they fade into whatever is behind them (an offscreen layer only then).
+        int layer = above || below
+                ? canvas.saveLayer(0f, SettingsListLayout.VIEW_TOP, DESIGN_WIDTH, DESIGN_HEIGHT, null)
+                : canvas.save();
+        canvas.clipRect(0f, SettingsListLayout.VIEW_TOP, DESIGN_WIDTH, DESIGN_HEIGHT);
+        for (int i = 0; i < rows; i++) {
+            float top = SettingsListLayout.rowTop(i, scroll);
+            if (top > DESIGN_HEIGHT || top + SettingsListLayout.ROW_HEIGHT < SettingsListLayout.VIEW_TOP) continue;
+            drawIndexRow(canvas, i, top);
+        }
+        if (above) fadeEdge(canvas, SettingsListLayout.VIEW_TOP, FADE_TOP);
+        if (below) fadeEdge(canvas, DESIGN_HEIGHT, -FADE_BOTTOM);
+        canvas.restoreToCount(layer);
         SamTheme.text(canvas, paint, "Settings", 24f, 56f, 34f,
                 SamTheme.INK, Paint.Align.LEFT, true);
         drawClose(canvas);
-        for (int i = 0; i < ROWS.size(); i++) {
-            float top = ROW_TOP + i * ROW_STEP;
-            boolean focused = i == selected;
-            RectF row = new RectF(20f, top, 460f, top + 58f);
-            SamTheme.glass(canvas, paint, row, 20f, focused);
-            if (focused) {
-                // Fixed-size accent only, so the focus cue never changes overall
-                // row luminance enough to drive the panel's backlight compensation.
-                paint.setStyle(Paint.Style.FILL);
-                paint.setColor(SamTheme.ORB_BLUE);
-                canvas.drawRoundRect(20f, top + 16f, 24f, top + 42f, 2f, 2f, paint);
-            }
+    }
+
+    /** Erases rows from {@code edge} fading over {@code length} px (negative = upward). */
+    private void fadeEdge(Canvas canvas, float edge, float length) {
+        canvas.save();
+        canvas.translate(0f, edge);
+        canvas.scale(1f, length);
+        canvas.drawRect(0f, 0f, DESIGN_WIDTH, 1f, edgeFade);
+        canvas.restore();
+    }
+
+    /** One list row; allocation-free (the list redraws every frame while it scrolls). */
+    private void drawIndexRow(Canvas canvas, int index, float top) {
+        String name = ROWS.get(index);
+        boolean focused = index == selected;
+        float h = SettingsListLayout.ROW_HEIGHT;
+        float mid = top + h / 2f;
+        glassPainter.draw(canvas, paint, 20f, top, 460f, top + h, 20f, focused);
+        if (focused) {
+            // Fixed-size accent only, so the focus cue never changes overall
+            // row luminance enough to drive the panel's backlight compensation.
             paint.setStyle(Paint.Style.FILL);
-            paint.setColor(SamTheme.withAlpha(SamTheme.ORB_BLUE, focused ? 70 : 42));
-            canvas.drawCircle(56f, top + 29f, 18f, paint);
-            drawRowIcon(canvas, ROWS.get(i), 56f, top + 29f);
-            SamTheme.text(canvas, paint, ROWS.get(i), 88f, top + 37f, 22f,
-                    SamTheme.INK, Paint.Align.LEFT, true);
-            chevron(canvas, 436f, top + 29f, focused ? SamTheme.ORB_PALE : SamTheme.MUTED);
+            paint.setColor(SamTheme.ORB_BLUE);
+            canvas.drawRoundRect(20f, mid - 13f, 24f, mid + 13f, 2f, 2f, paint);
         }
+        paint.setStyle(Paint.Style.FILL);
+        paint.setColor(SamTheme.withAlpha(SamTheme.ORB_BLUE, focused ? 70 : 42));
+        canvas.drawCircle(56f, mid, 18f, paint);
+        drawRowIcon(canvas, name, 56f, mid);
+        SamTheme.text(canvas, paint, name, 88f, top + 37f, 22f,
+                SamTheme.INK, Paint.Align.LEFT, true);
+        if (THEME.equals(name)) {
+            SamTheme.text(canvas, paint, OrbStyleSetting.current().label(), 418f, top + 36f, 18f,
+                    focused ? SamTheme.ORB_PALE : SamTheme.MUTED, Paint.Align.RIGHT, false);
+        }
+        chevron(canvas, 436f, mid, focused ? SamTheme.ORB_PALE : SamTheme.MUTED);
     }
 
     private void drawPage(Canvas canvas) {
@@ -191,10 +322,11 @@ public final class SettingsPanelView extends View implements UiInputTarget {
             case "AI" -> drawAiPage(canvas);
             case "Sound" -> drawSoundPage(canvas);
             case "Display" -> drawDisplayPage(canvas);
+            case THEME -> drawThemePage(canvas);
             case "Bluetooth" -> drawBluetoothPage(canvas);
             case "About" -> drawAboutPage(canvas);
             default -> {
-                drawInfoGroup(canvas, statusValues(openPage), 108f);
+                drawInfoGroup(canvas, sentenceLabels(statusValues(openPage)), 108f);
                 button(canvas, "Refresh", 20f, 494f, 460f);
             }
         }
@@ -239,8 +371,8 @@ public final class SettingsPanelView extends View implements UiInputTarget {
     }
 
     private void drawDisplayPage(Canvas canvas) {
-        // Redrawn every frame for the live orb preview, so nothing here allocates. The brightness
-        // is re-read twice a second: the Control Center can change it over this page.
+        // Redrawn twice a second, so nothing here allocates: the brightness is re-read because
+        // the Control Center can change it over this page.
         long now = SystemClock.uptimeMillis();
         if (displayValue == null || now >= displayReadAt) readDisplayBrightness(now);
         glassPainter.draw(canvas, paint, DISPLAY_BRIGHTNESS, 24f, false);
@@ -262,33 +394,151 @@ public final class SettingsPanelView extends View implements UiInputTarget {
                 SamTheme.INK, Paint.Align.CENTER, true);
         SamTheme.text(canvas, paint, "+", DISPLAY_PLUS.centerX(), DISPLAY_PLUS.centerY() + 12f, 38f,
                 SamTheme.INK, Paint.Align.CENTER, true);
-        drawOrbStyle(canvas);
+        drawThemeLink(canvas);
         SamTheme.text(canvas, paint, "Screen sleep · Manual while open", 240f, 600f, 15f,
                 SamTheme.MUTED, Paint.Align.CENTER, false);
     }
 
-    /** "Orb style": live preview of the current hero orb and an Orb | Pixel head segmented control. */
-    private void drawOrbStyle(Canvas canvas) {
-        OrbStyle style = OrbStyleSetting.current();
-        glassPainter.draw(canvas, paint, ORB_STYLE_PANEL, 24f, false);
-        SamTheme.text(canvas, paint, "Orb style", 40f, 376f, 16f, SamTheme.MUTED, Paint.Align.LEFT, false);
-        styleOrb.setColor(SamTheme.ORB_BLUE).setEnergy(0.15f).setSpeed(0.6f);
-        styleOrb.draw(canvas, 240f, ORB_PREVIEW_Y + styleOrb.bob(3f), ORB_PREVIEW_RADIUS);
-        glassPainter.draw(canvas, paint, ORB_STYLE_TRACK, 32f, false);
-        OrbStyle[] styles = OrbStyle.values();
-        float width = ORB_STYLE_TRACK.width() / styles.length;
-        for (int i = 0; i < styles.length; i++) {
-            boolean on = styles[i] == style;
-            float left = ORB_STYLE_TRACK.left + i * width;
-            if (on) {
-                segment.set(left + 5f, ORB_STYLE_TRACK.top + 5f, left + width - 5f, ORB_STYLE_TRACK.bottom - 5f);
-                paint.setStyle(Paint.Style.FILL);
-                paint.setColor(SamTheme.withAlpha(SamTheme.ORB_BLUE, 225));
-                canvas.drawRoundRect(segment, 27f, 27f, paint);
-            }
-            SamTheme.text(canvas, paint, styles[i].label(), left + width / 2f, ORB_STYLE_TRACK.centerY() + 7f,
-                    20f, on ? SamTheme.INK : SamTheme.MUTED, Paint.Align.CENTER, true);
+    /** One line under brightness pointing at the look's real home: "Theme   Pixel head ›". */
+    private void drawThemeLink(Canvas canvas) {
+        RectF row = DISPLAY_THEME_LINK;
+        float mid = row.centerY();
+        glassPainter.draw(canvas, paint, row, 22f, false);
+        paint.setStyle(Paint.Style.FILL);
+        paint.setColor(SamTheme.withAlpha(SamTheme.ORB_BLUE, 42));
+        canvas.drawCircle(56f, mid, 18f, paint);
+        drawRowIcon(canvas, THEME, 56f, mid);
+        SamTheme.text(canvas, paint, THEME, 88f, mid + 8f, 21f, SamTheme.INK, Paint.Align.LEFT, true);
+        SamTheme.text(canvas, paint, OrbStyleSetting.current().label(), 418f, mid + 7f, 18f,
+                SamTheme.MUTED, Paint.Align.RIGHT, false);
+        chevron(canvas, 436f, mid, SamTheme.MUTED);
+    }
+
+    /**
+     * Settings > Theme: two live previews side by side, each drawn in its own style whatever is
+     * applied. The applied one wears a bright outline and an "Applied" badge; the wheel's focus
+     * lifts its tile's glass (and turns "Tap to apply" into a pill). Redrawn every frame (~30 fps)
+     * for the previews, so nothing here allocates.
+     */
+    private void drawThemePage(Canvas canvas) {
+        long now = SystemClock.uptimeMillis();
+        themeHead.pinStyle(activity, OrbStyle.PIXEL_HEAD);   // idempotent; unpinned off this page
+        OrbStyle applied = OrbStyleSetting.current();
+        long sinceApplied = themeAppliedAt < 0L ? -1L : now - themeAppliedAt;
+        for (int i = 0; i < ThemePageLayout.TILES; i++) {
+            drawThemeTile(canvas, i, i == applied.ordinal(), i == themeFocus,
+                    themeApplied.ordinal() == i ? sinceApplied : -1L);
         }
+        float toast = ThemePageLayout.toastAlpha(sinceApplied);
+        if (toast > 0f) {
+            drawThemeToast(canvas, THEME_APPLIED[themeApplied.ordinal()], toast);
+        } else {
+            SamTheme.text(canvas, paint, "Shows everywhere the orb appears", 240f, 590f, 15f,
+                    SamTheme.MUTED, Paint.Align.CENTER, false);
+        }
+    }
+
+    private void drawThemeTile(Canvas canvas, int tile, boolean applied, boolean focused, long sinceApplied) {
+        float left = ThemePageLayout.TILE_LEFT[tile];
+        float right = ThemePageLayout.TILE_RIGHT[tile];
+        float top = ThemePageLayout.TILE_TOP;
+        float bottom = ThemePageLayout.TILE_BOTTOM;
+        float cx = ThemePageLayout.tileCenterX(tile);
+        glassPainter.draw(canvas, paint, left, top, right, bottom, 26f, focused);
+
+        // The preview "screen": dark stage, the style's own page glow, then the live orb or head.
+        float inset = ThemePageLayout.STAGE_INSET;
+        float stageBottom = ThemePageLayout.STAGE_BOTTOM;
+        paint.setStyle(Paint.Style.FILL);
+        paint.setShader(null);
+        paint.setColor(STAGE_FILL);
+        canvas.drawRoundRect(left + inset, top + inset, right - inset, stageBottom, 18f, 18f, paint);
+        FluidOrb orb = tile == OrbStyle.PIXEL_HEAD.ordinal() ? themeHead : themeOrb;
+        orb.setEnergy(focused ? 0.22f : 0.12f);
+        float cy = ThemePageLayout.previewCenterY();
+        float glowRadius = Math.min(right - left - 2f * inset, stageBottom - top - inset) / 2f - 2f;
+        paint.setColor(Color.BLACK);
+        paint.setShader(stageGlow(tile, orb.color()));
+        canvas.save();
+        canvas.translate(cx, cy);
+        canvas.scale(glowRadius, glowRadius);
+        canvas.drawCircle(0f, 0f, 1f, paint);
+        canvas.restore();
+        paint.setShader(null);
+        orb.draw(canvas, cx, cy + orb.bob(3f), orb == themeHead
+                ? ThemePageLayout.HEAD_PREVIEW_RADIUS : ThemePageLayout.PREVIEW_RADIUS);
+
+        SamTheme.text(canvas, paint, THEME_NAMES[tile], cx, 410f, 24f, SamTheme.INK, Paint.Align.CENTER, true);
+        SamTheme.text(canvas, paint, THEME_LINES[tile], cx, 436f, 15f, SamTheme.MUTED, Paint.Align.CENTER, false);
+        if (applied) {
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(3f);
+            paint.setColor(SamTheme.ORB_PALE);
+            canvas.drawRoundRect(left + 1.5f, top + 1.5f, right - 1.5f, bottom - 1.5f, 25f, 25f, paint);
+            paint.setStyle(Paint.Style.FILL);
+            drawAppliedBadge(canvas, cx, 490f, ThemePageLayout.badgeScale(sinceApplied),
+                    ThemePageLayout.badgeAlpha(sinceApplied));
+        } else if (focused) {
+            // The wheel's focus on a style that is not applied yet: a glass pill invites the tap.
+            glassPainter.draw(canvas, paint, cx - 70f, 472f, cx + 70f, 508f, 18f, true);
+            SamTheme.text(canvas, paint, "Tap to apply", cx, 496f, 16f, SamTheme.INK, Paint.Align.CENTER, true);
+        } else {
+            SamTheme.text(canvas, paint, "Tap to apply", cx, 496f, 16f, SamTheme.MUTED, Paint.Align.CENTER, false);
+        }
+    }
+
+    /** Cached unit-radius page glow for a stage, rebuilt only when its colour changes. */
+    private RadialGradient stageGlow(int tile, int color) {
+        if (stageGlows[tile] == null || stageGlowColors[tile] != color) {
+            stageGlowColors[tile] = color;
+            stageGlows[tile] = new RadialGradient(0f, 0f, 1f, SamTheme.withAlpha(color, 84),
+                    SamTheme.withAlpha(color, 0), Shader.TileMode.CLAMP);
+        }
+        return stageGlows[tile];
+    }
+
+    /** Solid "✓ Applied" pill; pops in (scale, fade) right after a style is applied. */
+    private void drawAppliedBadge(Canvas canvas, float cx, float cy, float scale, float alpha) {
+        int a = Math.round(255f * Math.max(0f, Math.min(1f, alpha)));
+        canvas.save();
+        canvas.scale(scale, scale, cx, cy);
+        paint.setStyle(Paint.Style.FILL);
+        paint.setColor(SamTheme.withAlpha(SamTheme.ORB_BLUE, Math.round(a * 0.94f)));
+        canvas.drawRoundRect(cx - 62f, cy - 18f, cx + 62f, cy + 18f, 18f, 18f, paint);
+        paint.setStyle(Paint.Style.STROKE);
+        paint.setStrokeWidth(2.6f);
+        paint.setStrokeCap(Paint.Cap.ROUND);
+        paint.setStrokeJoin(Paint.Join.ROUND);
+        paint.setColor(SamTheme.withAlpha(SamTheme.INK, a));
+        glyph.reset();
+        glyph.moveTo(cx - 42f, cy);
+        glyph.lineTo(cx - 36.5f, cy + 5.5f);
+        glyph.lineTo(cx - 27f, cy - 5.5f);
+        canvas.drawPath(glyph, paint);
+        paint.setStrokeCap(Paint.Cap.BUTT);
+        paint.setStrokeJoin(Paint.Join.MITER);
+        SamTheme.text(canvas, paint, "Applied", cx + 10f, cy + 6f, 17f,
+                SamTheme.withAlpha(SamTheme.INK, a), Paint.Align.CENTER, true);
+        canvas.restore();
+    }
+
+    /** "Pixel head applied": a small glass pill near the bottom that fades in and out. */
+    private void drawThemeToast(Canvas canvas, String text, float alpha) {
+        int a = Math.round(255f * alpha);
+        // The pill hugs the text (measured in its own size and weight).
+        paint.setTextSize(17f);
+        paint.setTypeface(medium);
+        float half = Math.max(80f, paint.measureText(text) / 2f + 32f);
+        paint.setStyle(Paint.Style.FILL);
+        paint.setColor(SamTheme.withAlpha(SamTheme.PANEL_RAISED, Math.round(a * 0.96f)));
+        canvas.drawRoundRect(240f - half, 562f, 240f + half, 606f, 22f, 22f, paint);
+        paint.setStyle(Paint.Style.STROKE);
+        paint.setStrokeWidth(1.2f);
+        paint.setColor(SamTheme.withAlpha(SamTheme.ORB_PALE, Math.round(a * 0.5f)));
+        canvas.drawRoundRect(240.6f - half, 562.6f, 239.4f + half, 605.4f, 22f, 22f, paint);
+        paint.setStyle(Paint.Style.FILL);
+        SamTheme.text(canvas, paint, text, 240f, 590f, 17f, SamTheme.withAlpha(SamTheme.INK, a),
+                Paint.Align.CENTER, true);
     }
 
     private void readDisplayBrightness(long now) {
@@ -301,20 +551,43 @@ public final class SettingsPanelView extends View implements UiInputTarget {
         displayValue = Math.round(brightness * 100f / 255f) + "%";
     }
 
-    /** Display page taps: brightness -/+ and the orb style segments (the wheel picks styles too). */
+    /** Display page taps: brightness -/+ and the link row that opens Theme. */
     private void onDisplayTap(float x, float y) {
         if (y >= DISPLAY_MINUS.top - 6f && y <= DISPLAY_MINUS.bottom + 6f) {
             adjustBrightness(x >= DESIGN_WIDTH / 2f);
             displayValue = null;
-        } else if (y >= ORB_STYLE_TRACK.top - 10f && y <= ORB_STYLE_PANEL.bottom) {
-            applyOrbStyle(x < ORB_STYLE_TRACK.centerX() ? OrbStyle.FLUID : OrbStyle.PIXEL_HEAD);
+        } else if (y >= DISPLAY_THEME_LINK.top - 6f && y <= DISPLAY_THEME_LINK.bottom + 6f) {
+            themeReturn = "Display";
+            showPage(THEME);
+            return;
         }
         invalidate();
     }
 
-    private void applyOrbStyle(OrbStyle style) {
-        OrbStyleSetting.set(activity, style);
+    /** Theme tile tapped or ACTIVATE: applies the style everywhere at once and confirms it. */
+    private void applyTheme(OrbStyle style) {
+        themeFocus = style.ordinal();
+        if (OrbStyleSetting.current() != style) {
+            OrbStyleSetting.set(activity, style);
+            themeApplied = style;
+            themeAppliedAt = SystemClock.uptimeMillis();
+        }
         invalidate();
+    }
+
+    /**
+     * Keeps the head preview pinned (its art decoded) only while the Theme page is on screen;
+     * elsewhere it lets the art go when the user's style is the orb.
+     */
+    private void updateThemePin() {
+        boolean showing = onScreen && THEME.equals(openPage);
+        themeHead.pinStyle(activity, showing ? OrbStyle.PIXEL_HEAD : null);
+    }
+
+    @Override public void onVisibilityAggregated(boolean isVisible) {
+        super.onVisibilityAggregated(isVisible);
+        onScreen = isVisible;
+        updateThemePin();
     }
 
     private void drawLevelHero(Canvas canvas, String label, String value, float level) {
@@ -370,17 +643,24 @@ public final class SettingsPanelView extends View implements UiInputTarget {
         float orbY = 168f + aboutOrb.bob(4f);
         aboutOrb.setColor(SamTheme.ORB_BLUE).setEnergy(0.15f).setSpeed(0.6f);
         aboutOrb.draw(canvas, 240f, orbY, 50f);
-        drawInfoGroup(canvas, statusValues("About"), 258f);
+        if (aboutValues == null) aboutValues = sentenceLabels(statusValues("About"));
+        drawInfoGroup(canvas, aboutValues, 258f);
         button(canvas, "Restart device", 20f, 494f, 460f);
         SamTheme.text(canvas, paint, "Orb design inspired by Rare UI · rareui.com", 240f, 606f,
                 14f, SamTheme.MUTED, Paint.Align.CENTER, false);
     }
 
-    /** Grouped glass panel of label/value rows separated by hairlines. */
+    /** The same rows with display labels ("DEVICE" becomes "Device"). */
+    private static SettingValue[] sentenceLabels(SettingValue[] values) {
+        SettingValue[] out = new SettingValue[values.length];
+        for (int i = 0; i < values.length; i++) out[i] = new SettingValue(sentence(values[i].label), values[i].value);
+        return out;
+    }
+
+    /** Grouped glass panel of label/value rows separated by hairlines; labels are drawn as given. */
     private void drawInfoGroup(Canvas canvas, SettingValue[] values, float top) {
         float rowHeight = 64f;
-        RectF panel = new RectF(20f, top, 460f, top + values.length * rowHeight);
-        SamTheme.glass(canvas, paint, panel, 22f, false);
+        glassPainter.draw(canvas, paint, 20f, top, 460f, top + values.length * rowHeight, 22f, false);
         for (int i = 0; i < values.length; i++) {
             float y = top + i * rowHeight;
             if (i > 0) {
@@ -388,11 +668,10 @@ public final class SettingsPanelView extends View implements UiInputTarget {
                 paint.setColor(SamTheme.LINE);
                 canvas.drawRect(40f, y, 440f, y + 1f, paint);
             }
-            SamTheme.text(canvas, paint, sentence(values[i].label), 42f, y + 40f, 18f,
+            SamTheme.text(canvas, paint, values[i].label, 42f, y + 40f, 18f,
                     SamTheme.MUTED, Paint.Align.LEFT, false);
             paint.setTextSize(20f);
-            paint.setTypeface(android.graphics.Typeface.create("sans-serif-medium",
-                    android.graphics.Typeface.NORMAL));
+            paint.setTypeface(medium);
             SamTheme.text(canvas, paint, ellipsize(values[i].value, 250f), 438f, y + 40f, 20f,
                     SamTheme.INK, Paint.Align.RIGHT, true);
         }
@@ -574,7 +853,8 @@ public final class SettingsPanelView extends View implements UiInputTarget {
     }
 
     private void drawBluetoothGlyph(Canvas canvas, float cx, float cy, float scale, int color) {
-        Path path = new Path();
+        Path path = glyph;
+        path.reset();
         path.moveTo(cx - 6f * scale, cy - 5f * scale);
         path.lineTo(cx + 6f * scale, cy + 6f * scale);
         path.lineTo(cx, cy + 11f * scale);
@@ -592,10 +872,11 @@ public final class SettingsPanelView extends View implements UiInputTarget {
         paint.setStyle(Paint.Style.FILL);
     }
 
-    /** Simple line icons for the index rows, drawn in the pale orb tint. */
+    /** Simple line icons for the index rows, drawn in the pale orb tint; allocation-free. */
     private void drawRowIcon(Canvas canvas, String row, float cx, float cy) {
         int color = SamTheme.ORB_PALE;
         if ("Bluetooth".equals(row)) { drawBluetoothGlyph(canvas, cx, cy, 0.85f, color); return; }
+        paint.setShader(null);
         paint.setStyle(Paint.Style.STROKE);
         paint.setStrokeWidth(2f);
         paint.setStrokeCap(Paint.Cap.ROUND);
@@ -603,26 +884,25 @@ public final class SettingsPanelView extends View implements UiInputTarget {
         paint.setColor(color);
         switch (row) {
             case "Wi-Fi" -> {
-                for (float radius : new float[]{6f, 11f}) {
-                    canvas.drawArc(new RectF(cx - radius, cy + 5f - radius, cx + radius, cy + 5f + radius),
-                            -135f, 90f, false, paint);
-                }
+                canvas.drawArc(cx - 6f, cy - 1f, cx + 6f, cy + 11f, -135f, 90f, false, paint);
+                canvas.drawArc(cx - 11f, cy - 6f, cx + 11f, cy + 16f, -135f, 90f, false, paint);
                 paint.setStyle(Paint.Style.FILL);
                 canvas.drawCircle(cx, cy + 4f, 2f, paint);
             }
+            case THEME -> drawThemeGlyph(canvas, cx, cy);
             case "Management" -> {
                 canvas.drawRoundRect(cx - 9f, cy - 8f, cx + 9f, cy + 4f, 2f, 2f, paint);
                 canvas.drawLine(cx - 12f, cy + 8f, cx + 12f, cy + 8f, paint);
             }
             case "AI" -> {
-                Path spark = new Path();
-                spark.moveTo(cx, cy - 10f);
-                spark.quadTo(cx + 1f, cy - 1f, cx + 10f, cy);
-                spark.quadTo(cx + 1f, cy + 1f, cx, cy + 10f);
-                spark.quadTo(cx - 1f, cy + 1f, cx - 10f, cy);
-                spark.quadTo(cx - 1f, cy - 1f, cx, cy - 10f);
+                glyph.reset();
+                glyph.moveTo(cx, cy - 10f);
+                glyph.quadTo(cx + 1f, cy - 1f, cx + 10f, cy);
+                glyph.quadTo(cx + 1f, cy + 1f, cx, cy + 10f);
+                glyph.quadTo(cx - 1f, cy + 1f, cx - 10f, cy);
+                glyph.quadTo(cx - 1f, cy - 1f, cx, cy - 10f);
                 paint.setStyle(Paint.Style.FILL);
-                canvas.drawPath(spark, paint);
+                canvas.drawPath(glyph, paint);
             }
             case "Creations" -> {
                 float s = 7f, g = 2f;
@@ -632,16 +912,16 @@ public final class SettingsPanelView extends View implements UiInputTarget {
                 canvas.drawRoundRect(cx + g, cy + g, cx + g + s, cy + g + s, 2f, 2f, paint);
             }
             case "Sound" -> {
-                Path speaker = new Path();
-                speaker.moveTo(cx - 10f, cy - 4f);
-                speaker.lineTo(cx - 5f, cy - 4f);
-                speaker.lineTo(cx + 1f, cy - 9f);
-                speaker.lineTo(cx + 1f, cy + 9f);
-                speaker.lineTo(cx - 5f, cy + 4f);
-                speaker.lineTo(cx - 10f, cy + 4f);
-                speaker.close();
-                canvas.drawPath(speaker, paint);
-                canvas.drawArc(new RectF(cx - 3f, cy - 7f, cx + 9f, cy + 7f), -50f, 100f, false, paint);
+                glyph.reset();
+                glyph.moveTo(cx - 10f, cy - 4f);
+                glyph.lineTo(cx - 5f, cy - 4f);
+                glyph.lineTo(cx + 1f, cy - 9f);
+                glyph.lineTo(cx + 1f, cy + 9f);
+                glyph.lineTo(cx - 5f, cy + 4f);
+                glyph.lineTo(cx - 10f, cy + 4f);
+                glyph.close();
+                canvas.drawPath(glyph, paint);
+                canvas.drawArc(cx - 3f, cy - 7f, cx + 9f, cy + 7f, -50f, 100f, false, paint);
             }
             case "Display" -> {
                 canvas.drawCircle(cx, cy, 4.5f, paint);
@@ -661,6 +941,26 @@ public final class SettingsPanelView extends View implements UiInputTarget {
         paint.setStrokeCap(Paint.Cap.BUTT);
         paint.setStrokeJoin(Paint.Join.MITER);
         paint.setStyle(Paint.Style.FILL);
+    }
+
+    /**
+     * Theme: a disc that is smooth orb on the left and stepped pixels on the right, the two
+     * looks the page switches between.
+     */
+    private void drawThemeGlyph(Canvas canvas, float cx, float cy) {
+        paint.setStyle(Paint.Style.FILL);
+        canvas.drawArc(cx - 10f, cy - 10f, cx + 10f, cy + 10f, 90f, 180f, true, paint);
+        float cell = 4f;
+        float gap = 1f;
+        // Right half as pixels: a column of four cells, then a shorter column of three.
+        for (int i = 0; i < 4; i++) {
+            float top = cy - 10f + i * (cell + gap) + 0.5f;
+            canvas.drawRect(cx + 1f, top, cx + 1f + cell, top + cell, paint);
+        }
+        for (int i = 0; i < 3; i++) {
+            float top = cy - 7.5f + i * (cell + gap);
+            canvas.drawRect(cx + 1f + cell + gap, top, cx + 1f + 2f * cell + gap, top + cell, paint);
+        }
     }
 
     private void refreshOpenAi() {
@@ -1093,8 +1393,9 @@ public final class SettingsPanelView extends View implements UiInputTarget {
     }
 
     private void button(Canvas canvas, String label, float left, float top, float right, float height) {
-        RectF rect = new RectF(left, top, right, top + height);
-        SamTheme.glass(canvas, paint, rect, 24f, false);
+        RectF rect = buttonRect;
+        rect.set(left, top, right, top + height);
+        glassPainter.draw(canvas, paint, rect, 24f, false);
         boolean glyph = label.length() == 1;
         SamTheme.text(canvas, paint, label, rect.centerX(), rect.centerY() + (glyph ? 12f : 8f),
                 glyph ? 38f : 22f, SamTheme.INK, Paint.Align.CENTER, true);
@@ -1188,23 +1489,96 @@ public final class SettingsPanelView extends View implements UiInputTarget {
     private static String quote(String value) { return '"' + value.replace("\"", "\\\"") + '"'; }
 
     @Override public boolean onTouchEvent(MotionEvent event) {
-        if (event.getActionMasked() != MotionEvent.ACTION_UP) return true;
         float x = event.getX() * DESIGN_WIDTH / Math.max(1f, getWidth());
         float y = event.getY() * DESIGN_HEIGHT / Math.max(1f, getHeight());
-        if (x > 400f && y < 76f) { close.run(); return true; }
+        boolean list = openPage == null;
+        switch (event.getActionMasked()) {
+            case MotionEvent.ACTION_DOWN -> {
+                downX = x;
+                downY = y;
+                lastY = y;
+                dragging = false;
+                // A touch that stops a fling (or the wheel's glide) is not also a tap.
+                caughtMotion = list && (!scroller.isFinished() || Math.abs(scrollTarget - scroll) > 2f);
+                scroller.forceFinished(true);
+                scrollTarget = scroll;
+                if (list) {
+                    if (velocity == null) velocity = VelocityTracker.obtain();
+                    velocity.clear();
+                    velocity.addMovement(event);
+                }
+            }
+            case MotionEvent.ACTION_MOVE -> {
+                if (list) {
+                    if (velocity != null) velocity.addMovement(event);
+                    if (!dragging && Math.abs(y - downY) > TOUCH_SLOP
+                            && SettingsListLayout.maxScroll(ROWS.size()) > 0f) {
+                        dragging = true;
+                    }
+                    if (dragging) {
+                        scroll = SettingsListLayout.clamp(scroll - (y - lastY), ROWS.size());
+                        scrollTarget = scroll;
+                        invalidate();
+                    }
+                }
+                lastY = y;
+            }
+            case MotionEvent.ACTION_UP -> {
+                if (dragging) {
+                    if (velocity != null) velocity.addMovement(event);
+                    fling();
+                } else if (!caughtMotion || y < SettingsListLayout.VIEW_TOP) {
+                    onTap(x, y);
+                }
+                endTouch();
+            }
+            // The left-edge back swipe (and anything else the parent takes) lands here: no tap.
+            case MotionEvent.ACTION_CANCEL -> endTouch();
+            default -> { }
+        }
+        return true;
+    }
+
+    /** Lets a dragged list coast; OverScroller's bounds stop it at either end (no overscroll). */
+    private void fling() {
+        if (velocity == null) return;
+        velocity.computeCurrentVelocity(1000);
+        float vy = velocity.getYVelocity() * DESIGN_HEIGHT / Math.max(1f, getHeight());
+        int max = Math.round(SettingsListLayout.maxScroll(ROWS.size()));
+        scroller.fling(0, Math.round(scroll), 0, Math.round(-vy), 0, 0, 0, max);
+        postInvalidateOnAnimation();
+    }
+
+    private void endTouch() {
+        if (velocity != null) {
+            velocity.recycle();
+            velocity = null;
+        }
+        dragging = false;
+    }
+
+    private void onTap(float x, float y) {
+        if (x > 400f && y < 76f) { close.run(); return; }
         if (openPage != null && x < 90f && y < 82f) {
-            openPage = null;
-            invalidate();
-            return true;
+            goBack();
+            return;
         }
         if ("Display".equals(openPage)) {
             onDisplayTap(x, y);
-            return true;
+            return;
+        }
+        if (THEME.equals(openPage)) {
+            // A tile applies only when the press both starts and ends on it.
+            int tile = ThemePageLayout.tileAt(x, y);
+            if (tile >= 0 && tile == ThemePageLayout.tileAt(downX, downY)) {
+                applyTheme(OrbStyle.values()[tile]);
+            }
+            return;
         }
         if (openPage == null) {
-            int row = (int) ((y - ROW_TOP) / ROW_STEP);
-            float within = (y - ROW_TOP) % ROW_STEP;
-            if (y >= ROW_TOP && row < ROWS.size() && within <= 58f) {   // header taps never open Wi-Fi
+            // Rows sit under the fixed header: a tap in the header band never opens one.
+            int row = SettingsListLayout.rowAt(y, scroll, ROWS.size());
+            if (row >= 0) {
                 selected = row;
                 activateSelectedRow();
             }
@@ -1248,20 +1622,19 @@ public final class SettingsPanelView extends View implements UiInputTarget {
                 invalidate();
             }
         }
-        return true;
     }
 
     @Override public boolean onInput(UiInputIntent intent) {
         if (intent == UiInputIntent.BACK) {
-            if (openPage != null) { openPage = null; invalidate(); }
-            else close.run();
+            goBack();
             return true;
         }
-        if (openPage == null && intent == UiInputIntent.PREVIOUS) {
-            selected = Math.max(0, selected - 1); invalidate(); return true;
-        }
-        if (openPage == null && intent == UiInputIntent.NEXT) {
-            selected = Math.min(ROWS.size() - 1, selected + 1); invalidate(); return true;
+        if (openPage == null && (intent == UiInputIntent.PREVIOUS || intent == UiInputIntent.NEXT)) {
+            int step = intent == UiInputIntent.NEXT ? 1 : -1;
+            selected = Math.max(0, Math.min(ROWS.size() - 1, selected + step));
+            revealSelected(true);
+            invalidate();
+            return true;
         }
         if (openPage == null && intent == UiInputIntent.ACTIVATE) {
             activateSelectedRow(); return true;
@@ -1270,9 +1643,13 @@ public final class SettingsPanelView extends View implements UiInputTarget {
             if (!wifiNetworks.isEmpty()) selectNetwork(wifiNetworks.get(0));
             return true;
         }
-        OrbStyle wheelStyle = SettingsInputPolicy.orbStyleForWheel(openPage, intent);
-        if (wheelStyle != null) {
-            applyOrbStyle(wheelStyle);
+        if (THEME.equals(openPage)) {
+            if (intent == UiInputIntent.ACTIVATE) {
+                applyTheme(OrbStyle.values()[themeFocus]);
+            } else {
+                themeFocus = SettingsInputPolicy.themeFocusForWheel(themeFocus, ThemePageLayout.TILES, intent);
+                invalidate();
+            }
             return true;
         }
         if (SettingsInputPolicy.consumeWheelWithoutAdjustment(openPage, intent)) {
@@ -1305,11 +1682,41 @@ public final class SettingsPanelView extends View implements UiInputTarget {
             openCreationImport.run();
             return;
         }
+        themeReturn = null;
+        showPage(page);
+    }
+
+    /** BACK, the back chevron and the edge swipe: a page goes back to the list (Theme to where it came from). */
+    private void goBack() {
+        if (openPage == null) {
+            close.run();
+            return;
+        }
+        String previous = THEME.equals(openPage) ? themeReturn : null;
+        themeReturn = null;
+        showPage(previous);
+    }
+
+    /** Opens {@code page} (null = the list) and refreshes what it shows. */
+    private void showPage(String page) {
         openPage = page;
-        if ("Wi-Fi".equals(openPage)) wifiScanner.refresh();
-        if ("Management".equals(openPage)) refreshManagement();
-        if ("AI".equals(openPage)) refreshOpenAi();
-        if ("Display".equals(openPage)) displayValue = null;
+        if (page == null) {
+            revealSelected(false);
+        } else {
+            switch (page) {
+                case "Wi-Fi" -> wifiScanner.refresh();
+                case "Management" -> refreshManagement();
+                case "AI" -> refreshOpenAi();
+                case "Display" -> displayValue = null;
+                case "About" -> aboutValues = null;
+                case THEME -> {
+                    themeFocus = OrbStyleSetting.current().ordinal();
+                    themeAppliedAt = -1L;
+                }
+                default -> { }
+            }
+        }
+        updateThemePin();
         invalidate();
     }
 
