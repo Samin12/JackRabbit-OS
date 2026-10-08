@@ -8,7 +8,8 @@
 # 3. installs the login item: LaunchAgent com.samrabbit.desktop.login (open -g -a SamRabbit --args --login);
 # 4. opens the app and reports whether the bridge already serves the desktop page.
 #
-# Environment (tests): SAMRABBIT_HOME (default $HOME), SAMRABBIT_SKIP_LAUNCHCTL=1 (no launchctl/open/pkill).
+# Environment (tests): SAMRABBIT_HOME (default $HOME), SAMRABBIT_SKIP_LAUNCHCTL=1 (no launchctl/open/pkill),
+# SAMRABBIT_APP_URL (the page the final check probes, like the app; loopback only).
 set -euo pipefail
 
 LABEL=com.samrabbit.desktop.login
@@ -110,10 +111,15 @@ if [ "$SKIP" != 1 ] && [ "$OPEN_APP" = 1 ]; then
   sleep 0.5
   open -a "$APP"
 fi
-BASE=$(defaults read "$BUNDLE_ID" BaseURL 2>/dev/null || echo "http://127.0.0.1:3780/app/")
+BASE=${SAMRABBIT_APP_URL:-$(defaults read "$BUNDLE_ID" BaseURL 2>/dev/null || echo "http://127.0.0.1:3780/app/")}
 "$PYTHON" - "$BASE" "$TOKEN_FILE" <<'EOF' || true
-import sys, urllib.error, urllib.request
+import sys, urllib.error, urllib.parse, urllib.request
 base, token_file = sys.argv[1], sys.argv[2]
+# Like the app: the desktop token only ever goes to this Mac (a BaseURL override elsewhere is ignored).
+parts = urllib.parse.urlsplit(base.strip())
+if parts.scheme not in ("http", "https") or (parts.hostname or "") not in ("127.0.0.1", "localhost", "::1"):
+    print("ignoring the BaseURL override (not on this Mac); checking http://127.0.0.1:3780/app/")
+    base = "http://127.0.0.1:3780/app/"
 token = open(token_file).read().strip()
 bearer = False
 try:

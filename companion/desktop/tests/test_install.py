@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from typing import Dict, Optional
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
@@ -27,8 +28,8 @@ class DesktopInstallTest(unittest.TestCase):
         self.apps = Path(self.tmp.name, "Applications")
         self.home.mkdir()
 
-    def run_script(self, name: str, *args: str) -> str:
-        env = {**os.environ, "SAMRABBIT_HOME": str(self.home), "SAMRABBIT_SKIP_LAUNCHCTL": "1"}
+    def run_script(self, name: str, *args: str, env: Optional[Dict[str, str]] = None) -> str:
+        env = {**os.environ, "SAMRABBIT_HOME": str(self.home), "SAMRABBIT_SKIP_LAUNCHCTL": "1", **(env or {})}
         done = subprocess.run([str(ROOT / name), *args, "--apps-dir", str(self.apps)], env=env, capture_output=True,
                               text=True, timeout=240, check=True)
         return done.stdout + done.stderr
@@ -77,6 +78,42 @@ class DesktopInstallTest(unittest.TestCase):
         self.assertTrue(token_file.exists(), "token kept without --purge")
         self.run_script("uninstall.sh", "--purge")
         self.assertFalse(token_file.exists())
+
+    def test_the_bridge_check_never_sends_the_token_off_this_mac(self) -> None:
+        # A listener on this Mac that records what reaches it (stands in for a LAN host).
+        import http.server
+        import threading
+
+        seen = []
+
+        class Recorder(http.server.BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802
+                seen.append({name.lower() for name in self.headers.keys()})  # names only, never values
+                self.send_response(404)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def log_message(self, *args: object) -> None:
+                return
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), Recorder)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        port = server.server_address[1]
+
+        # 1. A loopback override is used (and gets the token header).
+        output = self.run_script("install.sh", "--no-open", "--no-login-item",
+                                 env={"SAMRABBIT_APP_URL": f"http://127.0.0.1:{port}/app/"})
+        self.assertIn("does not serve the desktop page yet", output)
+        self.assertEqual(1, len(seen))
+        self.assertIn("x-samrabbit-desktop", seen[0])
+        # 2. A non-loopback override is ignored: nothing is sent there.
+        output = self.run_script("install.sh", "--no-open", "--no-login-item",
+                                 env={"SAMRABBIT_APP_URL": "http://192.0.2.10:3780/app/"})
+        self.assertIn("ignoring the BaseURL override", output)
+        token = (self.home / ".config/samrabbit/desktop-token").read_text().strip()
+        self.assertNotIn(token, output)
 
 
 if __name__ == "__main__":
