@@ -29,6 +29,7 @@ import com.resonolabs.feature.genui.GenCard;
 import com.resonolabs.feature.genui.LiveBinding;
 import com.resonolabs.feature.genui.T3AnnouncementCards;
 import com.resonolabs.runtime.host.RuntimeAnnouncementClient;
+import com.resonolabs.runtime.host.RuntimeArtifactClient;
 import com.resonolabs.runtime.host.T3Client;
 import com.resonolabs.ui.power.AlwaysOnVoice;
 import com.resonolabs.feature.compose.ComposeSheet;
@@ -68,6 +69,8 @@ final class ProductRootView extends FrameLayout {
     private final RuntimeAnnouncementClient announcements;
     /** Direct T3 calls for app-built card buttons (Approve / Deny). */
     private final T3Client t3Actions = new T3Client();
+    /** Pictures of Mac-generated UIs ({@code GET /v1/ui/artifacts/<id>/image}). */
+    private final RuntimeArtifactClient artifacts;
     /** Updates that arrived while a voice session was connecting: spoken once it is live. */
     private final ArrayList<Object[]> deferredUpdates = new ArrayList<>();
     private final Runnable flushDeferred = this::flushDeferredToVoice;
@@ -171,6 +174,7 @@ final class ProductRootView extends FrameLayout {
         setContentDescription("SamRabbit HOME");
         runner.start();
         t3.stop(); // Hidden: only the slow badge poll runs until the T3 tab opens.
+        artifacts = new RuntimeArtifactClient(activity);
         announcements = new RuntimeAnnouncementClient(activity, this::onAnnouncement);
     }
 
@@ -433,8 +437,12 @@ final class ProductRootView extends FrameLayout {
     private void deliverToVoice(JSONObject item) {
         JSONObject payload = item.optJSONObject("payload");
         String kind = text(item, "kind");
+        if (AnnouncementRouting.isUi(kind)) {
+            deliverUi(item);
+            return;
+        }
         String envelope = AnnouncementRouting.voiceEnvelope(kind, text(item, "text"), text(payload, "lastMessage"));
-        if (!voice.deliverHostUpdate(envelope)) {
+        if (!voice.deliverHostUpdate(envelope, item.optLong("id", 0L), kind)) {
             deliverAsNotification(item);
             return;
         }
@@ -445,6 +453,11 @@ final class ProductRootView extends FrameLayout {
     private void deliverAsNotification(JSONObject item) {
         JSONObject payload = item.optJSONObject("payload");
         String kind = text(item, "kind");
+        if (AnnouncementRouting.isUi(kind)) {
+            // Presented once its picture is here: to the model if a session went live meanwhile.
+            deliverUi(item);
+            return;
+        }
         String threadId = T3AnnouncementCards.threadId(item);
         String title = text(payload, "title");
         if (title.isEmpty()) title = text(item, "title");
@@ -455,6 +468,82 @@ final class ProductRootView extends FrameLayout {
         else if (!t3Open) chrome.showT3Done(true);
         showT3Card(item); // a pill on the idle Voice page
         announcements.ack(item.optLong("id", 0L), AnnouncementRouting.CHANNEL_NOTIFICATION);
+    }
+
+    // ---- announcements: Mac-generated UIs (ui.generated / ui.failed, CONTRACTS-WAVE3 §5-6) ----
+
+    /** Fetches a generated UI's picture (404 and failures still present it, without one). */
+    private void deliverUi(JSONObject item) {
+        String kind = text(item, "kind");
+        if (AnnouncementRouting.UI_FAILED.equals(kind)) {
+            presentUiFailure(item);
+            return;
+        }
+        String artifactId = text(item.optJSONObject("payload"), "artifactId");
+        // Synthetic (debug) announcements have id 0: never a notification sound for those.
+        boolean silent = item.optLong("id", 0L) <= 0L;
+        if (!RuntimeArtifactClient.validId(artifactId)) {
+            presentGeneratedUi(item, null, null, silent);
+            return;
+        }
+        artifacts.fetchImage(artifactId, new RuntimeArtifactClient.Callback() {
+            @Override public void onImage(byte[] bytes, String mime) {
+                presentGeneratedUi(item, bytes, mime, silent);
+            }
+
+            @Override public void onFailure(String reason) {
+                Log.i(ANNOUNCE_TAG, "generated UI picture unavailable (" + reason + ")");
+                presentGeneratedUi(item, null, null, silent);
+            }
+        });
+    }
+
+    /**
+     * Transcript item + host card always; the live model sees it (picture + caption), otherwise
+     * a notification and a "New: …" pill on the idle Voice page.
+     */
+    private void presentGeneratedUi(JSONObject item, byte[] image, String mime, boolean silent) {
+        JSONObject payload = item.optJSONObject("payload");
+        String artifactId = text(payload, "artifactId");
+        String title = text(payload, "title");
+        if (title.isEmpty()) title = text(item, "title");
+        String summary = text(payload, "summary");
+        if (summary.isEmpty()) summary = text(item, "text");
+        long id = item.optLong("id", 0L);
+        if (voice.showGeneratedUi(artifactId, title, summary, image, mime)) {
+            announcements.ack(id, AnnouncementRouting.CHANNEL_VOICE);
+            return;
+        }
+        GeneratedUiNotifier.post(getContext(), artifactId,
+                AnnouncementRouting.uiNotificationTitle(AnnouncementRouting.UI_GENERATED, title),
+                AnnouncementRouting.uiNotificationText(AnnouncementRouting.UI_GENERATED, summary, ""), silent);
+        announcements.ack(id, AnnouncementRouting.CHANNEL_NOTIFICATION);
+    }
+
+    private void presentUiFailure(JSONObject item) {
+        JSONObject payload = item.optJSONObject("payload");
+        String artifactId = text(payload, "artifactId");
+        String title = text(payload, "title");
+        if (title.isEmpty()) title = text(item, "title");
+        Object rawError = payload == null ? null : payload.opt("error");
+        String error = rawError instanceof JSONObject object ? object.optString("message", "")
+                : rawError instanceof String string ? string : "";
+        long id = item.optLong("id", 0L);
+        String kind = AnnouncementRouting.UI_FAILED;
+        if (voice.deliverHostUpdate(AnnouncementRouting.uiFailedEnvelope(title, error), id, kind)) {
+            announcements.ack(id, AnnouncementRouting.CHANNEL_VOICE);
+            return;
+        }
+        GeneratedUiNotifier.post(getContext(), artifactId, AnnouncementRouting.uiNotificationTitle(kind, title),
+                AnnouncementRouting.uiNotificationText(kind, "", error), id <= 0L);
+        announcements.ack(id, AnnouncementRouting.CHANNEL_NOTIFICATION);
+    }
+
+    /** A tapped "Generated UIs" notification: Voice, with that picture full screen if it is here. */
+    void openGeneratedUi(String artifactId) {
+        showVoicePage();
+        voice.openGeneratedUi(artifactId);
+        GeneratedUiNotifier.cancel(getContext(), artifactId);
     }
 
     /** Shows or refreshes the live card following this thread (never two cards per thread). */
@@ -535,6 +624,35 @@ final class ProductRootView extends FrameLayout {
         onAnnouncement(item);
     }
 
+    /**
+     * DEBUG_PICTURE: a fake picture item without the runtime ({@code source} camera,
+     * mac_screenshot or generated_ui). A generated UI goes through the real announcement path
+     * (live → model, idle → notification + pill) with {@code image} instead of the fetch; its
+     * synthetic announcement id 0 is never acknowledged.
+     */
+    void debugPicture(String source, byte[] image, String title, String summary, String artifactId) {
+        showVoicePage();
+        if ("generated_ui".equals(source)) {
+            try {
+                JSONObject item = new JSONObject().put("id", 0).put("kind", AnnouncementRouting.UI_GENERATED)
+                        .put("title", title).put("text", summary)
+                        .put("payload", new JSONObject().put("artifactId", artifactId).put("title", title)
+                                .put("summary", summary));
+                presentGeneratedUi(item, image, "image/jpeg", true);
+            } catch (Exception invalid) {
+                Log.w(ANNOUNCE_TAG, "debug picture failed");
+            }
+            return;
+        }
+        voice.debugAddPicture(source, image, title, summary, artifactId);
+    }
+
+    /** DEBUG_TRANSCRIPT: open/close the Voice transcript, optionally the newest picture full screen. */
+    void debugTranscript(boolean open, boolean viewer) {
+        showVoicePage();
+        voice.debugTranscript(open, viewer);
+    }
+
     /** One-line state for debug broadcasts. */
     String debugState() {
         return "inSession=" + voice.isInSession() + " live=" + voice.isLive() + " starting=" + voice.isStarting()
@@ -553,7 +671,7 @@ final class ProductRootView extends FrameLayout {
         }
         if (cardsOpen) return "cards";
         if (t3Open) return t3.detailOpen() ? "t3-thread" : "t3";
-        return "voice";
+        return voice.viewerOpen() ? "voice:viewer" : "voice";
     }
 
     private void showCreation(boolean visible) {
@@ -799,6 +917,7 @@ final class ProductRootView extends FrameLayout {
         // (an unacked item would be replayed when HOME starts again).
         voice.close();
         announcements.close();
+        artifacts.close();
         t3Actions.close();
         cards.close();
         t3.close();

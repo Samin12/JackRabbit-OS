@@ -94,6 +94,7 @@ public final class MainActivity extends Activity {
         setContentView(root);
         current = new java.lang.ref.WeakReference<>(this);
         openT3ThreadFrom(getIntent(), state == null);
+        openGeneratedUiFrom(getIntent(), state == null);
         // A fresh launch whose intent is the alias = double press while HOME was not running.
         // (A recreated activity keeps the old intent; it must not toggle again.)
         if (state == null && SideButtonGesture.isToggle(getIntent())) sideButtonStartPending = true;
@@ -126,7 +127,19 @@ public final class MainActivity extends Activity {
         super.onNewIntent(intent);
         setIntent(intent);
         if (SideButtonGesture.isToggle(intent)) onSideButtonDoublePress();
-        else openT3ThreadFrom(intent, true);
+        else {
+            openT3ThreadFrom(intent, true);
+            openGeneratedUiFrom(intent, true);
+        }
+    }
+
+    /** A tapped "Generated UIs" notification: Voice with that picture full screen. */
+    private void openGeneratedUiFrom(Intent intent, boolean fresh) {
+        if (!fresh || intent == null || root == null) return;
+        String artifactId = intent.getStringExtra(GeneratedUiNotifier.EXTRA_ARTIFACT);
+        if (artifactId == null) return;
+        intent.removeExtra(GeneratedUiNotifier.EXTRA_ARTIFACT); // a recreated activity must not reopen it
+        root.post(() -> root.openGeneratedUi(artifactId));
     }
 
     /** A tapped "T3 updates" notification: open that thread in the T3 tab. */
