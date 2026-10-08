@@ -7,8 +7,11 @@
  *   {type: "widget-ready", height, errors}  after jsExpressions ran, charts were drawn and fonts loaded
  * Generated code may call SamRabbit.sendPrompt/openLink, window.sendPrompt/openLink, or the
  * OpenGenerativeUI form Websandbox.connection.remote.sendPrompt({text}) / openLink({url}).
- * send-prompt and open-link need a real user gesture (navigator.userActivation), so a widget, or text
- * smuggled into its data, cannot speak to the assistant or open links on its own.
+ * These helpers post send-prompt and open-link only during a real user gesture (navigator.userActivation),
+ * so a well-behaved widget never fires them on its own. This is not a security boundary: generated code runs in
+ * this same realm and can call window.top.postMessage directly. The host page must check the gesture itself
+ * (per the HTML spec user activation is also set on ancestor frames: navigator.userActivation.isActive) and
+ * treat both messages as untrusted.
  * window.__SR_STATIC__ (set by the assembler for the R1 preview render) turns animations off.
  */
 (function () {

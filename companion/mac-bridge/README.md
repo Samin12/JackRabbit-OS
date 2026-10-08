@@ -113,7 +113,8 @@ tool and the bridge makes the widget on this Mac (`samrabbit_genui.py`, assets i
 2. The widget is assembled like OpenGenerativeUI's `buildFinalFrameContent` (CSP with the four CDN origins for
    scripts and connect, importmap, the design-system CSS mapped to the R1's dark palette, the widget css and html)
    plus a small bridge script (`widget-resize`, `send-prompt`, `open-link`, `widget-ready` postMessages to the
-   host page, the last two only on a real user gesture, and a Chart.js helper).
+   host page, and a Chart.js helper). Its `sendPrompt` / `openLink` helpers post only during a real user gesture,
+   but generated code can post any message itself: the host must check the gesture and treat them as untrusted.
 3. agent-browser renders it in a sandboxed iframe at 480 px wide (2x), and `sips` makes the R1 preview JPEG
    (at most 960 px wide and 150 KB).
 
