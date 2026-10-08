@@ -467,6 +467,24 @@ public final class GenCardParser {
                 }
             }
             case DIVIDER -> { }
+            case IMAGE -> {
+                // Pictures come only from the app itself (camera, Mac screenshots, generated UIs):
+                // the model's show_card schema has no image block.
+                if (!trusted) {
+                    notes.add(path + " dropped (unknown type 'image')");
+                    return null;
+                }
+                String ref = clean(value(json, "ref"), GenSchema.REF, null, null);
+                if (!GenImages.validRef(ref)) {
+                    notes.add(path + " dropped (no picture)");
+                    return null;
+                }
+                block.ref = ref;
+                block.alt = clean(value(json, "alt"), GenSchema.IMAGE_ALT, null, null);
+                double aspect = number(value(json, "aspect"), 0.75);
+                if (Double.isNaN(aspect) || Double.isInfinite(aspect)) aspect = 0.75;
+                block.aspect = (float) Math.max(GenSchema.IMAGE_ASPECT_MIN, Math.min(GenSchema.IMAGE_ASPECT_MAX, aspect));
+            }
         }
         return block;
     }
@@ -709,6 +727,10 @@ public final class GenCardParser {
     }
 
     private static GenBlock merge(GenBlock block, JSONObject patch, String path, Notes notes, long now) {
+        // Patches merge through the trusted parser: never let one create or alter a host picture.
+        if (block.type == GenBlock.Type.IMAGE || GenBlock.Type.IMAGE.wire.equals(value(patch, "type"))) {
+            return null;
+        }
         // Smart row merge: ticking a few checklist rows must not delete the others.
         if ((block.type == GenBlock.Type.CHECKLIST || block.type == GenBlock.Type.LIST)
                 && patch.has("items") && !patch.has("type") && block.items != null) {

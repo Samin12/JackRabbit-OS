@@ -7,7 +7,9 @@ package com.resonolabs.feature.genui;
 public final class GenBlock {
     public enum Type {
         TEXT("text"), STAT("stat"), KV("kv"), LIST("list"), CHECKLIST("checklist"),
-        PROGRESS("progress"), TIMER("timer"), BARS("bars"), WEATHER("weather"), DIVIDER("divider");
+        PROGRESS("progress"), TIMER("timer"), BARS("bars"), WEATHER("weather"), DIVIDER("divider"),
+        /** Host-only (app-built cards): a stored picture, see {@link GenImages}. Never model-authored. */
+        IMAGE("image");
 
         public final String wire;
 
@@ -69,6 +71,14 @@ public final class GenBlock {
     public String[] hourT;
     public String[] hourTemp;
     public int[] hourCondition;
+
+    // image (trusted/host cards only)
+    /** {@link GenImages} ref ({@code sha256:<hex>}). */
+    public String ref;
+    /** Short description (pill summary, accessibility, transcripts). */
+    public String alt;
+    /** height / width of the picture (layout before the thumbnail is decoded). */
+    public float aspect = 0.75f;
 
     public GenBlock(Type type) {
         this.type = type;

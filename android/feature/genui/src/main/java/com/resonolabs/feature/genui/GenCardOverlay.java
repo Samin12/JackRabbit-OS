@@ -410,6 +410,11 @@ public final class GenCardOverlay {
             runAction(card, card.actions.get(action));
             return true;
         }
+        GenBlock image = layout.imageAt(lx, ly, 0f);
+        if (image != null) {
+            controller.onImageTapped(card, image);
+            return true;
+        }
         if (layout.moreAt(lx, ly)) {
             expand(card);
             return true;
@@ -473,6 +478,11 @@ public final class GenCardOverlay {
         }
         if (ly < layout.bodyTop) {
             collapse();
+            return true;
+        }
+        GenBlock image = layout.imageAt(lx, ly, scroll);
+        if (image != null) {
+            controller.onImageTapped(card, image);
             return true;
         }
         int row = layout.rowAt(lx, ly, scroll);

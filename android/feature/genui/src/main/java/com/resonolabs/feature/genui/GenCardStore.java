@@ -335,6 +335,7 @@ public final class GenCardStore {
     /** dismiss_card all=true: clears the Voice stack (running timers stay unless asked). */
     public List<String> dismissAll(boolean includeTimers) {
         ArrayList<String> ids = new ArrayList<>();
+        ArrayList<GenCard> removed = new ArrayList<>();
         ArrayList<GenCard> snapshot = new ArrayList<>(stack);
         for (GenCard card : snapshot) {
             if (card.isTimer() && card.isRunningLive() && !includeTimers) continue;
@@ -343,12 +344,14 @@ public final class GenCardStore {
                 stash.add(0, card);
             } else {
                 removeCard(card, false);
+                removed.add(card);
             }
             ids.add(card.id);
         }
         if (!ids.isEmpty()) {
             clampFront();
             notifyChanged();
+            for (GenCard card : removed) notifyEvent(EVENT_DISMISSED, card);
         }
         return ids;
     }

@@ -30,6 +30,10 @@ public final class GenCardLayout {
     public static final float PILL_HEIGHT = 68f;
     static final int CARD_TEXT_LINES = 3;
     static final int EXPANDED_TEXT_LINES = 12;
+    /** Host picture heights: never shorter than this, at most CARD/EXPANDED max. */
+    static final float IMAGE_MIN_H = 96f;
+    static final float IMAGE_CARD_MAX_H = 212f;
+    static final float IMAGE_EXPANDED_MAX_H = 340f;
 
     /** Per block prepared geometry. */
     static final class Box {
@@ -234,6 +238,14 @@ public final class GenCardLayout {
             float gap = boxCount == 0 ? 8f : GAP;
             measure(fonts, box, block, inner, expanded ? EXPANDED_TEXT_LINES : CARD_TEXT_LINES);
             if (y + gap + box.height <= limit) {
+                box.top = y + gap;
+                y = box.top + box.height;
+                boxCount++;
+                continue;
+            }
+            if (block.type == GenBlock.Type.IMAGE && limit - y - gap >= IMAGE_MIN_H) {
+                // A picture shrinks to the room left (it is drawn fitted, never cropped).
+                box.height = limit - y - gap;
                 box.top = y + gap;
                 y = box.top + box.height;
                 boxCount++;
@@ -526,7 +538,14 @@ public final class GenCardLayout {
                 box.height = block.hourT != null && block.hourT.length > 0 ? 130f : 54f;
             }
             case DIVIDER -> box.height = 1f;
+            case IMAGE -> box.height = imageHeight(block.aspect, inner, mode == MODE_EXPANDED);
         }
+    }
+
+    /** A host picture's box height: its natural fitted height, clamped per mode. */
+    static float imageHeight(float aspect, float inner, boolean expanded) {
+        float natural = inner * Math.max(GenSchema.IMAGE_ASPECT_MIN, Math.min(GenSchema.IMAGE_ASPECT_MAX, aspect));
+        return Math.max(IMAGE_MIN_H, Math.min(expanded ? IMAGE_EXPANDED_MAX_H : IMAGE_CARD_MAX_H, natural));
     }
 
     /** Shows rows [first, first + count) and lays out their slot tops. */
@@ -653,6 +672,9 @@ public final class GenCardLayout {
                 case PROGRESS -> {
                     if (!block.indeterminate()) return Math.round(block.progress * 100f) + "%";
                 }
+                case IMAGE -> {
+                    if (block.alt != null) return block.alt;
+                }
                 default -> { }
             }
         }
@@ -712,6 +734,27 @@ public final class GenCardLayout {
             }
         }
         return -1;
+    }
+
+    /** The host picture at (x, y) in card coordinates ({@code scroll} for expanded mode), or null. */
+    public GenBlock imageAt(float x, float y, float scroll) {
+        if (mode == MODE_PILL || mode == MODE_ROW) return null;
+        if (y < bodyTop || y > bodyBottom) return null;
+        float contentY = y + scroll;
+        for (int index = 0; index < boxCount; index++) {
+            Box box = boxes[index];
+            if (box.block.type != GenBlock.Type.IMAGE) continue;
+            if (contentY >= box.top && contentY < box.top + box.height) return box.block;
+        }
+        return null;
+    }
+
+    /** The first host picture of a card (pill thumbnails), or null. */
+    static GenBlock firstImage(GenCard card) {
+        for (int index = 0; index < card.body.size(); index++) {
+            if (card.body.get(index).type == GenBlock.Type.IMAGE) return card.body.get(index);
+        }
+        return null;
     }
 
     public boolean moreAt(float x, float y) {

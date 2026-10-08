@@ -34,6 +34,9 @@ public final class GenSchema {
     public static final int HOUR_T = 4;
     public static final int HOUR_TEMP = 5;
     public static final int REF = 80;
+    public static final int IMAGE_ALT = 120;
+    public static final float IMAGE_ASPECT_MIN = 0.2f;
+    public static final float IMAGE_ASPECT_MAX = 3f;
 
     // ---- count limits ----
     public static final int BODY = 6;
@@ -66,6 +69,7 @@ public final class GenSchema {
     public static final int ICON_CODE = 5;
     public static final int ICON_BOLT = 7;
     public static final int ICON_WEATHER = 13;
+    public static final int ICON_CHART = 14;
     public static final int ICON_WARNING = 15;
 
     public static final String[] CONDITIONS = {
