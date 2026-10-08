@@ -130,6 +130,13 @@ public final class SettingsPanelView extends View implements UiInputTarget {
     /** Page that BACK returns to from Theme ("Display" when its link opened it), else the list. */
     private String themeReturn;
     private boolean onScreen;
+    /**
+     * The one pending animation frame (Theme previews, About orb, Display re-read). Re-posted
+     * from onDraw after removing any earlier one: every input invalidate() also draws, and a
+     * postInvalidateDelayed per draw would start another self-sustaining chain each time, so
+     * a few taps on Theme took it from ~30 to the full 60 fps.
+     */
+    private final Runnable frameTick = this::invalidate;
     /** About's rows, read when the page opens (it animates; no per-frame PackageManager calls). */
     private SettingValue[] aboutValues;
     private final RectF buttonRect = new RectF();
@@ -210,12 +217,13 @@ public final class SettingsPanelView extends View implements UiInputTarget {
                 90f, 20f, 300f, SamTheme.ORB_BLUE);
         if (openPage == null) drawIndex(canvas); else drawPage(canvas);
         canvas.restore();
+        removeCallbacks(frameTick);
         if (!isShown()) return;
         // The list glides at vsync while it scrolls; the About orb and the Theme previews animate
         // at ~30 fps; Display re-reads the brightness twice a second; other pages are static.
         if (moving) postInvalidateOnAnimation();
-        else if (about || theme) postInvalidateDelayed(33L);
-        else if ("Display".equals(openPage)) postInvalidateDelayed(500L);
+        else if (about || theme) postDelayed(frameTick, 33L);
+        else if ("Display".equals(openPage)) postDelayed(frameTick, 500L);
     }
 
     /** Moves the list one frame along a fling or the wheel's glide; true while it still moves. */
