@@ -114,7 +114,9 @@ final class PixelHeadSprites {
                 PRELOADING.set(false);
             }
         }, "pixel-head-art");
-        thread.setPriority(Thread.MIN_PRIORITY);
+        // Default priority on purpose: the first frame of a hero orb waits on this thread's
+        // per-bucket lock (art()), so a lowest-priority decoder starved at boot would stall the
+        // UI thread for as long as the scheduler keeps it off the CPU.
         thread.start();
     }
 
