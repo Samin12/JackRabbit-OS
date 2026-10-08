@@ -1,0 +1,83 @@
+"""install.sh / uninstall.sh against a throwaway home and apps folder (launchctl, open and pkill skipped).
+
+Run: python3 -m unittest discover -s companion/desktop/tests
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+import plistlib
+import stat
+import subprocess
+import sys
+import tempfile
+import unittest
+
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parent
+
+
+@unittest.skipUnless(sys.platform == "darwin", "the installer targets macOS")
+class DesktopInstallTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.home = Path(self.tmp.name, "home")
+        self.apps = Path(self.tmp.name, "Applications")
+        self.home.mkdir()
+
+    def run_script(self, name: str, *args: str) -> str:
+        env = {**os.environ, "SAMRABBIT_HOME": str(self.home), "SAMRABBIT_SKIP_LAUNCHCTL": "1"}
+        done = subprocess.run([str(ROOT / name), *args, "--apps-dir", str(self.apps)], env=env, capture_output=True,
+                              text=True, timeout=240, check=True)
+        return done.stdout + done.stderr
+
+    def test_install_is_idempotent_private_and_never_prints_the_token(self) -> None:
+        output = self.run_script("install.sh", "--no-open")
+        token_file = self.home / ".config/samrabbit/desktop-token"
+        token = token_file.read_text().strip()
+        self.assertGreaterEqual(len(token), 40)
+        self.assertEqual(0o600, stat.S_IMODE(token_file.stat().st_mode))
+        self.assertEqual(0o700, stat.S_IMODE(token_file.parent.stat().st_mode))
+        self.assertNotIn(token, output)
+
+        app = self.apps / "SamRabbit.app"
+        with (app / "Contents/Info.plist").open("rb") as handle:
+            info = plistlib.load(handle)
+        self.assertEqual("com.samrabbit.desktop", info["CFBundleIdentifier"])
+        self.assertFalse(info["LSUIElement"], "SamRabbit has a Dock icon")
+        self.assertTrue(os.access(app / "Contents/MacOS/SamRabbit", os.X_OK))
+        self.assertTrue((app / "Contents/Resources/AppIcon.icns").stat().st_size > 10_000)
+        web = app / "Contents/Resources/web"
+        for name in ("index.html", "app.js", "styles.css", "orb.svg"):
+            self.assertTrue((web / name).is_file(), name)
+        self.assertFalse(any(path.name.startswith(".") for path in web.rglob("*")), "no dotfiles in the web folder")
+        signed = subprocess.run(["codesign", "--verify", "--deep", "--strict", str(app)], capture_output=True)
+        self.assertEqual(0, signed.returncode, signed.stderr)
+
+        plist_path = self.home / "Library/LaunchAgents/com.samrabbit.desktop.login.plist"
+        with plist_path.open("rb") as handle:
+            plist = plistlib.load(handle)
+        self.assertEqual("com.samrabbit.desktop.login", plist["Label"])
+        self.assertEqual(["/usr/bin/open", "-g", "-a", str(app), "--args", "--login"], plist["ProgramArguments"])
+        self.assertTrue(plist["RunAtLoad"])
+        self.assertFalse(plist["KeepAlive"])
+
+        output = self.run_script("install.sh", "--no-open")
+        self.assertIn("keeping the existing desktop token", output)
+        self.assertEqual(token, token_file.read_text().strip())
+        self.assertTrue(app.is_dir())
+
+        self.run_script("install.sh", "--no-open", "--no-login-item")
+        self.assertFalse(plist_path.exists())
+
+        self.run_script("uninstall.sh")
+        self.assertFalse(app.exists())
+        self.assertTrue(token_file.exists(), "token kept without --purge")
+        self.run_script("uninstall.sh", "--purge")
+        self.assertFalse(token_file.exists())
+
+
+if __name__ == "__main__":
+    unittest.main()
