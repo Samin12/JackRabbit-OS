@@ -29,6 +29,7 @@ from .t3_routes import T3Routes
 from .announcement_routes import AnnouncementRoutes
 from .heptabase_routes import HeptabaseRoutes
 from .mac_routes import MacRoutes
+from .conversation_sync_routes import ConversationSyncRoutes
 
 if TYPE_CHECKING:
     from .http_server import HealthReader, RestartRequest
@@ -102,6 +103,7 @@ class RuntimeRoutes:
         announcements: AnnouncementRoutes | None = None,
         heptabase: HeptabaseRoutes | None = None,
         mac: MacRoutes | None = None,
+        conversation_sync: ConversationSyncRoutes | None = None,
     ) -> None:
         self._health = health
         self._lifecycle = lifecycle
@@ -129,6 +131,7 @@ class RuntimeRoutes:
         self._announcements = announcements
         self._heptabase = heptabase
         self._mac = mac
+        self._conversation_sync = conversation_sync
 
     def handle_get(self, req: RouteRequest) -> None:
         path = req.path.split("?", 1)[0]
@@ -168,6 +171,7 @@ class RuntimeRoutes:
         if self._announcements is not None and self._announcements.handle_get(req, pairing): return
         if self._heptabase is not None and self._heptabase.handle_get(req, pairing): return
         if self._mac is not None and self._mac.handle_get(req, pairing): return
+        if self._conversation_sync is not None and self._conversation_sync.handle_get(req, pairing): return
         if path == "/v1/health":
             req.respond_json(200, self._health())
             return
@@ -297,6 +301,7 @@ class RuntimeRoutes:
         if self._announcements is not None and self._announcements.handle_post(req, pairing): return
         if self._heptabase is not None and self._heptabase.handle_post(req, pairing): return
         if self._mac is not None and self._mac.handle_post(req, pairing): return
+        if self._conversation_sync is not None and self._conversation_sync.handle_post(req, pairing): return
         if path == "/v1/mcp" and mcp is not None:
             payload = req.request_json(max_bytes=65_536)
             if payload is None:
@@ -322,6 +327,8 @@ class RuntimeRoutes:
                 return
             try:
                 call = providers.create_realtime_call(str(payload.get("sdp", "")))
+                if self._conversation_sync is not None and payload.get("conversationId") is not None:
+                    self._conversation_sync.link_call(payload.get("conversationId"), call.session_id)
                 req.respond_json(
                     200,
                     {
@@ -392,18 +399,26 @@ class RuntimeRoutes:
             if appended == 0:
                 req.respond_json(409, {"error": {"code": "nothing_to_review", "message": "No transcript entries were captured."}})
                 return
+            finalized = None
+            review_error: Exception | None = None
             try:
                 finalized = memory.finalize(session_id)
-            except ValueError as error:
-                req.respond_json(409, {"error": {"code": "nothing_to_review", "message": str(error)}})
+            except Exception as error:  # answered below, once the session is mirrored
+                review_error = error
+            if self._conversation_sync is not None:
+                # Mirror the finished session to the Mac (observe-only; never raises).
+                self._conversation_sync.session_finalized(session_id, raw_entries, finalized)
+            if isinstance(review_error, ValueError):
+                req.respond_json(409, {"error": {"code": "nothing_to_review", "message": str(review_error)}})
                 return
-            except OpenAIProviderError as error:
-                req.provider_error(error)
+            if isinstance(review_error, OpenAIProviderError):
+                req.provider_error(review_error)
                 return
-            except Exception:
-                _LOG.exception(
+            if review_error is not None:
+                _LOG.error(
                     "voice.session.finalize_failed",
                     extra={"sessionId": session_id},
+                    exc_info=review_error,
                 )
                 req.respond_json(500, {"error": {"code": "finalize_failed", "message": "The session could not be finalized."}})
                 return

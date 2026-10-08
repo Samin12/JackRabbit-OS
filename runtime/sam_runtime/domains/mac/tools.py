@@ -174,6 +174,12 @@ class MacToolHandlers:
         self._owner_name = owner_name
         self._lock = threading.Lock()
         self._told_vision: set[str] = set()
+        self._screenshot_conversation: Callable[[str | None], str | None] = lambda _session: None
+
+    def set_screenshot_conversation(self, resolver: Callable[[str | None], str | None]) -> None:
+        """Conversation sync: the conversation a ``mac_look`` screenshot belongs to (the bridge then
+        keeps the JPEG in its sync store and files it in that conversation), or None."""
+        self._screenshot_conversation = resolver
 
     def invoke(self, name: str, arguments: dict[str, object], context: ToolInvocationContext | None) -> ToolInvocationResult:
         try:
@@ -254,7 +260,11 @@ class MacToolHandlers:
 
     def _look(self, arguments: dict[str, object], context: ToolInvocationContext | None) -> ToolInvocationResult:
         try:
-            shot = self._client.screenshot(_text(arguments.get("app")), SCREENSHOT_SIDE)
+            conversation = self._screenshot_conversation(context.voice_session_id if context is not None else None)
+        except Exception:
+            conversation = None
+        try:
+            shot = self._client.screenshot(_text(arguments.get("app")), SCREENSHOT_SIDE, conversation_id=conversation)
         except MacFailure as failure:
             if failure.code != "screen_recording_required":
                 raise
@@ -287,14 +297,17 @@ class MacToolHandlers:
         }
         if shot.get("app"):
             summary["app"] = shot["app"]
-        return ToolInvocationResult(
-            _dump(summary),
-            structured_content={
-                "image": {"mime": str(shot.get("mime") or "image/jpeg"), "base64": str(shot["base64"])},
-                "width": shot.get("width"),
-                "height": shot.get("height"),
-            },
-        )
+        structured: dict[str, object] = {
+            "image": {"mime": str(shot.get("mime") or "image/jpeg"), "base64": str(shot["base64"])},
+            "width": shot.get("width"),
+            "height": shot.get("height"),
+        }
+        # A sync-capable bridge keeps the JPEG as blob ``sha256:<hex>`` (and, given a conversation,
+        # has already filed the ``image`` event): the R1 and the sync observer reuse the id.
+        for key in ("blobId", "imageEventId"):
+            if isinstance(shot.get(key), str) and 0 < len(shot[key]) <= 200:
+                structured[key] = shot[key]
+        return ToolInvocationResult(_dump(summary), structured_content=structured)
 
     def _task(self, arguments: dict[str, object]) -> dict[str, object]:
         request = str(arguments.get("request") or "").strip()

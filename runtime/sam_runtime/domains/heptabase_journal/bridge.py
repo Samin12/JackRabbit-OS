@@ -141,6 +141,22 @@ class BridgeStore:
         self._lock = threading.Lock()
         self._config: object = _UNSET
         self._token: tuple[str, str] | None = None
+        self._listeners: tuple[Callable[[], None], ...] = ()
+
+    def add_listener(self, callback: Callable[[], None]) -> None:
+        """Called (on the caller's thread, errors swallowed) when the bridge is (re)configured or
+        answers a request: lets other bridge users (conversation sync) retry at once."""
+        with self._lock:
+            self._listeners = (*self._listeners, callback)
+
+    def note_reachable(self) -> None:
+        with self._lock:
+            listeners = self._listeners
+        for callback in listeners:
+            try:
+                callback()
+            except Exception:
+                _LOG.warning("heptabase.bridge.listener_failed")
 
     def config(self) -> BridgeConfig | None:
         with self._lock:
@@ -194,6 +210,7 @@ class BridgeStore:
         with self._lock:
             self._config = BridgeConfig(url, configured_at)
             self._token = (url, token)
+        self.note_reachable()
 
     def clear(self) -> None:
         self._credentials.delete(BRIDGE_CONNECTION_ID)
@@ -220,6 +237,8 @@ class BridgeStore:
         always stamps ``checkedAt``."""
         if self.config() is None:
             return
+        if changes.get("reachable") is True or "lastOkAt" in changes:
+            self.note_reachable()
         current = self.status()
         merged = {**current, **changes, "checkedAt": _now()}
         if not force and "lastOkAt" not in changes and \
