@@ -22,7 +22,9 @@ def contracts() -> tuple[CalendarToolContract, ...]:
             "calendar_list_upcoming",
             "List upcoming events from the local synchronized Calendar service, soonest first, with "
             "their start and end times. Use this for today, tomorrow, this week or any date: list, "
-            "then keep only the events in that range.",
+            "then keep only the events in that range. startsLocal/endsLocal are in the user's time "
+            "zone and startsInMinutes counts from now: for \"the next 30 minutes\" keep only events "
+            "with startsInMinutes <= 30 (negative = already started) and say so when there are none.",
             "read",
             _schema({"limit": {"type": "integer", "minimum": 1, "maximum": 50}}),
         ),
@@ -42,21 +44,33 @@ def contracts() -> tuple[CalendarToolContract, ...]:
         ),
         CalendarToolContract(
             "calendar_create_event",
-            "Prepare an event for a selected calendar. The calendar may be read-only. Review the exact event with the user before confirmation.",
+            "Add an event. Needs a title, a start (startsAt) and an end (endsAt or durationMinutes); ask "
+            "for whatever is missing. Times without an offset are the user's local time; \"for the next "
+            "30 minutes\" is startsAt \"now\" with durationMinutes 30. calendarAccountId is optional "
+            "(default: the user's Google Calendar). On Google Calendar it is added right away: confirm "
+            "briefly from the result (title, local time). If the result has confirmationRequired, review "
+            "it with the user and call calendar_confirm_action after they approve. On an error, say it "
+            "failed; nothing keeps running in the background.",
             "external_write",
-            _schema({**account, **_event_fields()}, ("calendarAccountId", "title", "startsAt")),
+            _schema({**account, **_event_fields()}, ("title", "startsAt")),
         ),
         CalendarToolContract(
             "calendar_update_event",
-            "Prepare changes to an existing event. The calendar or event may be read-only. Review the exact changes with the user before confirmation.",
+            "Move or change an event (eventId from calendar_list_upcoming or calendar_search). To move "
+            "it give the new startsAt (its length is kept) and/or endsAt or durationMinutes. On Google "
+            "Calendar the change is made right away (for a repeating event only that occurrence): "
+            "confirm briefly from the result. If the result has confirmationRequired, review it with the "
+            "user and call calendar_confirm_action after they approve.",
             "external_write",
-            _schema({**event, **_event_fields()}, ("calendarAccountId", "eventId")),
+            _schema({**event, **_event_fields()}, ("eventId",)),
         ),
         CalendarToolContract(
             "calendar_delete_event",
-            "Prepare deletion of an existing event. The calendar or event may be read-only. Deletion requires explicit user confirmation.",
+            "Prepare deleting (cancelling) an event (for a repeating event only that occurrence). "
+            "Deletion requires explicit user confirmation: say which event and when, and after they "
+            "say yes call calendar_confirm_action with the returned actionId and contentHash.",
             "external_write",
-            _schema(event, ("calendarAccountId", "eventId")),
+            _schema(event, ("eventId",)),
         ),
         CalendarToolContract(
             "calendar_confirm_action",
@@ -71,6 +85,7 @@ def _event_fields() -> dict[str, object]:
     return {
         "title": {"type": "string"}, "startsAt": {"type": "string"},
         "endsAt": {"type": "string"}, "timezone": {"type": "string"},
+        "durationMinutes": {"type": "integer", "minimum": 1, "maximum": 20160},
         "allDay": {"type": "boolean"}, "location": {"type": "string"},
         "description": {"type": "string"},
     }

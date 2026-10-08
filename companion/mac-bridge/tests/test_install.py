@@ -17,8 +17,8 @@ ROOT = HERE.parent
 
 @unittest.skipUnless(sys.platform == "darwin", "the installer targets macOS")
 class InstallTest(unittest.TestCase):
-    def run_script(self, name: str, *args: str) -> str:
-        env = {**os.environ, "SAMRABBIT_HOME": self.home, "SAMRABBIT_SKIP_LAUNCHCTL": "1"}
+    def run_script(self, name: str, *args: str, env: dict | None = None) -> str:
+        env = {**os.environ, "SAMRABBIT_HOME": self.home, "SAMRABBIT_SKIP_LAUNCHCTL": "1", **(env or {})}
         done = subprocess.run([str(ROOT / name), *args], env=env, capture_output=True, text=True, timeout=60,
                               check=True)
         return done.stdout + done.stderr
@@ -84,6 +84,26 @@ class InstallTest(unittest.TestCase):
         self.assertFalse(token_file.exists())
         self.assertFalse(desktop_token_file.exists())
         self.assertEqual("kept", (sync_dir / "conversations.db").read_text(), "synced conversations are never deleted")
+
+    def test_install_records_the_composio_cli_for_the_agent(self) -> None:
+        fake = Path(self.home, "tools", "composio")
+        fake.parent.mkdir()
+        fake.write_text("#!/bin/sh\nexit 0\n")
+        fake.chmod(0o755)
+        self.run_script("install.sh", env={"SAMRABBIT_COMPOSIO": str(fake)})
+        plist_path = Path(self.home, "Library/LaunchAgents/com.samrabbit.bridge.plist")
+        with plist_path.open("rb") as handle:
+            plist = plistlib.load(handle)
+        self.assertEqual(str(fake), plist["EnvironmentVariables"]["SAMRABBIT_COMPOSIO"],
+                         "a LaunchAgent's PATH has no ~/.local/bin, so the absolute path is recorded")
+        script = Path(plist["ProgramArguments"][2])
+        self.assertTrue((script.parent / "samrabbit_calendar.py").is_file(), "the calendar module is installed too")
+        # A path that is not runnable is not recorded (the bridge then searches the usual folders itself).
+        output = self.run_script("install.sh", env={"SAMRABBIT_COMPOSIO": str(fake) + "-missing",
+                                                    "PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": self.home})
+        with plist_path.open("rb") as handle:
+            self.assertNotIn("SAMRABBIT_COMPOSIO", plistlib.load(handle)["EnvironmentVariables"])
+        self.assertIn("Composio CLI was not found", output)
 
     def test_install_rejects_a_bad_port(self) -> None:
         env = {**os.environ, "SAMRABBIT_HOME": self.home, "SAMRABBIT_SKIP_LAUNCHCTL": "1"}

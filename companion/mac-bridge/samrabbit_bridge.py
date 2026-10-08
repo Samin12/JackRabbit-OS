@@ -20,6 +20,9 @@ diagrams, dashboards) made with the headless Claude Code CLI (``samrabbit_genui.
 Conversation sync (``samrabbit_sync.py``): the R1 mirrors every conversation to ``/v1/sync/*``
 and the SamRabbit desktop app reads it back over loopback with its own token.
 
+Google Calendar changes (``samrabbit_calendar.py``): the R1 adds, moves and cancels events through the
+signed-in Composio CLI: ``POST /v1/calendar/events`` (+ ``/update``, ``/delete``), ``GET /v1/calendar/status``.
+
 Every route needs ``Authorization: Bearer <token>`` (the token lives in
 ``~/.config/samrabbit/bridge-token``, mode 0600). Journal text and the token are
 never logged. Stdlib only; runs on the macOS system Python 3.9+.
@@ -66,6 +69,11 @@ try:  # desktop web UI at /app/ (loopback + desktop token); optional so the brid
     import samrabbit_app as desktop_app  # noqa: E402
 except ImportError:  # pragma: no cover
     desktop_app = None  # type: ignore[assignment]
+
+try:  # Google Calendar changes through Composio; optional so the bridge runs without it
+    import samrabbit_calendar as gcal  # noqa: E402
+except Exception:  # noqa: BLE001  # pragma: no cover
+    gcal = None  # type: ignore[assignment]
 
 VERSION = "1.1.0"
 SERVICE = "samrabbit-bridge"
@@ -402,7 +410,8 @@ class BridgeServer(ThreadingHTTPServer):
                  cli_timeout: float = CLI_TIMEOUT_SECONDS, allow_any_client: bool = False,
                  mac_control: Optional[mac.MacControl] = None, sync_dir: Optional[str] = None,
                  desktop_token_file: Optional[str] = None,
-                 genui_service: Optional[genui.GenUiService] = None) -> None:
+                 genui_service: Optional[genui.GenUiService] = None,
+                 calendar_writer: Any = None) -> None:
         self.token = token
         self.cli = cli
         self.mac = mac_control or mac.MacControl(mac.CuaDriver())
@@ -415,6 +424,9 @@ class BridgeServer(ThreadingHTTPServer):
         self._health: Optional[Tuple[float, Dict[str, Any]]] = None
         self._health_lock = threading.Lock()
         self.sync: Any = None  # samrabbit_sync.SyncService when a sync folder is given
+        self.calendar: Any = calendar_writer  # samrabbit_calendar.CalendarWriter
+        if self.calendar is None and gcal is not None:
+            self.calendar = gcal.make_writer()
         super().__init__(address, BridgeHandler)
         if sync is not None and sync_dir:
             try:
@@ -429,6 +441,8 @@ class BridgeServer(ThreadingHTTPServer):
         self.mac.close()
         if self.sync is not None:
             self.sync.close()
+        if self.calendar is not None:
+            self.calendar.close()
         self.genui.stop()
 
     def health(self) -> Dict[str, Any]:
@@ -457,6 +471,12 @@ class BridgeServer(ThreadingHTTPServer):
             except Exception:  # generative UI must never break the journal's health check
                 _LOG.warning("genui capabilities failed")
                 generated_ui = {"available": False}
+            try:
+                calendar_write: Dict[str, Any] = self.calendar.capabilities() if self.calendar is not None \
+                    else {"available": False}
+            except Exception:  # calendar changes must never break the journal's health check
+                _LOG.warning("calendar capabilities failed")
+                calendar_write = {"available": False}
             value: Dict[str, Any] = {
                 "ok": True, "service": SERVICE, "version": VERSION,
                 "cli": {"available": version is not None, "version": version},
@@ -464,6 +484,7 @@ class BridgeServer(ThreadingHTTPServer):
                 "mac": capabilities,
                 "sync": self.sync.health() if self.sync is not None else {"available": False},
                 "genui": generated_ui,
+                "calendarWrite": calendar_write,
                 "checkedAt": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
             }
             self._health = (time.monotonic(), value)
@@ -545,8 +566,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return
         try:
             if not client_allowed(self.client_address[0]) and \
-                    (not self.server.allow_any_client or route.startswith((_MAC_PREFIX, genui.ROUTE_PREFIX))):
-                # Mac control never leaves the local network, even with --allow-any-client.
+                    (not self.server.allow_any_client or
+                     route.startswith((_MAC_PREFIX, genui.ROUTE_PREFIX, _CALENDAR_PREFIX))):
+                # Mac control and calendar changes never leave the local network, even with --allow-any-client.
                 raise BridgeError(403, "forbidden", "Only devices on the local network may use this bridge.")
             if not self._authorized() and not self.server.genui.desktop_authorized(self, method, route):
                 raise BridgeError(401, "unauthorized", "A valid bridge token is required.")
@@ -594,6 +616,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return self._mac_route(method, route)
         if route.startswith(genui.ROUTE_PREFIX):
             return self.server.genui.route(self, method, route)
+        if route.startswith(_CALENDAR_PREFIX) and self.server.calendar is not None:
+            return self.server.calendar.route(self, method, route)
         raise BridgeError(404, "not_found", "Not found.")
 
     def _mac_route(self, method: str, route: str) -> Tuple[int, Dict[str, Any]]:
@@ -666,9 +690,10 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
 
 _MAC_PREFIX = "/v1/mac/"
+_CALENDAR_PREFIX = "/v1/calendar/"
 _ROUTES = frozenset({"/health", "/v1/heptabase/journal/append", "/v1/heptabase/journal/read", "/v1/mac/state",
                      "/v1/mac/open", "/v1/mac/read", "/v1/mac/act", "/v1/mac/screenshot",
-                     genui.GENERATE_ROUTE})
+                     genui.GENERATE_ROUTE, *(gcal.ROUTES if gcal is not None else ())})
 
 
 def _one(query: Dict[str, List[str]], key: str) -> Optional[str]:
@@ -695,15 +720,19 @@ def make_server(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, *, token_fil
                 desktop_token_file: Optional[str] = None,
                 genui_service: Optional[genui.GenUiService] = None, artifacts_dir: Optional[str] = None,
                 claude: Optional[str] = None, agent_browser: Optional[str] = None,
-                genui_model: Optional[str] = None) -> BridgeServer:
+                genui_model: Optional[str] = None, composio: Optional[str] = None,
+                calendar_id: Optional[str] = None, calendar_writer: Any = None) -> BridgeServer:
     """Conversation sync runs only with a ``sync_dir`` (the command line passes the default one)."""
+    if calendar_writer is None and gcal is not None:
+        calendar_writer = gcal.make_writer(composio, calendar_id=calendar_id)
     return BridgeServer((host, port), token=TokenFile(token_file), cli=HeptabaseCli(cli),
                         cli_timeout=cli_timeout, allow_any_client=allow_any_client,
                         mac_control=mac_control or mac.MacControl(mac.CuaDriver(driver)),
                         sync_dir=sync_dir, desktop_token_file=desktop_token_file,
                         genui_service=genui_service or genui.GenUiService.create(
                             artifacts_dir or genui.DEFAULT_ARTIFACTS_DIR, claude=claude,
-                            agent_browser=agent_browser, model=genui_model))
+                            agent_browser=agent_browser, model=genui_model),
+                        calendar_writer=calendar_writer)
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -724,6 +753,11 @@ def main(argv: Optional[List[str]] = None) -> int:
                         help="path to agent-browser for rendering generated UIs")
     parser.add_argument("--genui-model", default=os.environ.get("SAMRABBIT_GENUI_MODEL") or None,
                         help="model for generated UIs (default claude-sonnet-5-5; or set it in ~/.config/samrabbit/genui.json)")
+    parser.add_argument("--composio", default=None,
+                        help="path to the Composio CLI for Google Calendar changes (default: $SAMRABBIT_COMPOSIO, "
+                             "which install.sh records, then PATH, ~/.local/bin, /opt/homebrew/bin, /usr/local/bin)")
+    parser.add_argument("--calendar-id", default=os.environ.get("SAMRABBIT_CALENDAR_ID") or None,
+                        help="Google calendar the R1 writes to (default: primary)")
     parser.add_argument("--allow-any-client", action="store_true",
                         help="accept peers outside loopback/private networks (not recommended)")
     parser.add_argument("--sync-dir", default=os.environ.get("SAMRABBIT_SYNC_DIR") or
@@ -739,7 +773,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                              driver=options.cua_driver, sync_dir=options.sync_dir or None,
                              desktop_token_file=options.desktop_token_file,
                              artifacts_dir=options.artifacts_dir, claude=options.claude,
-                             agent_browser=options.agent_browser, genui_model=options.genui_model)
+                             agent_browser=options.agent_browser, genui_model=options.genui_model,
+                             composio=options.composio, calendar_id=options.calendar_id)
     except (OSError, ValueError) as error:
         _LOG.error("cannot start: %s", error)
         return 2
@@ -752,9 +787,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     signal.signal(signal.SIGINT, stop)
     server.genui.start()
     cli_path = server.cli.executable()
-    _LOG.info("%s %s listening on %s:%d (cli %s, cua-driver %s, sync %s)", SERVICE, VERSION, options.host,
+    composio_found = server.calendar is not None and server.calendar.cli.executable() is not None
+    _LOG.info("%s %s listening on %s:%d (cli %s, cua-driver %s, sync %s, composio %s)", SERVICE, VERSION, options.host,
               server.server_address[1], cli_path or "missing", "found" if server.mac.driver.executable() else "missing",
-              "on" if server.sync is not None else "off")
+              "on" if server.sync is not None else "off", "found" if composio_found else "missing")
     server.serve_forever(poll_interval=0.5)
     _LOG.info("stopped")
     return 0

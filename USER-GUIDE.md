@@ -126,6 +126,8 @@ Open **Connections → Calendar** in Management.
 
 SamRabbit accepts up to two Calendar accounts and schedules synchronization every five minutes. The source's discovered capabilities determine whether create, update, or delete tools are available. Read-only sources reject mutations.
 
+A Google Calendar secret iCal address is read-only, but when the Mac bridge is connected and the Mac has the signed-in Composio CLI with Google Calendar linked, Voice can add, move, and cancel events in that Google calendar through the Mac (see `companion/mac-bridge/README.md`, "Google Calendar changes"). New and moved events show on the R1 at once; cancelling an event always asks for a yes first.
+
 The supplied R1 screenshot proves a real upcoming event can reach the native Calendar view. Not every Calendar provider and mutation path has completed physical acceptance.
 
 ## Connect Mail

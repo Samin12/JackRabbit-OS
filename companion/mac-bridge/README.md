@@ -25,6 +25,8 @@ R1 runtime ──HTTP (LAN, bearer token)──▶ samrabbit_bridge.py on the Ma
 - For Mac control: the `cua-driver` CLI with its daemon running and Accessibility granted to CuaDriver.app.
   The bridge finds it on `PATH`, in `/Applications/CuaDriver.app`, or in `~/.hermes/tools/cua-driver-*`
   (newest version), or use `--cua-driver <path>` / `SAMRABBIT_CUA_DRIVER`.
+- For Google Calendar changes: the Composio CLI (`composio`), signed in, with Google Calendar linked
+  (`composio link googlecalendar`). See "Google Calendar changes" below.
 
 ## Install
 
@@ -37,10 +39,12 @@ You can run it again at any time. It:
 1. creates `~/.config/samrabbit/bridge-token` (random, mode 0600) if it doesn't exist yet, and never prints it;
    the same for `~/.config/samrabbit/desktop-token` (the desktop app's own token), and creates the conversation store
    folder `~/Library/Application Support/SamRabbit/sync/` (0700);
-2. copies the bridge (`samrabbit_bridge.py`, `samrabbit_mac.py` and `samrabbit_sync.py`) to
+2. copies the bridge (`samrabbit_bridge.py` and its modules: `samrabbit_mac.py`, `samrabbit_sync.py`, `samrabbit_genui.py`,
+   `samrabbit_calendar.py`, `samrabbit_app.py`) to
    `~/Library/Application Support/SamRabbit/bridge/`;
 3. writes `~/Library/LaunchAgents/com.samrabbit.bridge.plist` (RunAtLoad, KeepAlive, a PATH that includes
-   `/opt/homebrew/bin`, `--sync-dir` and `--desktop-token-file`, and logs to `~/Library/Logs/samrabbit-bridge.log`);
+   `/opt/homebrew/bin`, `--sync-dir` and `--desktop-token-file`, the Composio CLI's absolute path as
+   `SAMRABBIT_COMPOSIO` when it is found, and logs to `~/Library/Logs/samrabbit-bridge.log`);
 4. reloads the agent (`launchctl bootout`/`bootstrap`/`kickstart`), waits for `/health`, and prints the bridge URL.
 
 Then point the R1 at the bridge from the R1's management page (Connections > Heptabase journal >
@@ -65,7 +69,7 @@ private-LAN peers are accepted (10/8, 172.16/12, 192.168/16, 169.254/16, fc00::/
 
 | Route | Result |
 |---|---|
-| `GET /health` | `{ok, service, version, cli:{available, version}, app:{reachable, detail}, mac:{…capabilities, screenLocked}, checkedAt}` (cached 10 s) |
+| `GET /health` | `{ok, service, version, cli:{available, version}, app:{reachable, detail}, mac:{…capabilities, screenLocked}, sync, genui, calendarWrite:{available, composio, path, calendarId, account, lastError, lastOkAt}, checkedAt}` (cached 10 s) |
 | `POST /v1/heptabase/journal/append` `{date:"YYYY-MM-DD", content:"<markdown>"}` | the CLI's `{date, title, contentMd5}` |
 | `GET /v1/heptabase/journal/read?date=YYYY-MM-DD` | `{date, title, text, contentMd5}`: the day as plain text lines (paragraphs, headings, `- ` bullets, `1. ` numbers, `[ ]`/`[x]` todos, `+ ` toggles, `> ` quotes; marks removed; nested items indented) |
 
@@ -218,6 +222,49 @@ Settings: `--claude`, `--agent-browser`, `--artifacts-dir`, `--genui-model` (or 
 reinstalling, write `{"model": "claude-opus-5-5"}` to `~/.config/samrabbit/genui.json` (read on every
 generation). The CLI is found on `PATH`, then `~/.local/bin/claude`; agent-browser on `PATH`, then the newest
 `~/.hermes/tools/agent-browser-*`. `/health` reports `genui: {available, claude, renderer, model, queued, sync}`.
+## Google Calendar changes
+
+The R1 reads your Google Calendar from its secret iCal address, which is read-only. To add, move or cancel an event
+from Voice, the R1 asks the bridge, and the bridge runs the Composio CLI on this Mac (`samrabbit_calendar.py`), which
+is signed in with managed Google auth:
+
+```
+R1 runtime ──POST /v1/calendar/events…──▶ bridge ──composio execute GOOGLECALENDAR_* -d - (JSON on stdin)──▶ Google Calendar
+```
+
+| Route | Result |
+|---|---|
+| `GET /v1/calendar/status` | `{available, composio, path, calendarId, account, lastError, lastOkAt}` (no CLI run, no network) |
+| `POST /v1/calendar/events` `{title, startsAt, endsAt, timezone?, description?, location?, calendarId?}` | `{ok, calendarId, account, event:{eventId, iCalUID, calendarId, title, startsAt, endsAt, timezone, allDay, status}}` |
+| `POST /v1/calendar/events/update` `{iCalUID \| eventId, recurrenceId?, title?, startsAt?, endsAt?, timezone?, description?, location?, calendarId?}` | the same shape; at least one change is required |
+| `POST /v1/calendar/events/delete` `{iCalUID \| eventId, recurrenceId?, calendarId?}` | `{ok, deleted:true, calendarId, eventId}` |
+
+- Times are RFC 3339 with an offset (`2026-10-08T10:33:00-04:00`); events end after they start and last at most 31 days.
+  All-day events are not supported yet.
+- `calendarId` defaults to `primary` (`--calendar-id` / `SAMRABBIT_CALENDAR_ID` to change it). The R1 sends the
+  calendar its iCal address shows, so new events land where the R1 reads them.
+- An iCal UID `<eventId>@google.com` is the event id directly; any other UID is looked up first with the read-only
+  `GOOGLECALENDAR_EVENTS_LIST`. `recurrenceId` (`YYYYMMDD` or `YYYYMMDDTHHMMSSZ`, the occurrence's original start) makes
+  the instance id `<seriesId>_<recurrenceId>`, so one occurrence of a repeating event is changed alone, never the series.
+- New events have no Meet link and no attendee list (`create_meeting_room: false`, `exclude_organizer: true`); no
+  change sends emails (`send_updates: "none"`).
+- One CLI call at a time (another request waits up to 15 s, then 503 `calendar_busy`), 30 s per call, no shell, a small
+  environment, its own private working folder, and the whole process group is killed on timeout.
+- Errors are `{"error":{"code","message","retryable","written"[,"fix"]}}`: 409 `calendar_not_connected` (fix:
+  `composio link googlecalendar`), 403 `calendar_forbidden` (not the organizer, or a read-only calendar), 404
+  `calendar_event_not_found` / `calendar_not_found`, 400 `calendar_invalid_request` / `invalid_time` / `invalid_event`,
+  422 `calendar_rejected`, 503 `composio_missing` / `composio_signed_out` / `calendar_rate_limited`, 502
+  `calendar_google_error` / `calendar_bad_answer` / `composio_failed`, 504 `calendar_timeout`. `written` is `"unknown"`
+  when the change may have reached Google (a timeout, a crash, a Google server error); otherwise `false`.
+- The CLI is `--composio` / `SAMRABBIT_COMPOSIO` (install.sh records its absolute path, because a LaunchAgent's PATH
+  has no `~/.local/bin`), else `PATH`, `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`. `account` is the Google
+  account of the last successful change (or `SAMRABBIT_CALENDAR_ACCOUNT`).
+
+On the R1, `calendar_create_event` and `calendar_update_event` on the Google Calendar subscription (or with no
+calendar named) go here right away and are copied into the R1's calendar store at once, under the feed's own key,
+so the next iCal refresh updates that row instead of adding a second one. `calendar_delete_event` still asks the user
+first (`calendar_confirm_action`).
+
 ## Desktop app page (`/app/`)
 
 `samrabbit_app.py` serves the SamRabbit desktop app's web UI (see `companion/desktop/README.md`) at
@@ -242,6 +289,7 @@ generation). The CLI is found on `PATH`, then `~/.local/bin/claude`; agent-brows
   are written; conversation text and image bytes never are.
   contains journal text, window text, typed text, links, file names, query strings, CLI output or the token.
   Generated UIs log only the artifact id, the outcome and timings: never the prompt, the data or the widget.
+  Calendar changes log only the route, the status and an error code: never a title, a time or Composio's output.
 - Error replies never repeat the CLI's own messages, because they could quote journal content.
 - The token file is re-read when it changes. To rotate it, delete the file, run `install.sh`, and connect the R1
   again.
@@ -257,7 +305,8 @@ fake `cua-driver` / `open` / `lsappinfo` (`tests/fake_cua_driver.py`), and run t
 with `SAMRABBIT_SKIP_LAUNCHCTL=1`. `tests/test_sync.py` covers the conversation store, dedupe, drafts, blobs, the auth
 matrix (R1 token vs desktop token, loopback vs a real LAN peer through this Mac's own address), SSE and screenshots.
 fake `cua-driver` / `open` / `lsappinfo` (`tests/fake_cua_driver.py`), generate UIs with a fake `claude`
-(`tests/fake_claude.py`) and a fake renderer (one test renders for real when agent-browser is installed), and run the
+(`tests/fake_claude.py`) and a fake renderer (one test renders for real when agent-browser is installed), change a
+fake Google calendar through a fake `composio` (`tests/fake_composio.py`; no test ever runs the real CLI), and run the
 installer against a throwaway home with `SAMRABBIT_SKIP_LAUNCHCTL=1`.
 
 ## Troubleshooting
@@ -271,3 +320,6 @@ installer against a throwaway home with `SAMRABBIT_SKIP_LAUNCHCTL=1`.
   management API (`GET /v1/management/conversation-sync`) shows its outbox: `pending`, `lastError`
   (`bridge_outdated` = this bridge predates sync), `lastOkAt`.
 - The Mac's IP changed: run `install.sh` again to print the new address, then update the URL on the R1's management page.
+- The R1 says Google Calendar can't be changed: `/health` should say `calendarWrite.available: true` (else install the
+  Composio CLI and run `install.sh` again). `lastError` names the last failure: `calendar_not_connected` = run
+  `composio link googlecalendar`; `composio_signed_out` = run `composio login`.

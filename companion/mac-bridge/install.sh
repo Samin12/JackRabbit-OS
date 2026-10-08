@@ -5,7 +5,8 @@
 #
 #   companion/mac-bridge/install.sh [--port 3780] [--host 0.0.0.0] [--python /usr/bin/python3]
 #
-# Environment (tests): SAMRABBIT_HOME (default $HOME), SAMRABBIT_SKIP_LAUNCHCTL=1.
+# Environment (tests): SAMRABBIT_HOME (default $HOME), SAMRABBIT_SKIP_LAUNCHCTL=1, SAMRABBIT_COMPOSIO (the Composio
+# CLI to record instead of searching PATH, ~/.local/bin, /opt/homebrew/bin and /usr/local/bin).
 set -euo pipefail
 
 LABEL=com.samrabbit.bridge
@@ -46,6 +47,22 @@ fi
 if ! command -v claude >/dev/null 2>&1 && [ ! -x "$HOME/.local/bin/claude" ]; then
   echo "install.sh: warning: the Claude Code CLI was not found; generated UIs stay off until it is installed." >&2
 fi
+# The Composio CLI (Google Calendar changes from the R1). A LaunchAgent has a minimal PATH, so its absolute
+# path is recorded in the agent's environment (SAMRABBIT_COMPOSIO); the bridge still searches if it moves.
+COMPOSIO=${SAMRABBIT_COMPOSIO:-}
+if [ -z "$COMPOSIO" ]; then
+  COMPOSIO=$(command -v composio 2>/dev/null || true)
+  case "$COMPOSIO" in /*) ;; *) COMPOSIO="" ;; esac
+  for candidate in "$HOME/.local/bin/composio" /opt/homebrew/bin/composio /usr/local/bin/composio; do
+    [ -n "$COMPOSIO" ] && break
+    [ -x "$candidate" ] && COMPOSIO=$candidate
+  done
+fi
+case "$COMPOSIO" in /*) [ -x "$COMPOSIO" ] || COMPOSIO="" ;; *) COMPOSIO="" ;; esac  # absolute and runnable only
+if [ -z "$COMPOSIO" ]; then
+  echo "install.sh: warning: the Composio CLI was not found; Google Calendar changes from the R1 stay off until it" \
+    "is installed and signed in (then run install.sh again)." >&2
+fi
 
 # 1. Token (0600, never printed).
 umask 077
@@ -74,6 +91,7 @@ install -m 0644 "$SOURCE_DIR/samrabbit_bridge.py" "$APP_DIR/samrabbit_bridge.py"
 install -m 0644 "$SOURCE_DIR/samrabbit_mac.py" "$APP_DIR/samrabbit_mac.py"
 install -m 0644 "$SOURCE_DIR/samrabbit_sync.py" "$APP_DIR/samrabbit_sync.py"
 install -m 0644 "$SOURCE_DIR/samrabbit_genui.py" "$APP_DIR/samrabbit_genui.py"
+install -m 0644 "$SOURCE_DIR/samrabbit_calendar.py" "$APP_DIR/samrabbit_calendar.py"
 rm -rf "$APP_DIR/genui"; mkdir -p "$APP_DIR/genui"
 for asset in "$SOURCE_DIR"/genui/*; do install -m 0644 "$asset" "$APP_DIR/genui/"; done
 install -m 0644 "$SOURCE_DIR/samrabbit_app.py" "$APP_DIR/samrabbit_app.py"  # desktop web UI at /app/
@@ -82,14 +100,17 @@ if [ "$(stat -f %z "$LOG_FILE" 2>/dev/null || echo 0)" -gt 5242880 ]; then : > "
 
 # 3. LaunchAgent plist (written with plistlib so every path is escaped correctly).
 "$PYTHON" - "$PLIST" "$LABEL" "$PYTHON" "$APP_DIR/samrabbit_bridge.py" "$HOST" "$PORT" "$TOKEN_FILE" "$LOG_FILE" \
-    "$APP_DIR" "$SYNC_DIR" "$DESKTOP_TOKEN_FILE" <<'EOF'
+    "$APP_DIR" "$SYNC_DIR" "$DESKTOP_TOKEN_FILE" "$COMPOSIO" <<'EOF'
 import os, plistlib, sys
-plist, label, python, script, host, port, token, log, workdir, sync_dir, desktop_token = sys.argv[1:]
+plist, label, python, script, host, port, token, log, workdir, sync_dir, desktop_token, composio = sys.argv[1:]
+environment = {"PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"}
+if composio:
+    environment["SAMRABBIT_COMPOSIO"] = composio
 value = {
     "Label": label,
     "ProgramArguments": [python, "-I", script, "--host", host, "--port", port, "--token-file", token,
                          "--sync-dir", sync_dir, "--desktop-token-file", desktop_token],
-    "EnvironmentVariables": {"PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"},
+    "EnvironmentVariables": environment,
     "WorkingDirectory": workdir,
     "RunAtLoad": True,
     "KeepAlive": True,
@@ -155,6 +176,10 @@ print(f"conversation sync: {'on' if sync.get('available') else 'OFF'}"
 ui = health.get("genui") or {}
 print(f"generated UIs: {'on' if ui.get('available') else 'OFF'} (Claude Code {'found' if ui.get('claude') else 'missing'}, "
       f"renderer {'found' if ui.get('renderer') else 'missing'}, model {ui.get('model')})")
+cal = health.get("calendarWrite") or {}
+print(f"calendar changes: {'on' if cal.get('available') else 'OFF'} (Composio CLI "
+      f"{cal.get('path') or 'missing'}, Google calendar {cal.get('calendarId') or 'primary'}"
+      f"{', account ' + cal['account'] if cal.get('account') else ''})")
 EOF
 IP=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || echo "<this Mac's IP>")
 echo "Bridge URL: http://$IP:$PORT"

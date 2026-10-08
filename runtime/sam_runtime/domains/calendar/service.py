@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 import json
-from uuid import NAMESPACE_URL, uuid4, uuid5
+from uuid import uuid4
 
 from sam_runtime.connectors.calendar import (
     CaldavCalendarCredentials,
@@ -13,8 +14,10 @@ from sam_runtime.connectors.calendar import (
     IcsCalendarProviderClient,
 )
 from sam_runtime.connectors.calendar.caldav import CaldavCalendarCreateRequest
+from sam_runtime.domains.calendar.google_bridge import GoogleCalendarBridge
+from sam_runtime.domains.calendar.google_writes import LOCAL_WRITE_GRACE, GoogleCalendarWrites, duration, event_zone, is_google_feed, local_fields, parse_moment
 from sam_runtime.domains.calendar.models import CalendarAccount, CalendarAccountConfiguration, CalendarCapabilities, CalendarEvent
-from sam_runtime.domains.calendar.repository import CalendarRepository
+from sam_runtime.domains.calendar.repository import CalendarRepository, calendar_event_key
 from sam_runtime.security.credentials import ConnectionCredentialEnvelopes
 from sam_runtime.storage.connection_credentials import ConnectionCredentialRepository
 from sam_runtime.tools import ToolInvocationContext, ToolInvocationResult
@@ -27,6 +30,13 @@ class CalendarService:
         self._envelopes = envelopes
         self._ics = ics
         self._caldav = caldav
+        self._google: GoogleCalendarWrites | None = None
+        self._timezone_name: Callable[[], str] | None = None
+
+    def use_google_bridge(self, bridge: GoogleCalendarBridge, *, timezone_name: Callable[[], str] | None = None) -> None:
+        """Changes to a Google Calendar iCal subscription go through the Mac bridge (Composio on the Mac)."""
+        self._timezone_name = timezone_name
+        self._google = GoogleCalendarWrites(self._repository, bridge, timezone_name)
 
     def connect_ics_subscription(self, *, label: str, feed_url: str) -> CalendarAccount:
         self._ics.validate_feed(credentials=IcsCalendarCredentials(feed_url))
@@ -79,13 +89,13 @@ class CalendarService:
     def invoke_tool(self, name: str, context: ToolInvocationContext, arguments: dict[str, object]) -> ToolInvocationResult:
         try:
             if name == "calendar_list_upcoming":
-                value = [self._event_view(item) for item in self._repository.upcoming_events(datetime.now(UTC).isoformat(), limit=_limit(arguments))]
+                value = self._event_views(self._repository.upcoming_events(datetime.now(UTC).isoformat(), limit=_limit(arguments)))
             elif name == "calendar_search":
-                value = [self._event_view(item) for item in self._repository.search_upcoming(datetime.now(UTC).isoformat(), _required(arguments, "query"), limit=_limit(arguments))]
+                value = self._event_views(self._repository.search_upcoming(datetime.now(UTC).isoformat(), _required(arguments, "query"), limit=_limit(arguments)))
             elif name == "calendar_read_event":
                 event = self._repository.get_event(_required(arguments, "eventId"))
-                if event is None: raise ValueError("Calendar event was not found.")
-                value = self._event_view(event)
+                if event is None or event.status == "cancelled": raise ValueError("Calendar event was not found.")
+                value = self._event_views((event,))[0]
             elif name == "calendar_confirm_action":
                 value = self._confirm(context, arguments)
             elif name in {"calendar_create_event", "calendar_update_event", "calendar_delete_event"}:
@@ -98,8 +108,12 @@ class CalendarService:
 
     def _mutation(self, name: str, context: ToolInvocationContext, arguments: dict[str, object]) -> dict[str, object]:
         operation = name.removeprefix("calendar_").removesuffix("_event")
-        account_id = _required(arguments, "calendarAccountId")
         event_id = _optional(arguments, "eventId")
+        account_id = self._target_account_id(_optional(arguments, "calendarAccountId"), event_id)
+        account = self._repository.get_account(account_id)
+        if account is not None and self._google_route(account):
+            return self._google_mutation(operation, account, event_id, context, arguments)
+        arguments = self._plain_times(operation, event_id, arguments)
         payload = {key: value for key, value in arguments.items() if key not in {"calendarAccountId", "eventId", "actionId", "contentHash"}}
         if operation == "update":
             event = self._repository.get_event(event_id or "")
@@ -110,9 +124,78 @@ class CalendarService:
         value["confirmationRequired"] = True
         return value
 
+    def _target_account_id(self, account_id: str | None, event_id: str | None) -> str:
+        """The calendar a change is for: the one named, else the event's, else the Google Calendar feed (or the
+        only writable calendar)."""
+        if account_id:
+            return account_id
+        event = self._repository.get_event(event_id) if event_id else None
+        if event is not None:
+            return event.account_id
+        accounts = [item for item in self._repository.list_accounts() if item.enabled]
+        for item in accounts:
+            if self._google_route(item):
+                return item.configuration.account_id
+        writable = [item for item in accounts if item.capabilities.can_create]
+        if len(writable) == 1:
+            return writable[0].configuration.account_id
+        if len(accounts) == 1:
+            return accounts[0].configuration.account_id
+        raise ValueError("calendarAccountId is required.")
+
+    def _google_route(self, account: CalendarAccount) -> bool:
+        return self._google is not None and is_google_feed(account)
+
+    def _google_mutation(self, operation: str, account: CalendarAccount, event_id: str | None, context: ToolInvocationContext, arguments: dict[str, object]) -> dict[str, object]:
+        assert self._google is not None
+        if operation == "create":
+            return self._google.create(account, context, arguments)
+        event = self._repository.get_event(event_id or "")
+        if event is None or event.account_id != account.configuration.account_id or event.status == "cancelled":
+            raise ValueError("Calendar event was not found.")
+        if operation == "update":
+            return self._google.update(account, event, context, arguments)
+        review = self._google.review_delete(event)
+        self._google.ready()
+        payload = {"title": event.title, "startsAt": event.starts_at, "endsAt": event.ends_at, "allDay": event.all_day, "calendar": review["calendar"]}
+        value = self._repository.create_pending_action(account_id=account.configuration.account_id, event_id=event.event_id, operation="delete", payload=payload, voice_session_id=context.voice_session_id or "", tool_call_id=context.tool_call_id or "", utterance_id=context.user_utterance_id or 0, writable_elsewhere=True)
+        value["confirmationRequired"] = True
+        value.update(review)
+        return value
+
+    def _plain_times(self, operation: str, event_id: str | None, arguments: dict[str, object]) -> dict[str, object]:
+        """``startsAt: "now"`` and ``durationMinutes`` for calendars written directly (CalDAV)."""
+        if arguments.get("startsAt") != "now" and arguments.get("durationMinutes") is None:
+            return arguments
+        _, zone = event_zone(self._timezone_name, arguments.get("timezone"))
+        value = {key: item for key, item in arguments.items() if key != "durationMinutes"}
+        if value.get("startsAt") == "now":
+            value["startsAt"] = parse_moment("now", "startsAt", zone).isoformat()
+        length = duration(arguments)
+        if length is not None and not value.get("endsAt"):
+            start_text = value.get("startsAt")
+            if not start_text and operation == "update" and event_id:
+                event = self._repository.get_event(event_id)
+                start_text = event.starts_at if event is not None else None
+            if isinstance(start_text, str) and start_text:
+                value["endsAt"] = (parse_moment(start_text, "startsAt", zone) + length).isoformat()
+        return value
+
     def _confirm(self, context: ToolInvocationContext, arguments: dict[str, object]) -> dict[str, object]:
         action_id = _required(arguments, "actionId")
         claim = self._repository.claim_pending_action(action_id=action_id, content_hash=_required(arguments, "contentHash"), voice_session_id=context.voice_session_id or "", approval_utterance_id=context.user_utterance_id or 0)
+        account = self._repository.get_account(str(claim["accountId"]))
+        if account is not None and self._google_route(account):
+            assert self._google is not None
+            try:
+                event = self._repository.get_event(str(claim["eventId"] or ""))
+                if str(claim["operation"]) != "delete" or event is None: raise ValueError("Calendar event was not found.")
+                result = self._google.delete(account, event)
+            except Exception:
+                self._repository.finish_pending_action(action_id, completed=False)
+                raise
+            self._repository.finish_pending_action(action_id, completed=True)
+            return {"state": "completed", "actionId": action_id, **result}
         try:
             self._execute(claim)
         except Exception:
@@ -147,8 +230,10 @@ class CalendarService:
         # One occurrence of a repeating event (expanded or overridden) shares the series UID, and
         # CalDAV updates and deletes act on the whole resource: editing "tomorrow's" occurrence would
         # rewrite or delete every occurrence. Occurrences stay read-only.
-        events = tuple(CalendarEvent(str(uuid5(NAMESPACE_URL, f"calendar:{account.configuration.account_id}:{item.provider_event_id}:{item.recurrence_id}")), account.configuration.account_id, item.provider_event_id, item.recurrence_id, item.title, item.starts_at.astimezone(UTC).isoformat(), item.ends_at.astimezone(UTC).isoformat() if item.ends_at else None, "UTC", item.all_day, item.location, item.calendar_label or account.configuration.label, item.organizer, item.description, item.status, editable and not item.recurrence_id, None, now) for item in values)
-        self._repository.replace_account_events(account.configuration.account_id, events)
+        events = tuple(CalendarEvent(calendar_event_key(account.configuration.account_id, item.provider_event_id, item.recurrence_id), account.configuration.account_id, item.provider_event_id, item.recurrence_id, item.title, item.starts_at.astimezone(UTC).isoformat(), item.ends_at.astimezone(UTC).isoformat() if item.ends_at else None, "UTC", item.all_day, item.location, item.calendar_label or account.configuration.label, item.organizer, item.description, item.status, editable and not item.recurrence_id, None, now) for item in values)
+        # A Google feed may lag behind a change the R1 just made through the Mac bridge: keep those rows meanwhile.
+        keep = LOCAL_WRITE_GRACE if account.configuration.provider_type == "ics_subscription" else None
+        self._repository.replace_account_events(account.configuration.account_id, events, keep_local_writes_for=keep)
 
     def _credential_value(self, account_id: str) -> dict[str, object]:
         envelope = self._credentials.get_envelope(account_id)
@@ -166,6 +251,24 @@ class CalendarService:
         account = self._repository.get_account(account_id)
         if account is None: raise ValueError("Calendar connection was not found.")
         return account
+
+    def _event_views(self, events: tuple[CalendarEvent, ...]) -> list[dict[str, object]]:
+        """Events for the model, with their times in the user's zone and minutes until they start. Google
+        Calendar feed events are editable when the Mac bridge is connected (it makes the change)."""
+        now = datetime.now(UTC)
+        zone = event_zone(self._timezone_name)[1]
+        google_accounts: dict[str, bool] = {}
+        values = []
+        for event in events:
+            if event.account_id not in google_accounts:
+                account = self._repository.get_account(event.account_id)
+                google_accounts[event.account_id] = bool(account is not None and self._google_route(account) and self._google is not None and self._google.bridge.configured())
+            view = self._event_view(event)
+            view.update(local_fields(event, zone, now))
+            if google_accounts[event.account_id] and not event.all_day:
+                view["editable"] = True
+            values.append(view)
+        return values
 
     @staticmethod
     def _event_view(event: CalendarEvent) -> dict[str, object]:

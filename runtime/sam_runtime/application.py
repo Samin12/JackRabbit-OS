@@ -56,6 +56,7 @@ from .domains.mail.tools import MAIL_TOOL_SET, register_mail_tools
 from .domains.calendar.repository import CalendarRepository
 from .domains.calendar.scheduler import CalendarSyncScheduler
 from .domains.calendar.service import CalendarService
+from .domains.calendar.google_bridge import GoogleCalendarBridge
 from .connectors.calendar import CaldavCalendarProviderClient, IcsCalendarProviderClient
 from .tools.calendar import CALENDAR_TOOL_SET, CalendarToolPackage
 from .domains.tasks import TaskRepository, TaskService
@@ -196,6 +197,9 @@ class RuntimeApplication:
             connections=self._connections,
         )
         self._heptabase_routes = HeptabaseRoutes(self._heptabase_journal)
+        # Google Calendar changes from Voice: the same Mac bridge (Composio on the Mac) writes behind the iCal feed.
+        self._calendar_service.use_google_bridge(GoogleCalendarBridge(self._heptabase_journal.bridge_store),
+                                                 timezone_name=lambda: self._heptabase_journal.settings().timezone)
         # Conversation sync to the Mac app: same bridge pairing as the journal and Mac control.
         self._conversation_sync = ConversationSyncService(self._database, self._heptabase_journal.bridge_store)
         self._tools.add_invocation_observer(ConversationSyncObserver(self._conversation_sync))

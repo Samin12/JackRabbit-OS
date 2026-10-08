@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 import hashlib
 import json
 import sqlite3
+from uuid import NAMESPACE_URL, uuid5
 
 from sam_runtime.domains.calendar.models import (
     CalendarAccount,
@@ -15,6 +16,34 @@ from sam_runtime.storage.database import RuntimeDatabase
 
 
 MAX_CALENDAR_ACCOUNTS = 2
+# ``calendar_events.source_etag`` of a row the R1 wrote itself (through the Mac bridge) and the feed has not
+# shown yet: ``samrabbit-write:<create|update|delete>:<UTC ISO time>``. Feed rows never carry it.
+LOCAL_WRITE_PREFIX = "samrabbit-write:"
+LOCAL_WRITE_OPERATIONS = frozenset({"create", "update", "delete"})
+
+
+def calendar_event_key(account_id: str, provider_event_id: str, recurrence_id: str) -> str:
+    """The stable row id of one event occurrence; a feed refresh and the R1's own write compute the same."""
+    return str(uuid5(NAMESPACE_URL, f"calendar:{account_id}:{provider_event_id}:{recurrence_id}"))
+
+
+def local_write_tag(operation: str, at: datetime) -> str:
+    if operation not in LOCAL_WRITE_OPERATIONS:
+        raise ValueError("Calendar operation is invalid.")
+    return f"{LOCAL_WRITE_PREFIX}{operation}:{at.astimezone(UTC).isoformat()}"
+
+
+def parse_local_write_tag(tag: str | None) -> tuple[str, datetime] | None:
+    if not tag or not tag.startswith(LOCAL_WRITE_PREFIX):
+        return None
+    operation, _, stamp = tag[len(LOCAL_WRITE_PREFIX):].partition(":")
+    try:
+        at = datetime.fromisoformat(stamp)
+    except ValueError:
+        return None
+    if operation not in LOCAL_WRITE_OPERATIONS or at.tzinfo is None:
+        return None
+    return operation, at
 
 
 class CalendarAccountLimitError(ValueError):
@@ -202,9 +231,16 @@ class CalendarRepository:
             ).fetchall()
         return tuple(_event(row) for row in rows)
 
-    def create_pending_action(self, *, account_id: str, event_id: str | None, operation: str, payload: dict[str, object], voice_session_id: str, tool_call_id: str, utterance_id: int) -> dict[str, object]:
+    def create_pending_action(self, *, account_id: str, event_id: str | None, operation: str, payload: dict[str, object], voice_session_id: str, tool_call_id: str, utterance_id: int, writable_elsewhere: bool = False) -> dict[str, object]:
+        """``writable_elsewhere``: the change goes through the Mac bridge to the calendar behind a read-only
+        feed, so the feed's own capabilities don't apply (the event must still belong to the account)."""
         from uuid import uuid4
-        self.require_capability(account_id, operation, event_id=event_id)
+        if writable_elsewhere:
+            event = self.get_event(event_id) if event_id is not None else None
+            if self.get_account(account_id) is None or (event_id is not None and (event is None or event.account_id != account_id)):
+                raise ValueError("Calendar event was not found.")
+        else:
+            self.require_capability(account_id, operation, event_id=event_id)
         if not voice_session_id or not tool_call_id or utterance_id <= 0:
             raise ValueError("A trusted agent invocation is required for Calendar changes.")
         canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
@@ -238,20 +274,52 @@ class CalendarRepository:
         self,
         account_id: str,
         events: tuple[CalendarEvent, ...],
+        *,
+        keep_local_writes_for: timedelta | None = None,
+        now: datetime | None = None,
     ) -> None:
+        """Make ``events`` the account's rows.
+
+        With ``keep_local_writes_for``, rows the R1 wrote itself (``local_write_tag``) younger than that win
+        over a feed that has not caught up yet: a new or moved event stays until the feed shows it (same
+        title and times; for a new event any copy), and a deleted one stays hidden while the feed still has
+        it. The rows share the feed's key (account, iCal UID, occurrence), so nothing is ever duplicated.
+        """
+        moment = now or datetime.now(UTC)
         with self._database.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             if connection.execute(
                 "SELECT 1 FROM calendar_accounts WHERE account_id = ?", (account_id,)
             ).fetchone() is None:
                 raise ValueError("Calendar connection was not found.")
+            pending: dict[tuple[str, str], tuple[str, CalendarEvent]] = {}
+            if keep_local_writes_for is not None:
+                rows = connection.execute(
+                    _EVENT_SELECT + " WHERE account_id = ? AND source_etag LIKE ?",
+                    (account_id, LOCAL_WRITE_PREFIX + "%"),
+                ).fetchall()
+                for row in rows:
+                    local = _event(row)
+                    tag = parse_local_write_tag(local.source_etag)
+                    if tag is not None and moment - tag[1] <= keep_local_writes_for:
+                        pending[(local.provider_event_id, local.recurrence_id)] = (tag[0], local)
             connection.execute("CREATE TEMP TABLE calendar_seen_events(event_id TEXT PRIMARY KEY)")
             for event in events:
                 if event.account_id != account_id:
                     raise ValueError("Calendar event belongs to a different connection.")
+                local_write = pending.pop((event.provider_event_id, event.recurrence_id), None)
+                if local_write is not None and not _feed_caught_up(local_write[0], local_write[1], event):
+                    event = local_write[1]
                 _store_event(connection, event)
                 connection.execute(
                     "INSERT INTO calendar_seen_events(event_id) VALUES (?)", (event.event_id,)
+                )
+            for operation, local in pending.values():
+                if operation == "delete":
+                    continue  # the feed no longer has it either: the row goes
+                _store_event(connection, local)
+                connection.execute(
+                    "INSERT INTO calendar_seen_events(event_id) VALUES (?)", (local.event_id,)
                 )
             connection.execute(
                 """
@@ -264,6 +332,19 @@ class CalendarRepository:
                 (account_id,),
             )
             connection.execute("DROP TABLE calendar_seen_events")
+            connection.commit()
+
+    def store_local_write(self, event: CalendarEvent) -> None:
+        """Insert or replace one row the R1 just wrote through the Mac bridge (``local_write_tag``)."""
+        if parse_local_write_tag(event.source_etag) is None:
+            raise ValueError("A local calendar write needs its tag.")
+        with self._database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if connection.execute(
+                "SELECT 1 FROM calendar_accounts WHERE account_id = ?", (event.account_id,)
+            ).fetchone() is None:
+                raise ValueError("Calendar connection was not found.")
+            _store_event(connection, event)
             connection.commit()
 
     def upcoming_events(self, now: str, *, limit: int = 50, all_day_grace_hours: int = 0) -> tuple[CalendarEvent, ...]:
@@ -307,6 +388,24 @@ SELECT event_id, account_id, provider_event_id, recurrence_id, title,
        organizer, description, status, editable, source_etag, synchronized_at
 FROM calendar_events
 """
+
+
+def _feed_caught_up(operation: str, local: CalendarEvent, feed: CalendarEvent) -> bool:
+    if operation == "delete":
+        return False
+    if operation == "create":
+        return True
+    return (feed.title, _instant(feed.starts_at), _instant(feed.ends_at)) == (
+        local.title, _instant(local.starts_at), _instant(local.ends_at))
+
+
+def _instant(value: str | None) -> datetime | None:
+    if value is None:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 def _validate_configuration(configuration: CalendarAccountConfiguration) -> None:
