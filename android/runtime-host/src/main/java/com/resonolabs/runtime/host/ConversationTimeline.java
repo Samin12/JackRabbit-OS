@@ -25,6 +25,13 @@ public final class ConversationTimeline {
     public static final String ORIGIN_USER = "user";
     public static final String ORIGIN_MODEL = "model";
     public static final String ORIGIN_HOST = "host";
+    /**
+     * {@code reason} of a session/conversation the user ended (stop button, side button). The
+     * desktop shows ends with a quiet reason (user, closed, …) without a "Session ended" warning.
+     */
+    public static final String REASON_USER = "user";
+    /** The Voice page was torn down (HOME closed). */
+    public static final String REASON_CLOSED = "closed";
     /** Text fields are cut here (the runtime keeps 16,384-char transcript entries). */
     static final int MAX_TEXT = 16_000;
     /** Host completions and T3 envelopes carry data blobs; keep each event small. */

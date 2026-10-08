@@ -889,8 +889,8 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
         }
 
         // Mirror the end (before finalize), then hand the transcript to the runtime for review.
-        if (!timeline.sessionId().isEmpty()) timeline.sessionEnded("user_stop");
-        timeline.end("user_stop");
+        if (!timeline.sessionId().isEmpty()) timeline.sessionEnded(ConversationTimeline.REASON_USER);
+        timeline.end(ConversationTimeline.REASON_USER);
         assistantSyncId = null;
         dispatchPendingFinalize();
 
@@ -1023,8 +1023,8 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
     }
 
     @Override public void close() {
-        if (!timeline.sessionId().isEmpty()) timeline.sessionEnded("closed");
-        timeline.end("closed");
+        if (!timeline.sessionId().isEmpty()) timeline.sessionEnded(ConversationTimeline.REASON_CLOSED);
+        timeline.end(ConversationTimeline.REASON_CLOSED);
         dispatchPendingFinalize();
         closeTransports();
         cancelReconnect();
