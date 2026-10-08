@@ -115,6 +115,8 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
     private boolean logContent;
     /** The current response already streamed audio: a card tool must not trigger a second reply. */
     private boolean responseAudioSeen;
+    /** Whether the assistant's voice is playing (the Pixel head moves its mouth). */
+    private final AssistantSpeechTracker speech = new AssistantSpeechTracker();
     /** A card "say" button / debug utterance to send as the user's turn once the session is live. */
     private String pendingActionText;
     /** Transcript event type for {@link #pendingActionText}: genui.action or debug.say. */
@@ -458,6 +460,7 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
         assistantMessage = -1;
         assistantDraft.setLength(0);
         sessionState.live();
+        speech.interrupted();
         transcript = "Stopped. I'm listening";
         invalidate();
     }
@@ -544,6 +547,7 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
         clearRecordedEntries();
         transcript = resume ? "Reconnecting…" : "Connecting to Voice…";
         sessionState.connecting();
+        speech.reset();
         setSessionActive(true);
         invalidate();
         runtimeClient = new RuntimeVoiceClient();
@@ -636,6 +640,8 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
             JSONObject event = new JSONObject(json);
             String type = event.optString("type");
             sessionState.onRealtimeEvent(type);
+            speech.onRealtimeEvent(type);
+            if (debuggable && type.startsWith("output_audio_buffer.")) Log.i(TOOL_LOG_TAG, "assistant audio " + type);
             if ("response.created".equals(type)) {
                 responseCoordinator.onResponseCreated();
                 responseAudioSeen = false;
@@ -827,6 +833,7 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
             // Always-on: keep the session (cards, mutes, microphone service) and come back.
             Log.i(LOG_TAG, "always-on: session dropped (" + reason + "); reconnect in " + delay + " ms");
             sessionState.connecting();
+            speech.reset();
             reconnecting = true;
             reconnectAt = SystemClock.uptimeMillis() + delay;
             removeCallbacks(reconnectNow);
@@ -928,7 +935,8 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
                     case LIVE -> micMuted ? 0.4f : 1.1f;
                     case RESPONDING -> 1.9f;
                     case ERROR -> 0.3f;
-                });
+                })
+                .setSpeaking(speech.speaking(state));
         // NONE 290, COMPACT 262, CARDS computed from the stack, EXPANDED 44.
         float orbCenter = transcriptOpen ? 148f : cards.orbCenter();
         orbY = orbY == 0f ? orbCenter : orbY + (orbCenter - orbY) * 0.14f;

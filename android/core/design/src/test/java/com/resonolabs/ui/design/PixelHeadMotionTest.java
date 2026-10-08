@@ -15,11 +15,23 @@ public final class PixelHeadMotionTest {
         for (int frame = 0; frame < PixelHeadMotion.LOOP_FRAMES; frame++) {
             int pose = PixelHeadMotion.poseForFrame(frame);
             assertTrue(pose >= 0 && pose < PixelHeadMotion.POSES);
-            double yaw = 28.0 * Math.sin(2.0 * Math.PI * frame / PixelHeadMotion.LOOP_FRAMES);
+            // The v2 art: a 3/4 view swaying around -32 degrees (frames_info.json yaw_curve).
+            double yaw = -32.0 + 12.0 * Math.sin(2.0 * Math.PI * frame / PixelHeadMotion.LOOP_FRAMES);
             assertEquals("frame " + frame, yaw, PixelHeadMotion.yawForPose(pose), 1e-9);
             used.add(pose);
         }
         assertEquals(PixelHeadMotion.POSES, used.size());
+    }
+
+    @Test public void poseYawLandmarks() {
+        assertEquals(-44.0, PixelHeadMotion.yawForPose(0), 1e-9);
+        assertEquals(-32.0, PixelHeadMotion.yawForPose(PixelHeadMotion.CENTER_POSE), 1e-9);
+        assertEquals(-20.0, PixelHeadMotion.yawForPose(24), 1e-9);
+        assertEquals(12, PixelHeadMotion.CENTER_POSE);
+        assertEquals(PixelHeadMotion.CENTER_POSE, PixelHead.CENTER_POSE);
+        for (int pose = 1; pose < PixelHeadMotion.POSES; pose++) {
+            assertTrue(PixelHeadMotion.yawForPose(pose) > PixelHeadMotion.yawForPose(pose - 1));
+        }
     }
 
     @Test public void loopLandmarks() {
@@ -129,5 +141,95 @@ public final class PixelHeadMotionTest {
         assertTrue(PixelHeadMotion.blinking(1000L, 1000L));
         assertTrue(PixelHeadMotion.blinking(1000L + PixelHeadMotion.BLINK_MS - 1, 1000L));
         assertFalse(PixelHeadMotion.blinking(1000L + PixelHeadMotion.BLINK_MS, 1000L));
+    }
+
+    @Test public void bobIsASlowEasedFloatThatQuickensWhenLit() {
+        // idle: one full bob in 3.2 s; lit: 2.6 s
+        float phase = 0f;
+        for (int i = 0; i < 100; i++) phase = PixelHeadMotion.advanceBob(phase, 16L, 0f);
+        assertEquals(2.0 * Math.PI * 1.6 / 3.2, phase, 1e-3);
+        assertEquals(2.0 * Math.PI * 0.1 / 2.6, PixelHeadMotion.advanceBob(0f, 100L, 1f), 1e-4);
+        // long pauses are capped like the sway, negative steps ignored, phase wraps
+        assertEquals(PixelHeadMotion.advanceBob(0f, PixelHeadMotion.MAX_STEP_MS, 0f),
+                PixelHeadMotion.advanceBob(0f, 60_000L, 0f), 0f);
+        assertEquals(1f, PixelHeadMotion.advanceBob(1f, -50L, 0f), 0f);
+        for (int i = 0; i < 2000; i++) {
+            phase = PixelHeadMotion.advanceBob(phase, 33L, i % 3 == 0 ? 1f : 0f);
+            assertTrue(phase >= 0f && phase < 2.0 * Math.PI);
+        }
+        // a Voice page caller passes 5 px: about +-3.5 px calm, +-4 px lit; 0 at rest
+        assertEquals(0f, PixelHeadMotion.bobOffset(0f, 5f, 0f), 0f);
+        assertEquals(3.5f, PixelHeadMotion.bobOffset((float) (Math.PI / 2), 5f, 0f), 1e-4);
+        assertEquals(-4f, PixelHeadMotion.bobOffset((float) (-Math.PI / 2), 5f, 1f), 1e-4);
+        assertEquals(0f, PixelHeadMotion.bobOffset(1f, 0f, 1f), 0f);
+        // eased: the step per frame is largest through the middle and tiny at the ends
+        float middle = Math.abs(PixelHeadMotion.bobOffset(0.05f, 5f, 0f) - PixelHeadMotion.bobOffset(0f, 5f, 0f));
+        float end = Math.abs(PixelHeadMotion.bobOffset((float) (Math.PI / 2), 5f, 0f)
+                - PixelHeadMotion.bobOffset((float) (Math.PI / 2) - 0.05f, 5f, 0f));
+        assertTrue(end < middle / 10f);
+    }
+
+    @Test public void mouthStaysShutUnlessSpeaking() {
+        PixelHeadMotion.Mouth mouth = new PixelHeadMotion.Mouth();
+        for (long t = 1000L; t < 5000L; t += 16L) assertFalse(mouth.update(false, t));
+        assertTrue(mouth.update(true, 5000L));                 // opens as soon as speech starts
+        assertFalse(mouth.update(false, 5016L));               // and shuts the moment it stops
+        assertFalse(mouth.isOpen());
+        assertTrue(mouth.update(true, 9000L));                 // a new reply opens again at once
+    }
+
+    @Test public void mouthFlapsAtASyllableCadenceWithPhrasePauses() {
+        PixelHeadMotion.Mouth mouth = new PixelHeadMotion.Mouth();
+        long start = 10_000L;
+        boolean open = mouth.update(true, start);
+        long changedAt = start;
+        int syllables = 0;
+        int pauses = 0;
+        int sinceTalk = 0;
+        Set<Long> openLengths = new HashSet<>();
+        long end = start + 20_000L;
+        for (long t = start + 1; t <= end; t++) {
+            boolean now = mouth.update(true, t);
+            if (now == open) continue;
+            long length = t - changedAt;
+            if (open) {
+                assertTrue("open " + length, length >= 70L && length <= 110L);
+                openLengths.add(length);
+                syllables++;
+                sinceTalk++;
+            } else if (length >= PixelHeadMotion.MOUTH_PAUSE_MIN_MS) {
+                assertTrue("pause " + length, length <= 420L);
+                assertTrue("phrase of " + sinceTalk, sinceTalk >= 5 && sinceTalk <= 12);
+                pauses++;
+                sinceTalk = 0;
+            } else {
+                assertTrue("closed " + length, length >= 55L && length <= 90L);
+            }
+            open = now;
+            changedAt = t;
+        }
+        float rate = syllables / 20f;
+        assertTrue("syllables per second " + rate, rate >= 4.5f && rate <= 8f);
+        assertTrue(pauses >= 10);
+        assertTrue(openLengths.size() > 10);                   // varied, not a metronome
+    }
+
+    @Test public void mouthIsDeterministicAndSurvivesFrameDropsAndStalls() {
+        PixelHeadMotion.Mouth a = new PixelHeadMotion.Mouth();
+        PixelHeadMotion.Mouth b = new PixelHeadMotion.Mouth();
+        int opens = 0;
+        boolean was = false;
+        for (long t = 0L; t < 4000L; t += 16L) {
+            boolean open = a.update(true, 100L + t);
+            assertEquals(open, b.update(true, 100L + t));
+            if (open && !was) opens++;
+            was = open;
+        }
+        assertTrue("opens in 4 s at 60 fps: " + opens, opens >= 16 && opens <= 32);
+        // a dropped frame or a hidden page: no burst of catch-up flaps, it simply carries on
+        long t = 100_000L;
+        a.update(true, t);
+        assertTrue(a.update(true, t + 60_000L));               // after a stall it restarts open
+        a.update(true, t + 60_200L);                           // 200 ms jump: catches up in bounds
     }
 }

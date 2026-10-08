@@ -122,6 +122,15 @@ public final class FluidOrb {
     }
 
     /**
+     * True while the assistant's voice is playing (Voice page). Only a hero orb drawn as the
+     * Pixel head shows it (its mouth moves); the fluid orb already reads energy and speed.
+     */
+    public FluidOrb setSpeaking(boolean speaking) {
+        if (head != null) head.setSpeaking(speaking);
+        return this;
+    }
+
+    /**
      * The orb's colour; pages also tint the glow behind the orb with it. A Pixel head hero is
      * monochrome, so there the default orb blue becomes a faint neutral cool grey (closer to the
      * black stage the head is designed for); status colours such as the error red still show.
@@ -208,8 +217,13 @@ public final class FluidOrb {
         }
     }
 
-    /** Gentle vertical bob so the orb reads as floating. */
+    /**
+     * Gentle vertical bob so the orb reads as floating. A Pixel head hero floats on its own
+     * curve instead (about 0.7 x {@code amplitude}, one eased bob every 3.2 s; see
+     * {@link PixelHead#bob}); callers add this to the centre they draw at, so nothing bobs twice.
+     */
     public float bob(float amplitude) {
+        if (head != null && OrbStyleSetting.current() == OrbStyle.PIXEL_HEAD) return head.bob(amplitude);
         return (float) Math.sin(phase * 0.9f) * amplitude;
     }
 

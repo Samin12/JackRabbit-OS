@@ -14,10 +14,15 @@ import java.nio.charset.StandardCharsets;
  * Debug-only voice test hooks (src/debug; never in release builds). {@code -p} is required.
  *
  * <pre>
- * adb shell am broadcast -p com.resonolabs.voice.engineering -a com.resonolabs.voice.DEBUG_SAY --es text "What's on my calendar tomorrow?" [--ez quiet true]
+ * adb shell 'am broadcast -p com.resonolabs.voice.engineering -a com.resonolabs.voice.DEBUG_SAY --es text "What is on my calendar tomorrow?" --ez quiet true'
+ * adb shell am broadcast -p com.resonolabs.voice.engineering -a com.resonolabs.voice.DEBUG_SAY --es b64 $(printf '%s' "$TEXT" | base64) --ez quiet true
  * adb shell am broadcast -p com.resonolabs.voice.engineering -a com.resonolabs.voice.DEBUG_ANNOUNCE --es b64 $(printf '%s' "$JSON" | base64)
  * adb shell am broadcast -p com.resonolabs.voice.engineering -a com.resonolabs.voice.DEBUG_STATE
  * </pre>
+ * Quote the whole remote command (or use {@code --es b64}): {@code adb shell} re-splits its
+ * arguments on the device, so an unquoted multi-word {@code --es text "..."} arrives as its first
+ * word only and the flags after it ({@code --ez quiet true}) are silently dropped, which starts
+ * an audible session with a live microphone.
  * DEBUG_SAY sends the text as the user's turn in the live session (conversation.item.create
  * user input_text + response.create), starting a session first if none is live (the text then
  * replaces the connect greeting); {@code --ez quiet true} mutes the microphone and speaker for
