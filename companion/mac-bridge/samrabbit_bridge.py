@@ -15,6 +15,9 @@ and, for the R1's voice orchestrator, Mac control through the ``cua-driver`` CLI
 and LaunchServices (``samrabbit_mac.py``): ``GET /v1/mac/state``, ``POST /v1/mac/open``,
 ``GET /v1/mac/read``, ``POST /v1/mac/act`` and ``GET /v1/mac/screenshot``.
 
+Conversation sync (``samrabbit_sync.py``): the R1 mirrors every conversation to ``/v1/sync/*``
+and the SamRabbit desktop app reads it back over loopback with its own token.
+
 Every route needs ``Authorization: Bearer <token>`` (the token lives in
 ``~/.config/samrabbit/bridge-token``, mode 0600). Journal text and the token are
 never logged. Stdlib only; runs on the macOS system Python 3.9+.
@@ -50,6 +53,11 @@ if _HERE not in sys.path:
     sys.path.append(_HERE)
 
 import samrabbit_mac as mac  # noqa: E402
+
+try:  # conversation sync must never keep the journal or Mac control from starting
+    import samrabbit_sync as sync  # noqa: E402
+except Exception:  # noqa: BLE001
+    sync = None  # type: ignore[assignment]
 
 VERSION = "1.1.0"
 SERVICE = "samrabbit-bridge"
@@ -384,7 +392,8 @@ class BridgeServer(ThreadingHTTPServer):
 
     def __init__(self, address: Tuple[str, int], *, token: TokenFile, cli: HeptabaseCli,
                  cli_timeout: float = CLI_TIMEOUT_SECONDS, allow_any_client: bool = False,
-                 mac_control: Optional[mac.MacControl] = None) -> None:
+                 mac_control: Optional[mac.MacControl] = None, sync_dir: Optional[str] = None,
+                 desktop_token_file: Optional[str] = None) -> None:
         self.token = token
         self.cli = cli
         self.mac = mac_control or mac.MacControl(mac.CuaDriver())
@@ -395,12 +404,20 @@ class BridgeServer(ThreadingHTTPServer):
         self.scratch = tempfile.mkdtemp(prefix="samrabbit-bridge-")  # 0700
         self._health: Optional[Tuple[float, Dict[str, Any]]] = None
         self._health_lock = threading.Lock()
+        self.sync: Any = None  # samrabbit_sync.SyncService when a sync folder is given
         super().__init__(address, BridgeHandler)
+        if sync is not None and sync_dir:
+            try:
+                self.sync = sync.SyncService(sync_dir, desktop_token_file or sync.DEFAULT_DESKTOP_TOKEN_FILE)
+            except Exception:  # noqa: BLE001
+                _LOG.exception("conversation sync unavailable")
 
     def server_close(self) -> None:
         super().server_close()
         shutil.rmtree(self.scratch, ignore_errors=True)
         self.mac.close()
+        if self.sync is not None:
+            self.sync.close()
 
     def health(self) -> Dict[str, Any]:
         with self._health_lock:
@@ -428,6 +445,7 @@ class BridgeServer(ThreadingHTTPServer):
                 "cli": {"available": version is not None, "version": version},
                 "app": {"reachable": reachable, "detail": detail},
                 "mac": capabilities,
+                "sync": self.sync.health() if self.sync is not None else {"available": False},
                 "checkedAt": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
             }
             self._health = (time.monotonic(), value)
@@ -498,6 +516,12 @@ class BridgeHandler(BaseHTTPRequestHandler):
         started = time.monotonic()
         route = urlsplit(self.path).path
         status = 500
+        if self.server.sync is not None and self.server.sync.handles(route):
+            # /v1/sync/*: bearer + private peer from the R1, loopback + desktop token for the app.
+            status, code = self.server.sync.serve(self, method, route)
+            _LOG.info("%s %s %s %dms%s", method, self.server.sync.route_label(route), status,
+                      int((time.monotonic() - started) * 1000), f" {code}" if code else "")
+            return
         try:
             if not client_allowed(self.client_address[0]) and \
                     (not self.server.allow_any_client or route.startswith(_MAC_PREFIX)):
@@ -567,7 +591,10 @@ class BridgeHandler(BaseHTTPRequestHandler):
         if route == "/v1/mac/screenshot":
             self._require(method, "GET")
             query = self._query()
-            return 200, control.screenshot(_one(query, "app"), _number(query, "max"))
+            shot = control.screenshot(_one(query, "app"), _number(query, "max"))
+            if self.server.sync is not None:  # keep it in the conversation (blobId, imageEventId)
+                shot = self.server.sync.screenshot_taken(shot, _one(query, "conversation"))
+            return 200, shot
         raise BridgeError(404, "not_found", "Not found.")
 
     def _query(self) -> Dict[str, List[str]]:
@@ -637,10 +664,13 @@ def _number(query: Dict[str, List[str]], key: str) -> Optional[int]:
 def make_server(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, *, token_file: str = DEFAULT_TOKEN_FILE,
                 cli: Optional[str] = None, cli_timeout: float = CLI_TIMEOUT_SECONDS,
                 allow_any_client: bool = False, driver: Optional[str] = None,
-                mac_control: Optional[mac.MacControl] = None) -> BridgeServer:
+                mac_control: Optional[mac.MacControl] = None, sync_dir: Optional[str] = None,
+                desktop_token_file: Optional[str] = None) -> BridgeServer:
+    """Conversation sync runs only with a ``sync_dir`` (the command line passes the default one)."""
     return BridgeServer((host, port), token=TokenFile(token_file), cli=HeptabaseCli(cli),
                         cli_timeout=cli_timeout, allow_any_client=allow_any_client,
-                        mac_control=mac_control or mac.MacControl(mac.CuaDriver(driver)))
+                        mac_control=mac_control or mac.MacControl(mac.CuaDriver(driver)),
+                        sync_dir=sync_dir, desktop_token_file=desktop_token_file)
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -655,12 +685,18 @@ def main(argv: Optional[List[str]] = None) -> int:
                         help="path to the cua-driver CLI (default: found on PATH or in the usual install folders)")
     parser.add_argument("--allow-any-client", action="store_true",
                         help="accept peers outside loopback/private networks (not recommended)")
+    parser.add_argument("--sync-dir", default=os.environ.get("SAMRABBIT_SYNC_DIR") or
+                        (sync.DEFAULT_SYNC_DIR if sync is not None else ""),
+                        help="conversation sync store (empty turns sync off)")
+    parser.add_argument("--desktop-token-file", default=os.environ.get("SAMRABBIT_DESKTOP_TOKEN_FILE") or None,
+                        help="token the SamRabbit desktop app sends (default ~/.config/samrabbit/desktop-token)")
     options = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stderr)
     try:
         server = make_server(options.host, options.port, token_file=options.token_file, cli=options.cli,
                              cli_timeout=options.cli_timeout, allow_any_client=options.allow_any_client,
-                             driver=options.cua_driver)
+                             driver=options.cua_driver, sync_dir=options.sync_dir or None,
+                             desktop_token_file=options.desktop_token_file)
     except (OSError, ValueError) as error:
         _LOG.error("cannot start: %s", error)
         return 2
@@ -672,8 +708,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     cli_path = server.cli.executable()
-    _LOG.info("%s %s listening on %s:%d (cli %s, cua-driver %s)", SERVICE, VERSION, options.host,
-              server.server_address[1], cli_path or "missing", "found" if server.mac.driver.executable() else "missing")
+    _LOG.info("%s %s listening on %s:%d (cli %s, cua-driver %s, sync %s)", SERVICE, VERSION, options.host,
+              server.server_address[1], cli_path or "missing", "found" if server.mac.driver.executable() else "missing",
+              "on" if server.sync is not None else "off")
     server.serve_forever(poll_interval=0.5)
     _LOG.info("stopped")
     return 0
