@@ -3,7 +3,7 @@
 import { ApiError, SyncStream, api, pageHasMore } from './api.js';
 import { tickTimers } from './cards.js';
 import { h } from './dom.js';
-import { clip, dayLabel, plural, relativeTime, shortWhen, stamp } from './format.js';
+import { clip, dayLabel, plural, relativeTime, shortWhen, stamp, toMs } from './format.js';
 import { icon } from './icons.js';
 import { createOrb } from './orb.js';
 import { ConversationStore } from './store.js';
@@ -61,6 +61,7 @@ const state = {
   lastInteraction: 0,
   hasMore: false,
   loadingMore: false,
+  pageBefore: null, // lastAt (ms) where the next page of older conversations starts
   frameHeights: new Map(),
   openTools: new Set(),
   initialSelectionDone: false,
@@ -511,7 +512,11 @@ async function loadList({ manual = false, quiet = false } = {}) {
     const body = await api.conversations({ limit: PAGE });
     const list = body && Array.isArray(body.conversations) ? body.conversations : [];
     store.mergeList(list);
-    if (!state.hasMore) state.hasMore = list.length >= PAGE;
+    if (state.pageBefore == null) {
+      // The first page sets where "older" starts; later refreshes of the newest page never move it.
+      state.pageBefore = nextBefore(body, list);
+      state.hasMore = list.length >= PAGE;
+    }
     const wasError = state.listStatus === 'error';
     state.listStatus = 'ok';
     state.listError = null;
@@ -534,18 +539,26 @@ async function loadList({ manual = false, quiet = false } = {}) {
   }
 }
 
+/** Where the page after `body` starts: the bridge's nextBefore, else the last row's lastAt (ms). */
+function nextBefore(body, list) {
+  const last = list[list.length - 1];
+  const value = toMs(body && body.nextBefore) ?? (last ? toMs(last.lastAt) ?? toMs(last.startedAt) : null);
+  return value == null ? null : Math.floor(value); // the bridge takes whole epoch ms
+}
+
 async function loadMore() {
-  if (state.loadingMore) return;
-  const list = store.list();
-  const oldest = list[list.length - 1];
-  if (!oldest) return;
+  // Pages follow their own boundary, not the oldest conversation on screen: a search can bring in a
+  // much older one, and paging from it would skip everything in between.
+  if (state.loadingMore || state.pageBefore == null) return;
   state.loadingMore = true;
   schedule('list');
   try {
-    const body = await api.conversations({ limit: PAGE, before: oldest.lastAt });
+    const body = await api.conversations({ limit: PAGE, before: state.pageBefore });
     const page = body && Array.isArray(body.conversations) ? body.conversations : [];
-    const added = store.mergeList(page);
-    state.hasMore = page.length >= PAGE && added.length > 0;
+    store.mergeList(page);
+    const next = nextBefore(body, page);
+    state.hasMore = page.length >= PAGE && next != null && next < state.pageBefore;
+    if (next != null) state.pageBefore = Math.min(state.pageBefore, next);
   } catch {
     toast('Could not load older conversations');
   } finally {
