@@ -298,7 +298,8 @@ class MacToolHandlers:
             if failure.code == "screen_locked":
                 # Text only: no structuredContent, so no image for the model, no chat card, no sync image.
                 return ToolInvocationResult(_dump({"isError": True, "code": "screen_locked", "screenLocked": True,
-                                                   "image": "none", "message": SCREEN_LOCKED_NOTE}), is_error=True)
+                                                   "image": "none", "message": SCREEN_LOCKED_NOTE}), is_error=True,
+                                            model_note=True)
             if failure.code != "screen_recording_required":
                 raise
             session = (context.voice_session_id if context is not None else None) or ""
@@ -320,7 +321,8 @@ class MacToolHandlers:
             payload = {"isError": True, "code": failure.code, "message": message}
             if failure.fix and not told:
                 payload["fix"] = failure.fix
-            return ToolInvocationResult(_dump(payload), is_error=True)
+            # The message says what to tell the user (once, then nothing): no generic failure note on top.
+            return ToolInvocationResult(_dump(payload), is_error=True, model_note=True)
         summary: dict[str, object] = {
             "ok": True,
             "image": "attached",

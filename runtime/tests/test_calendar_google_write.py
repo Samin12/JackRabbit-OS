@@ -144,6 +144,64 @@ class GoogleCalendarWriteTest(unittest.TestCase):
         self.assertEqual(start + timedelta(minutes=30), datetime.fromisoformat(body["endsAt"]))
         self.assertEqual(NEW_YORK.utcoffset(start.replace(tzinfo=None)), start.utcoffset(), "in America/New_York")
 
+    def test_now_in_any_case_and_whole_number_float_durations(self) -> None:
+        for starts, minutes in (("Now", 30.0), (" NOW ", 45)):
+            with self.subTest(starts=starts, minutes=minutes):
+                failed, value = self.invoke("calendar_create_event", {"title": "Focus", "startsAt": starts,
+                                                                      "durationMinutes": minutes})
+                self.assertFalse(failed, value)
+                body = self.fake.bodies(CREATE)[-1]
+                length = datetime.fromisoformat(body["endsAt"]) - datetime.fromisoformat(body["startsAt"])
+                self.assertEqual(timedelta(minutes=int(minutes)), length)
+        failed, value = self.invoke("calendar_create_event", {"title": "Focus", "startsAt": "now",
+                                                              "durationMinutes": 30.5})
+        self.assertTrue(failed)
+        self.assertIn("whole number of minutes", value)
+
+    def test_primary_the_google_email_or_the_label_name_the_google_calendar(self) -> None:
+        # A second Google feed: a shared (group) calendar, listed first by label.
+        work = str(uuid4())
+        group = "c_0123abcd@group.calendar.google.com"
+        self.repo.create_account(CalendarAccountConfiguration(
+            work, "ics_subscription", "Work calendar",
+            "https://calendar.google.com/calendar/ical/c_0123abcd%40group.calendar.google.com/private-0123/basic.ics",
+            None), None)
+        self.repo.set_capabilities(work, CalendarCapabilities(False, False, False))
+        for name, calendar in (("primary", "samin@aianswer.us"), ("Primary", "samin@aianswer.us"),
+                               ("samin@aianswer.us", "samin@aianswer.us"), ("SAMIN@aianswer.us ", "samin@aianswer.us"),
+                               ("Work calendar", group), ("work  CALENDAR", group), (group, group)):
+            with self.subTest(name=name):
+                failed, value = self.invoke("calendar_create_event", {"calendarAccountId": name, "title": "Sync",
+                                                                      "startsAt": "now", "durationMinutes": 15})
+                self.assertFalse(failed, value)
+                self.assertEqual("completed", value["state"], "added through the Mac bridge, not reviewed")
+                self.assertEqual(calendar, self.fake.bodies(CREATE)[-1]["calendarId"])
+        before = len(self.fake.bodies(CREATE))
+        failed, value = self.invoke("calendar_create_event", {"calendarAccountId": "not-a-calendar", "title": "x",
+                                                              "startsAt": "now", "durationMinutes": 15})
+        self.assertTrue(failed)
+        self.assertEqual("Calendar connection was not found.", value)
+        self.assertEqual(before, len(self.fake.bodies(CREATE)))
+
+    def test_the_label_and_the_bridges_google_account_name_the_feed_but_other_emails_do_not(self) -> None:
+        with self.database.connect() as connection:
+            connection.execute("UPDATE calendar_accounts SET label = 'My Google', endpoint = ? WHERE account_id = ?",
+                               ("https://calendar.google.com/calendar/ical/c_team%40group.calendar.google.com/"
+                                "private-0123/basic.ics", self.account_id))
+            connection.commit()
+        attempt = lambda name: self.invoke("calendar_create_event", {"calendarAccountId": name,  # noqa: E731
+                                                                     "title": "x", "startsAt": "now",
+                                                                     "durationMinutes": 15})
+        failed, value = attempt("my google")
+        self.assertFalse(failed, value)
+        # The bridge's status (now known) says which Google account the Mac writes with: samin@aianswer.us.
+        failed, value = attempt("samin@aianswer.us")
+        self.assertFalse(failed, value)
+        self.assertEqual(2, len(self.fake.bodies(CREATE)))
+        failed, value = attempt("someone.else@example.com")
+        self.assertEqual((True, "Calendar connection was not found."), (failed, value), "never a silent guess")
+        self.assertEqual(2, len(self.fake.bodies(CREATE)))
+
     def test_an_event_needs_an_end_and_must_end_after_it_starts(self) -> None:
         start, end = self.soon()
         cases = (
@@ -281,6 +339,44 @@ class GoogleCalendarWriteTest(unittest.TestCase):
         self.service.sync(self.account_id)
         with self.database.connect() as connection:
             self.assertEqual(0, connection.execute("SELECT COUNT(*) FROM calendar_events").fetchone()[0])
+
+    def test_changes_to_events_with_guests_say_the_guests_were_not_notified(self) -> None:
+        start, end = self.soon(hours=5)
+        self.feed.body = ics(
+            vevent("team0123@google.com", "Team sync", start, end, "ORGANIZER;CN=Samin:mailto:samin@aianswer.us\r\n"
+                   "ATTENDEE:mailto:partner@example.com\r\n"),
+            vevent("invite0123@google.com", "Partner pitch", start + timedelta(hours=1), end + timedelta(hours=1),
+                   "ORGANIZER;CN=Partner:mailto:partner@example.com\r\n"),
+            vevent("solo0123@google.com", "Focus", start + timedelta(hours=2), end + timedelta(hours=2)))
+        self.service.sync(self.account_id)
+        events = {event.title: event for event in self.upcoming()}
+        self.fake.guests = {"team0123@google.com": 1, "solo0123@google.com": 0}
+        failed, value = self.invoke("calendar_update_event", {"eventId": events["Team sync"].event_id, "title": "Team sync v2"})
+        self.assertFalse(failed, value)
+        self.assertEqual((False, 1), (value["guestsNotified"], value["guests"]))
+        self.assertIn("guests were not notified", value["summary"])
+        failed, value = self.invoke("calendar_update_event", {"eventId": events["Focus"].event_id, "title": "Deep focus"})
+        self.assertFalse(failed, value)
+        self.assertNotIn("guestsNotified", value, "no guests, nothing to say")
+        self.assertNotIn("guests", value["summary"])
+        # Someone else organizes it: Samin is a guest, so it has guests even without Google's count.
+        failed, value = self.invoke("calendar_update_event", {"eventId": events["Partner pitch"].event_id,
+                                                              "title": "Partner pitch (moved)"})
+        self.assertFalse(failed, value)
+        self.assertIn("guests were not notified", value["summary"])
+        # Deleting: the question and the result both say it.
+        failed, review = self.invoke("calendar_delete_event", {"eventId": events["Partner pitch"].event_id})
+        self.assertFalse(failed, review)
+        self.assertFalse(review["guestsNotified"])
+        self.assertIn("Its guests won't be notified", review["summary"])
+        failed, done = self.invoke("calendar_confirm_action", {"actionId": review["actionId"],
+                                                               "contentHash": review["contentHash"]})
+        self.assertFalse(failed, done)
+        self.assertIn("guests were not notified", done["summary"])
+        self.assertFalse(done["guestsNotified"])
+        failed, review = self.invoke("calendar_delete_event", {"eventId": events["Focus"].event_id})
+        self.assertFalse(failed, review)
+        self.assertIn("No emails are sent, so guests, if it has any, won't be told.", review["summary"])
 
     # ------------------------------------------------------------------ honest failures
 

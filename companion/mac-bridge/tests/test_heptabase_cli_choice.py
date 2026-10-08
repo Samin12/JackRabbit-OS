@@ -2,6 +2,12 @@
 
 A bridge run from a checkout (tests, dev bridges on other ports) defaults to a dry-run CLI, even when a
 ``heptabase`` executable is first on PATH, so a stray test can never write to the user's Heptabase journal.
+A dry-run bridge says so (``/health`` ``dryRun``, ``cli.mode`` ``dryRun``, ``app.reachable`` false, and
+``dryRun: true`` on every journal answer), so a runtime paired with it never reports an entry as sent.
+
+These tests can never reach the real ``heptabase`` CLI: PATH holds only the recording fake and system folders
+without a ``heptabase`` (checked in setUp), the ``/opt/homebrew/bin/heptabase`` fallback is pointed at a missing
+file, and every test that may run a CLI first asserts that the resolved executable is the fake.
 
 Run: python3 -m unittest discover -s companion/mac-bridge/tests
 """
@@ -12,6 +18,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -45,9 +52,15 @@ class CliChoiceTest(unittest.TestCase):
             'if [ "$2" = "append" ]; then echo \'{"date":"2026-10-08","title":"Oct 8","contentMd5":"x"}\'; exit 0; fi\n'
             'echo \'{"date":"2026-10-08","title":"Oct 8","content":"{\\"type\\":\\"doc\\",\\"content\\":[]}"}\'\n')
         self.path_cli.chmod(0o755)
+        # Hermetic PATH: the fake, then system folders that have no heptabase (never /opt/homebrew/bin).
         self.old_path = os.environ.get("PATH", "")
-        os.environ["PATH"] = f"{bin_dir}{os.pathsep}{self.old_path}"
+        os.environ["PATH"] = os.pathsep.join([str(bin_dir), "/usr/bin", "/bin", "/usr/sbin", "/sbin"])
         self.addCleanup(self._restore_path)
+        # ... and the FALLBACK_CLI (/opt/homebrew/bin/heptabase) is a file that does not exist.
+        self.old_fallback = bridge.FALLBACK_CLI
+        bridge.FALLBACK_CLI = str(root / "no-such-heptabase")
+        self.addCleanup(setattr, bridge, "FALLBACK_CLI", self.old_fallback)
+        self.assertEqual(str(self.path_cli), shutil.which("heptabase"), "only the fake heptabase is on PATH")
         self.token_file = root / "bridge-token"
         self.token_file.write_text(TOKEN + "\n")
         self.token_file.chmod(0o600)
@@ -78,17 +91,29 @@ class CliChoiceTest(unittest.TestCase):
     def real_calls(self) -> list:
         return self.calls.read_text().splitlines() if self.calls.exists() else []
 
+    def assert_runs_only_the_fake(self, cli: object) -> None:
+        """Before anything runs a CLI: the one this bridge would run is the recording fake in the temp folder."""
+        executable = cli.executable()  # type: ignore[attr-defined]
+        self.assertEqual(str(self.path_cli), executable)
+        self.assertTrue(Path(executable).resolve().is_relative_to(Path(self.tmp.name).resolve()))
+        self.assertNotEqual(os.path.realpath(self.old_fallback), os.path.realpath(executable))
+
     def test_a_bridge_from_a_checkout_is_dry_run_even_with_heptabase_on_path(self) -> None:
         self.assertEqual(bridge.CLI_DRY_RUN, bridge.default_cli_choice(str(ROOT)))
         base = self.start()  # no cli: what a test or a dev bridge on another port gets
+        self.assertIsInstance(self.server.cli, bridge.DryRunHeptabaseCli)
         health = self.call(base, "GET", "/health")
-        self.assertEqual({"available": True, "version": "dry-run", "mode": "dry-run"}, health["cli"])
-        self.assertTrue(health["app"]["reachable"], "dry-run still answers so dev flows work")
+        self.assertEqual({"available": True, "version": "dry-run", "mode": "dryRun"}, health["cli"])
+        self.assertIs(True, health["dryRun"])
+        self.assertEqual({"reachable": False, "detail": "bridge_dry_run"}, health["app"],
+                         "a dry run never reaches Heptabase, so the app is not reported reachable")
         written = self.call(base, "POST", "/v1/heptabase/journal/append",
                             {"date": "2026-10-08", "content": "What's on my calendar this afternoon?"})
         self.assertEqual("2026-10-08", written["date"])
+        self.assertIs(True, written["dryRun"], "the answer says nothing reached Heptabase")
         read = self.call(base, "GET", "/v1/heptabase/journal/read?date=2026-10-08")
         self.assertEqual("What's on my calendar this afternoon?", read["text"])
+        self.assertIs(True, read["dryRun"])
         self.assertEqual([], self.real_calls(), "the heptabase CLI on PATH was never run")
 
     def test_environment_and_flag_values(self) -> None:
@@ -103,9 +128,23 @@ class CliChoiceTest(unittest.TestCase):
         self.assertEqual("real", explicit.mode)
 
     def test_the_real_cli_is_used_only_when_asked_for(self) -> None:
+        # "auto" resolves the CLI on PATH: the hermetic PATH and the missing fallback (setUp) leave only the fake,
+        # and that is checked before the health check (which runs --version) and before the append.
         base = self.start(cli="auto")
+        self.assertIsInstance(self.server.cli, bridge.HeptabaseCli)
+        self.assert_runs_only_the_fake(self.server.cli)
+        health = self.call(base, "GET", "/health")
+        self.assertEqual(("real", False), (health["cli"]["mode"], health["dryRun"]))
+        self.assert_runs_only_the_fake(self.server.cli)
+        written = self.call(base, "POST", "/v1/heptabase/journal/append", {"date": "2026-10-08", "content": "Explicit."})
+        self.assertNotIn("dryRun", written)
+        self.assertTrue(any(line.startswith("journal append 2026-10-08") for line in self.real_calls()))
+
+    def test_an_explicit_path_is_the_cli_that_runs(self) -> None:
+        base = self.start(cli=str(self.path_cli))
+        self.assert_runs_only_the_fake(self.server.cli)
         self.assertEqual("real", self.call(base, "GET", "/health")["cli"]["mode"])
-        self.call(base, "POST", "/v1/heptabase/journal/append", {"date": "2026-10-08", "content": "Explicit."})
+        self.call(base, "POST", "/v1/heptabase/journal/append", {"date": "2026-10-08", "content": "By path."})
         self.assertTrue(any(line.startswith("journal append 2026-10-08") for line in self.real_calls()))
 
     def test_the_installed_copy_defaults_to_the_real_cli(self) -> None:

@@ -5,6 +5,10 @@ wrong (events at noon read out as "in the next 30 minutes" at 10:33). With ``wit
 runtime does the filtering with its own clock: the answer holds only events that overlap the window, each with
 its local time, a speakable label for the window, and the first event after it, clearly marked as later.
 
+All-day events (a birthday, an offsite) are not "in the next 30 minutes": they count as inside a window only when
+the window overlaps their local day and is at least ``ALL_DAY_MIN_WINDOW`` (6 hours) long, as for "today" or "this
+afternoon". In a shorter window the ones on that day come separately as ``allDayToday``.
+
 Read-only: it uses ``CalendarRepository.upcoming_events`` and nothing else.
 """
 
@@ -15,11 +19,13 @@ from datetime import UTC, datetime, time, timedelta, tzinfo
 
 from sam_runtime.domains.heptabase_journal.localtime import DEFAULT_TIMEZONE, resolve_zone
 
+from .google_writes import is_now, whole_number
 from .models import CalendarEvent
 from .repository import CalendarRepository
 
 WINDOW_KEYS = ("withinMinutes", "from", "to")
 MAX_WINDOW = timedelta(days=7)
+ALL_DAY_MIN_WINDOW = timedelta(hours=6)
 # All-day events are stored as UTC midnight of their floating date; keep them that much longer so a zone
 # behind UTC still sees "today" (the same grace the board widgets use).
 _ALL_DAY_GRACE_HOURS = 14
@@ -46,7 +52,9 @@ def list_window(
     start, end = _bounds(arguments, now.astimezone(UTC), zone)
     candidates = repository.upcoming_events(start.isoformat(), limit=_SCAN_LIMIT,
                                             all_day_grace_hours=_ALL_DAY_GRACE_HOURS)
+    all_day_counts = end - start >= ALL_DAY_MIN_WINDOW
     inside: list[dict[str, object]] = []
+    all_day_beside: list[dict[str, object]] = []  # all-day events of the day(s) a short window falls on
     later: CalendarEvent | None = None
     for event in candidates:
         bounds = _event_bounds(event, zone)
@@ -54,10 +62,11 @@ def list_window(
             continue
         event_start, event_end = bounds
         if _overlaps(event_start, event_end, start, end):
-            if len(inside) < limit:
+            target = inside if all_day_counts or not event.all_day else all_day_beside
+            if len(target) < limit:
                 item = view(event)
                 item.update(_local_fields(event, event_start, event_end, start, zone))
-                inside.append(item)
+                target.append(item)
         elif event_start >= end and later is None and not event.all_day:
             later = event
     label = _window_label(start, end, zone)
@@ -78,6 +87,10 @@ def list_window(
     else:
         result["note"] = (f"Nothing is on the calendar {label}. Say so. nextAfterWindow, if present, is after "
                           "this window: you may mention it as later, never as inside the window.")
+    if all_day_beside:
+        result["allDayToday"] = all_day_beside
+        result["note"] += (" allDayToday lists all-day events of that day: they are not at a time in this window, "
+                           "so do not count them as in it; mention them only as all day, if at all.")
     return result
 
 
@@ -97,15 +110,17 @@ def _zone_name(value: object, default: str = DEFAULT_TIMEZONE) -> str:
 
 def _bounds(arguments: dict[str, object], now: datetime, zone: tzinfo) -> tuple[datetime, datetime]:
     minutes = arguments.get("withinMinutes")
-    if minutes is not None and (not isinstance(minutes, int) or isinstance(minutes, bool) or minutes < 1):
-        raise ValueError("withinMinutes must be a whole number of minutes.")
-    start = _instant(arguments.get("from"), "from", zone) or now
+    if minutes is not None:
+        minutes = whole_number(minutes)
+        if minutes is None or minutes < 1:
+            raise ValueError("withinMinutes must be a whole number of minutes.")
+    start = _instant(arguments.get("from"), "from", zone, now) or now
     if minutes is not None and arguments.get("to") is not None:
         raise ValueError("Pass withinMinutes or to, not both.")
     if minutes is not None:
         end = start + timedelta(minutes=int(minutes))
     else:
-        end = _instant(arguments.get("to"), "to", zone)
+        end = _instant(arguments.get("to"), "to", zone, now)
         if end is None:
             raise ValueError("A window needs withinMinutes or to (for example withinMinutes 30).")
     if end <= start:
@@ -115,10 +130,12 @@ def _bounds(arguments: dict[str, object], now: datetime, zone: tzinfo) -> tuple[
     return start, end
 
 
-def _instant(value: object, key: str, zone: tzinfo) -> datetime | None:
-    """An ISO 8601 date or date-time; without a UTC offset it is local time in ``zone``."""
+def _instant(value: object, key: str, zone: tzinfo, now: datetime) -> datetime | None:
+    """``now`` (any case), or an ISO 8601 date or date-time; without a UTC offset it is local time in ``zone``."""
     if value is None:
         return None
+    if is_now(value):
+        return now
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{key} must be an ISO 8601 date-time, e.g. 2026-10-08T12:00:00-04:00.")
     text = value.strip().replace("Z", "+00:00").replace("z", "+00:00")

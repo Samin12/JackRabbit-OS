@@ -27,17 +27,19 @@ def contracts() -> tuple[CalendarToolContract, ...]:
             "2026-10-08T12:00:00-04:00). The answer then holds only the events in that window, with local "
             "times (localStart) and a window label: tell the user exactly those, say plainly when there are "
             "none, and never present nextAfterWindow or any other event as inside the window. Without a "
-            "window it lists the next events (for today, tomorrow or this week prefer from and to). Every "
-            "event has startsLocal/endsLocal in the user's time zone and startsInMinutes from now "
-            "(negative = already started).",
+            "window it lists the next events (for today, tomorrow or this week prefer from and to). All-day "
+            "events count in a window only when it is 6 hours or longer; a shorter one lists that day's "
+            "separately as allDayToday (not at a time in the window). Every event has startsLocal/endsLocal "
+            "in the user's time zone and startsInMinutes from now (negative = already started).",
             "read",
             _schema({
                 "limit": {"type": "integer", "minimum": 1, "maximum": 50},
                 "withinMinutes": {"type": "integer", "minimum": 1, "maximum": 10080,
                                   "description": "Window from now, e.g. 30 for 'the next 30 minutes'."},
-                "from": {"type": "string", "description": "Window start, ISO 8601 (default now)."},
+                "from": {"type": "string", "description": "Window start, ISO 8601 or 'now' (default now)."},
                 "to": {"type": "string", "description": "Window end, ISO 8601."},
-                "timezone": {"type": "string", "description": "IANA zone for local times (default America/New_York)."},
+                "timezone": {"type": "string", "description": "IANA zone for local times (default: the user's "
+                                                              "time zone, else America/New_York)."},
             }),
         ),
         CalendarToolContract(

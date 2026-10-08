@@ -48,8 +48,8 @@ class CalendarWindowTest(unittest.TestCase):
                           "confirmed", False, None, NOW.isoformat())
             for title, start, end, all_day in items))
 
-    def morning(self) -> None:
-        self.events(
+    def morning(self, *extra: tuple[str, datetime, datetime | None, bool]) -> None:
+        self.events(*extra,
             ("Standup", datetime(2026, 10, 8, 13, 30, tzinfo=UTC), datetime(2026, 10, 8, 14, 0, tzinfo=UTC), False),
             ("Deep work", datetime(2026, 10, 8, 14, 0, tzinfo=UTC), datetime(2026, 10, 8, 15, 0, tzinfo=UTC), False),
             ("Lunch with Sam", datetime(2026, 10, 8, 16, 0, tzinfo=UTC), datetime(2026, 10, 8, 16, 30, tzinfo=UTC), False),
@@ -99,6 +99,38 @@ class CalendarWindowTest(unittest.TestCase):
         self.assertEqual(["Mom's birthday"], [item["title"] for item in tomorrow["events"]])
         self.assertEqual("Fri Oct 9, all day", tomorrow["events"][0]["localStart"])
 
+    def test_all_day_events_are_beside_a_short_window_not_in_it(self) -> None:
+        # A floating all-day date today (Oct 8), stored as UTC midnight to midnight.
+        self.morning(("Company offsite", datetime(2026, 10, 8, tzinfo=UTC), datetime(2026, 10, 9, tzinfo=UTC), True))
+        soon = self.window(withinMinutes=30)
+        self.assertEqual(["Deep work"], [item["title"] for item in soon["events"]], "not 'in the next 30 minutes'")
+        self.assertEqual(1, soon["count"])
+        self.assertEqual(["Company offsite"], [item["title"] for item in soon["allDayToday"]])
+        self.assertEqual("Thu Oct 8, all day", soon["allDayToday"][0]["localStart"])
+        self.assertIn("allDayToday", soon["note"])
+        just_short = self.window(**{"from": "2026-10-08T12:00", "to": "2026-10-08T17:59"})
+        self.assertNotIn("Company offsite", [item["title"] for item in just_short["events"]])
+        self.assertEqual(["Company offsite"], [item["title"] for item in just_short["allDayToday"]])
+        afternoon = self.window(**{"from": "2026-10-08T12:00", "to": "2026-10-08T18:00"})  # 6 hours: it counts
+        self.assertIn("Company offsite", [item["title"] for item in afternoon["events"]])
+        self.assertNotIn("allDayToday", afternoon)
+        other_day = self.window(**{"from": "2026-10-10T09:00", "to": "2026-10-10T10:00"})
+        self.assertNotIn("allDayToday", other_day, "only all-day events of the window's own day")
+        empty = self.window(**{"from": "2026-10-08T11:05:00-04:00", "to": "2026-10-08T11:55:00-04:00"})
+        self.assertEqual(0, empty["count"])
+        self.assertTrue(empty["note"].startswith("Nothing is on the calendar from 11:05 AM to 11:55 AM"))
+        self.assertEqual(["Company offsite"], [item["title"] for item in empty["allDayToday"]])
+
+    def test_whole_number_floats_and_now_in_any_case(self) -> None:
+        self.morning()
+        self.assertEqual(self.window(withinMinutes=30), self.window(withinMinutes=30.0))
+        self.assertEqual(["Deep work"], [item["title"] for item in self.window(
+            **{"from": "Now", "to": "2026-10-08T11:03:00-04:00"})["events"]])
+        self.assertEqual("2026-10-08T10:33-04:00", self.window(**{"from": " NOW ", "withinMinutes": 30})["window"]["from"])
+        for bad in (30.5, "30", True, 0.0):
+            with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, "whole number"):
+                self.window(withinMinutes=bad)
+
     def test_bad_windows_are_explained(self) -> None:
         for arguments, message in (
             ({"withinMinutes": 30, "to": "2026-10-08T12:00:00-04:00"}, "not both"),
@@ -137,6 +169,11 @@ class CalendarWindowTest(unittest.TestCase):
         self.assertEqual(["Soon", "Later today"], [item["title"] for item in plain], "no window: the list as before")
         invalid = catalog.invoke("calendar_list_upcoming", {"withinMinutes": 0}, agent=AgentKind.VOICE, context=context)
         self.assertTrue(invalid.is_error)
+        floating = catalog.invoke("calendar_list_upcoming", {"withinMinutes": 30.0, "limit": 5.0},
+                                  agent=AgentKind.VOICE, context=context)
+        self.assertFalse(floating.is_error, floating.text)
+        self.assertEqual(["Soon"], [item["title"] for item in json.loads(floating.text)["events"]])
+        self.assertIn("startsInMinutes", json.loads(floating.text)["events"][0], "the same event view as the list")
         failed = catalog.invoke("calendar_list_upcoming", {"from": "2026-10-08T12:00:00-04:00"},
                                 agent=AgentKind.VOICE, context=context)
         self.assertTrue(failed.is_error)

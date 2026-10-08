@@ -30,6 +30,7 @@ class FakeCalendarBridge:
         self.responses: dict[str, tuple[int, dict[str, object]]] = {}
         self.available = True
         self.events: dict[str, dict[str, object]] = {}
+        self.guests: dict[str, int] = {}  # iCalUID -> the guest count update answers report (as Google has it)
         self.counter = 0
         self.lock = threading.Lock()
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), _handler(self))
@@ -95,9 +96,11 @@ def _handler(fake: FakeCalendarBridge) -> type[BaseHTTPRequestHandler]:
             elif path == "/v1/calendar/events/update":
                 uid = str(body.get("iCalUID", ""))
                 event_id = uid.removesuffix("@google.com") + (f"_{body['recurrenceId']}" if body.get("recurrenceId") else "")
-                self._json(200, {"ok": True, "calendarId": "primary", "account": "samin@aianswer.us",
-                                 "event": {"eventId": event_id, "iCalUID": uid, "title": body.get("title"),
-                                           "startsAt": body.get("startsAt"), "endsAt": body.get("endsAt")}})
+                event = {"eventId": event_id, "iCalUID": uid, "title": body.get("title"),
+                         "startsAt": body.get("startsAt"), "endsAt": body.get("endsAt")}
+                if uid in fake.guests:
+                    event["guests"] = fake.guests[uid]
+                self._json(200, {"ok": True, "calendarId": "primary", "account": "samin@aianswer.us", "event": event})
             elif path == "/v1/calendar/events/delete":
                 uid = str(body.get("iCalUID", ""))
                 self._json(200, {"ok": True, "deleted": True, "calendarId": "primary",

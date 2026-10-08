@@ -2,7 +2,9 @@
 
 Chrome opens a bare https://calendar.google.com in the default signed-in account (``/u/0``), which may not be the
 account the user works in. ``mac_open`` therefore pins Google Calendar, Gmail, Drive, Docs and Meet links to the
-user's account with ``authuser=<email>``, unless the link already names one.
+user's account with ``authuser=<email>``. An account index (``authuser=0``, ``authuser=1``, a ``/u/1/`` path) only
+picks "the Nth signed-in account" in this browser, so it is replaced too; an ``authuser`` that is already an email
+address is kept.
 
 The account is a non-secret setting (``provider_settings`` row ``mac.google_account``, set on the management
 page's Mac card). Without it, it comes from the calendar connection: the label or calendar name of a calendar
@@ -27,6 +29,7 @@ _HOME_PATHS = {"calendar.google.com": "/calendar/r", "mail.google.com": "/mail/"
 _EMAIL = re.compile(r"^[A-Za-z0-9._%+'-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$")
 # "/u/0" in a Google path picks the browser's first signed-in account; authuser picks the right one instead.
 _ACCOUNT_INDEX = re.compile(r"/u/\d+(?=/|$)")
+_ACCOUNT_NUMBER = re.compile(r"^\d{0,3}$")  # authuser=0, 1, ... (or empty): the Nth signed-in account
 
 
 def normalize_email(value: object) -> str | None:
@@ -41,7 +44,8 @@ def normalize_email(value: object) -> str | None:
 
 def with_google_account(url: str, email: str | None) -> str:
     """``url`` with ``authuser=<email>`` when it is a Google Calendar, Gmail, Drive, Docs or Meet link that does not
-    name an account yet; any other link (or no email) comes back unchanged."""
+    name an account by email yet (an account index, ``authuser=1`` or ``/u/1``, is replaced); any other link (or no
+    email) comes back unchanged."""
     account = normalize_email(email)
     if account is None:
         return url
@@ -52,15 +56,19 @@ def with_google_account(url: str, email: str | None) -> str:
     host = (parts.hostname or "").lower()
     if parts.scheme.lower() not in ("http", "https") or host not in GOOGLE_HOSTS:
         return url
-    query = parse_qsl(parts.query, keep_blank_values=True)
-    if any(key.lower() == "authuser" for key, _ in query):
-        return url
+    kept: list[str] = []
+    for item in parts.query.split("&") if parts.query else []:
+        pairs = parse_qsl(item, keep_blank_values=True)
+        key, value = pairs[0] if pairs else ("", "")
+        if key.strip().lower() != "authuser":
+            kept.append(item)
+        elif not _ACCOUNT_NUMBER.match(value.strip()):
+            return url  # the link names an account (an email address, or something we don't know): keep it
     path = _ACCOUNT_INDEX.sub("", parts.path) or ""
     if path in ("", "/") and host in _HOME_PATHS:
         path = _HOME_PATHS[host]
-    pinned = "authuser=" + quote(account, safe="@")
-    return urlunsplit((parts.scheme, parts.netloc, path, f"{parts.query}&{pinned}" if parts.query else pinned,
-                       parts.fragment))
+    kept.append("authuser=" + quote(account, safe="@"))
+    return urlunsplit((parts.scheme, parts.netloc, path, "&".join(kept), parts.fragment))
 
 
 class GoogleAccountSetting:

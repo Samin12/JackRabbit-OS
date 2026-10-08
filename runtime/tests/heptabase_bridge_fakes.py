@@ -42,6 +42,7 @@ class FakeMacBridge:
         self.calls: list[tuple[str, str]] = []
         self.failures: deque[str] = deque()
         self.app_reachable = True
+        self.dry_run_answers = False  # answer appends like a dry-run bridge ("dryRun": true)
         self.service = "samrabbit-bridge"
         self.seen_authorization: list[str] = []
         self.lock = threading.Lock()
@@ -145,6 +146,7 @@ def _handler(fake: FakeMacBridge) -> type[BaseHTTPRequestHandler]:
             if mode == "reset_after":
                 self.connection.close()
                 return
-            self._json(200, {"date": body["date"], "title": "Oct 7, 2026", "contentMd5": "f" * 32})
+            self._json(200, {"date": body["date"], "title": "Oct 7, 2026", "contentMd5": "f" * 32,
+                             **({"dryRun": True} if fake.dry_run_answers else {})})
 
     return Handler

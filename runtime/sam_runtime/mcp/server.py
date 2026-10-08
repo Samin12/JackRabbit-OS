@@ -16,7 +16,8 @@ if TYPE_CHECKING:
 
 PROTOCOL_VERSION = "2025-11-25"
 # Added to every failed Voice tool result (the Realtime model reads the whole result as text): a failure is
-# said as a failure, never as "still running in the background".
+# said as a failure, never as "still running in the background". Not added when the result carries its own
+# instruction for the model (``ToolInvocationResult.model_note``), which it would otherwise contradict.
 VOICE_TOOL_FAILURE_NOTE = (
     "[Host note] This tool call failed: the action did not complete and nothing is still running in the "
     "background. Tell the user plainly that it did not work and why (from the message above), in a few words. "
@@ -136,7 +137,7 @@ class LocalMcpServer:
             context=ToolInvocationContext(self._agent, voice_session_id, tool_call_id, user_utterance, user_utterance_id, execution_id),
         )
         payload = result.mcp_result()
-        if result.is_error and self._agent is AgentKind.VOICE:
+        if result.is_error and not result.model_note and self._agent is AgentKind.VOICE:
             payload["content"] = [*payload["content"], {"type": "text", "text": VOICE_TOOL_FAILURE_NOTE}]
         return self._result(request_id, payload)
 

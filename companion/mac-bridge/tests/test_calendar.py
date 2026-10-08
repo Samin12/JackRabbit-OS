@@ -14,6 +14,7 @@ from pathlib import Path
 import sys
 import tempfile
 import threading
+import types
 import unittest
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -50,6 +51,10 @@ class CalendarRoutesTest(unittest.TestCase):
         bridge._LOG.addHandler(handler)  # noqa: SLF001
         bridge._LOG.setLevel(logging.INFO)  # noqa: SLF001
         self.addCleanup(bridge._LOG.removeHandler, handler)  # noqa: SLF001
+        self.calendar_log = io.StringIO()
+        calendar_handler = logging.StreamHandler(self.calendar_log)
+        gcal._LOG.addHandler(calendar_handler)  # noqa: SLF001
+        self.addCleanup(gcal._LOG.removeHandler, calendar_handler)  # noqa: SLF001
         self.old_secret = os.environ.get("SAMRABBIT_TEST_SECRET")
         os.environ["SAMRABBIT_TEST_SECRET"] = "do-not-pass-me"
         self.addCleanup(self._restore_env)
@@ -104,11 +109,13 @@ class CalendarRoutesTest(unittest.TestCase):
                 "timezone": "America/New_York", "description": DESCRIPTION, **extra}
         return self.call("POST", "/v1/calendar/events", body)
 
-    def add_event(self, event_id: str, *, uid: str | None = None) -> None:
+    def add_event(self, event_id: str, *, uid: str | None = None, attendees: list | None = None) -> None:
         events = self.state()["events"]
         events[event_id] = {"id": event_id, "iCalUID": uid or event_id + "@google.com", "status": "confirmed",
                             "summary": "Standup", "start": {"dateTime": "2026-10-09T10:00:00-04:00"},
                             "end": {"dateTime": "2026-10-09T10:15:00-04:00"}}
+        if attendees is not None:
+            events[event_id]["attendees"] = attendees
         self.update_state(events=events)
 
     # ------------------------------------------------------------------ auth, health, availability
@@ -261,6 +268,21 @@ class CalendarRoutesTest(unittest.TestCase):
                                         {"iCalUID": "abcdefghij0123@google.com", "recurrenceId": "tomorrow",
                                          "title": "x"})[0])
 
+    def test_updates_report_the_guests_google_has_and_never_email_them(self) -> None:
+        self.add_event("guestevent0001", attendees=[
+            {"email": "samin@aianswer.us", "self": True, "organizer": True},
+            {"email": "partner@example.com"}, {"email": "cofounder@example.com"},
+            {"email": "room-12@resource.calendar.google.com", "resource": True}])
+        self.add_event("soloevent00001")
+        status, value = self.call("POST", "/v1/calendar/events/update",
+                                  {"iCalUID": "guestevent0001@google.com", "title": "Moved standup"})
+        self.assertEqual(200, status, value)
+        self.assertEqual(2, value["event"]["guests"], "attendees other than the user and rooms")
+        self.assertEqual("none", self.calls()[-1]["args"]["send_updates"], "nobody is emailed")
+        status, value = self.call("POST", "/v1/calendar/events/update",
+                                  {"iCalUID": "soloevent00001@google.com", "title": "Solo"})
+        self.assertEqual((200, 0), (status, value["event"]["guests"]))
+
     def test_a_foreign_uid_is_looked_up_read_only_first(self) -> None:
         self.add_event("outlookcopy01", uid="040000008200E00074C5B7101A82E008@outlook.com")
         status, value = self.call("POST", "/v1/calendar/events/delete",
@@ -312,6 +334,82 @@ class CalendarRoutesTest(unittest.TestCase):
                                  "Composio's own text is not passed through")
         self.assertEqual("composio_failed", self.call("GET", "/v1/calendar/status")[1]["lastError"])
 
+    def test_google_rate_limits_are_retryable_not_forbidden(self) -> None:
+        google = lambda reason: json.dumps({"error": {"code": 403, "message": "Rate Limit Exceeded",  # noqa: E731
+                                                      "errors": [{"domain": "usageLimits", "reason": reason}]}})
+        cases = (
+            {"successful": False, "data": {"message": "Rate Limit Exceeded", "status_code": 403,
+                                           "errors": [{"reason": "rateLimitExceeded"}]}, "error": "Forbidden"},
+            {"successful": False, "data": {"message": google("userRateLimitExceeded"), "status_code": 403},
+             "error": "403 Client Error: Forbidden"},
+            {"successful": False, "error": "403 Client Error: Forbidden " + google("rateLimitExceeded")},
+            {"successful": False, "data": {"message": "Too Many Requests", "status_code": 429}, "error": "429"},
+        )
+        for answer in cases:
+            with self.subTest(answer=answer):
+                self.update_state(scripted={"GOOGLECALENDAR_PATCH_EVENT": {"stdout": json.dumps(answer)}})
+                status, value = self.call("POST", "/v1/calendar/events/update",
+                                          {"eventId": "abcdefghij0123", "title": "x"})
+                self.assertEqual(503, status, value)
+                self.assertEqual(("calendar_rate_limited", True, False),
+                                 (value["error"]["code"], value["error"]["retryable"], value["error"]["written"]))
+        self.update_state(scripted={"GOOGLECALENDAR_PATCH_EVENT": {"stdout": json.dumps({
+            "successful": False, "data": {"message": "Forbidden", "status_code": 403,
+                                          "errors": [{"reason": "forbiddenForNonOrganizer"}],
+                                          "headers": {"x-ratelimit-remaining": "99"}}, "error": "Forbidden"})}})
+        status, value = self.call("POST", "/v1/calendar/events/update", {"eventId": "abcdefghij0123", "title": "x"})
+        self.assertEqual((403, "calendar_forbidden", False),
+                         (status, value["error"]["code"], value["error"]["retryable"]), "a real refusal stays one")
+
+    def test_a_bad_calendar_id_or_temp_folder_turns_calendar_changes_off_not_the_bridge(self) -> None:
+        # Only samrabbit_calendar's view of tempfile is replaced (Mac control and generated UIs keep theirs).
+        created: list = []
+        failing = {"on": False}
+
+        def calendar_mkdtemp(*args: object, **kwargs: object) -> str:
+            if failing["on"]:
+                raise PermissionError("no temp folder")
+            path = tempfile.mkdtemp(*args, **kwargs)
+            created.append(path)
+            return path
+
+        real_tempfile = gcal.tempfile
+        gcal.tempfile = types.SimpleNamespace(mkdtemp=calendar_mkdtemp)  # type: ignore[assignment]
+        self.addCleanup(setattr, gcal, "tempfile", real_tempfile)
+        old_id = os.environ.get("SAMRABBIT_CALENDAR_ID")
+        os.environ["SAMRABBIT_CALENDAR_ID"] = "not a calendar id!"
+        self.addCleanup(lambda: os.environ.pop("SAMRABBIT_CALENDAR_ID", None) if old_id is None
+                        else os.environ.__setitem__("SAMRABBIT_CALENDAR_ID", old_id))
+        root = Path(self.tmp.name)
+        for code, no_temp_folder in (("calendar_id_invalid", False), ("calendar_setup_failed", True)):
+            with self.subTest(code=code):
+                failing["on"] = no_temp_folder
+                server = bridge.make_server("127.0.0.1", 0, token_file=str(root / "bridge-token"), cli_timeout=2.0,
+                                            cli=str(root / "bin" / "no-heptabase"),
+                                            driver=str(root / "bin" / "no-driver"), composio=str(self.composio))
+                thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
+                thread.start()
+                self.addCleanup(server.server_close)
+                self.addCleanup(server.shutdown)
+                self.base = f"http://127.0.0.1:{server.server_address[1]}"
+                status, health = self.call("GET", "/health")
+                self.assertEqual(200, status, "the bridge is up")
+                self.assertEqual({"available": False, "lastError": code},
+                                 {key: health["calendarWrite"][key] for key in ("available", "lastError")})
+                self.assertEqual((200, False), (lambda answer: (answer[0], answer[1]["available"]))(
+                    self.call("GET", "/v1/calendar/status")))
+                status, value = self.create()
+                self.assertEqual((503, "calendar_unavailable", False),
+                                 (status, value["error"]["code"], value["error"]["written"]))
+                self.assertEqual(503, self.call("POST", "/v1/heptabase/journal/append",
+                                                {"date": "2026-10-08", "content": "x"})[0],
+                                 "the journal routes still answer (here: no CLI)")
+        self.assertEqual([], self.calls(), "nothing reached Composio")
+        self.assertTrue(created, "the bad id case did create the private folder first")
+        self.assertFalse(any(os.path.exists(path) for path in created), "and removed it again")
+        self.assertIn("calendar changes off", self.log.getvalue() + _calendar_log(self))
+        self.assertNotIn("not a calendar id!", self.log.getvalue() + _calendar_log(self))
+
     def test_a_slow_cli_is_killed_and_the_write_is_reported_as_unknown(self) -> None:
         self.server.calendar = gcal.CalendarWriter(gcal.ComposioCli(str(self.composio), timeout=1.0))
         self.addCleanup(self.server.calendar.close)
@@ -327,6 +425,10 @@ class CalendarRoutesTest(unittest.TestCase):
         status, value = self.create()
         self.assertEqual(502, status)
         self.assertEqual("unknown", value["error"]["written"])
+
+
+def _calendar_log(test: CalendarRoutesTest) -> str:
+    return test.calendar_log.getvalue()
 
 
 if __name__ == "__main__":

@@ -30,6 +30,9 @@ class ToolInvocationResult:
     structured_content: dict[str, object] | None = None
     is_error: bool = False
     provider_session_update: dict[str, object] | None = None
+    # True when a failed result's text already tells the model what to say (e.g. mac_look's "screen vision is
+    # still off, do not mention it again"): the host's generic Voice failure note is then not added.
+    model_note: bool = False
 
     def mcp_result(self) -> dict[str, object]:
         result: dict[str, object] = {

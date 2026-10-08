@@ -66,12 +66,28 @@ def instant(value: str | None) -> datetime | None:
     return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
 
+def whole_number(value: object) -> int | None:
+    """An int, or a JSON number with no fraction (``30.0``); anything else (``30.5``, ``"30"``, ``True``) is None."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return None
+
+
+def is_now(value: object) -> bool:
+    """``now`` in any case (``"Now"``, ``" NOW "``)."""
+    return isinstance(value, str) and value.strip().lower() == "now"
+
+
 def parse_moment(value: object, key: str, zone: tzinfo, *, allow_now: bool = True) -> datetime:
     """``now`` (this minute), an ISO time with an offset, or a local wall time in ``zone``; whole minutes."""
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{key} is required.")
     text = value.strip()
-    if allow_now and text.lower() == "now":
+    if allow_now and is_now(text):
         return datetime.now(zone).replace(second=0, microsecond=0)
     if _DATE_ONLY.match(text):
         raise ValueError(ALL_DAY_REFUSED)
@@ -90,9 +106,10 @@ def duration(arguments: dict[str, object]) -> timedelta | None:
     value = arguments.get("durationMinutes")
     if value is None:
         return None
-    if not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= MAX_DURATION_MINUTES:
+    minutes = whole_number(value)
+    if minutes is None or not 1 <= minutes <= MAX_DURATION_MINUTES:
         raise ValueError("durationMinutes must be a whole number of minutes (1 to 20160).")
-    return timedelta(minutes=value)
+    return timedelta(minutes=minutes)
 
 
 def clock(moment: datetime) -> str:
@@ -274,9 +291,10 @@ class GoogleCalendarWrites:
             body["calendarId"] = calendar_id
         self.ready()
         try:
-            self._bridge.update(body)
+            answer = self._bridge.update(body)
         except CalendarWriteFailure as failure:
             raise RuntimeError(_failed(f"change “{event.title}” in {CALENDAR_NAME}", failure)) from None
+        reported = answer.get("event", {}).get("guests") if isinstance(answer.get("event"), dict) else None
         now = datetime.now(UTC)
         mirror = replace(
             event, title=title or event.title,
@@ -292,21 +310,31 @@ class GoogleCalendarWrites:
         scope = " (only this occurrence)" if event.recurrence_id else ""
         summary = (f"Moved “{mirror.title}” to {when} in {CALENDAR_NAME}{scope}." if verb == "Moved"
                    else f"Updated “{mirror.title}” ({when}) in {CALENDAR_NAME}{scope}.")
-        return {"state": "completed", "operation": "update", "calendar": CALENDAR_NAME, "summary": summary,
-                "event": self.view(mirror, zone, now),
-                "previous": {"title": event.title, **local_fields(event, zone, now)}}
+        result: dict[str, object] = {
+            "state": "completed", "operation": "update", "calendar": CALENDAR_NAME, "summary": summary,
+            "event": self.view(mirror, zone, now), "previous": {"title": event.title, **local_fields(event, zone, now)}}
+        guests = has_guests(event, account, reported)
+        if guests:
+            # No change sends emails (send_updates "none"): say so, so the user can tell the guests themselves.
+            result["guestsNotified"] = False
+            if isinstance(reported, int) and not isinstance(reported, bool):
+                result["guests"] = reported
+            result["summary"] = f"{summary} {GUESTS_NOT_NOTIFIED}"
+        return result
 
     # ------------------------------------------------------------------ delete (after the user's yes)
-    def review_delete(self, event: CalendarEvent) -> dict[str, object]:
+    def review_delete(self, event: CalendarEvent, account: CalendarAccount | None = None) -> dict[str, object]:
         """What the user is asked to approve (``calendar_confirm_action`` does the delete)."""
         if event.status == "cancelled":
             raise ValueError("Calendar event was not found.")
         _, zone = self.zone()
         when = _event_when(event, zone)
         scope = " (only this occurrence)" if event.recurrence_id else ""
+        guests = _review_guest_sentence(has_guests(event, account))
         return {"calendar": CALENDAR_NAME, "event": self.view(event, zone, datetime.now(UTC)),
-                "summary": f"Delete “{event.title}” ({when}) from {CALENDAR_NAME}{scope}? Ask the user; call "
-                           "calendar_confirm_action only after they say yes."}
+                "guestsNotified": False,
+                "summary": f"Delete “{event.title}” ({when}) from {CALENDAR_NAME}{scope}? {guests} Ask the user; "
+                           "call calendar_confirm_action only after they say yes."}
 
     def delete(self, account: CalendarAccount, event: CalendarEvent) -> dict[str, object]:
         body: dict[str, object] = {"iCalUID": event.provider_event_id}
@@ -327,9 +355,14 @@ class GoogleCalendarWrites:
         _, zone = self.zone()
         when = _event_when(event, zone)
         scope = " (only this occurrence)" if event.recurrence_id else ""
-        return {"operation": "delete", "calendar": CALENDAR_NAME,
-                "summary": f"Deleted “{event.title}” ({when}) from {CALENDAR_NAME}{scope}.",
-                "event": {"title": event.title, **local_fields(event, zone, now)}}
+        guests = has_guests(event, account)
+        value: dict[str, object] = {
+            "operation": "delete", "calendar": CALENDAR_NAME, "guestsNotified": False,
+            "summary": f"Deleted “{event.title}” ({when}) from {CALENDAR_NAME}{scope}.",
+            "event": {"title": event.title, **local_fields(event, zone, now)}}
+        if guests:
+            value["summary"] = f"{value['summary']} {GUESTS_NOT_NOTIFIED}"
+        return value
 
     # ------------------------------------------------------------------ views
     def view(self, event: CalendarEvent, zone: tzinfo, now: datetime) -> dict[str, object]:
@@ -343,6 +376,29 @@ class GoogleCalendarWrites:
             self._repository.store_local_write(event)
         except Exception:  # noqa: BLE001 - Google already has the change; the next feed refresh brings it
             pass
+
+
+GUESTS_NOT_NOTIFIED = "Its guests were not notified (the R1 sends no emails); tell the user."
+
+
+def has_guests(event: CalendarEvent, account: CalendarAccount | None, reported: object = None) -> bool | None:
+    """Whether the event has guests: Google's own count when the bridge sent one, else True when someone other
+    than this calendar's owner organizes it (the user is a guest), else None (unknown: the iCal store keeps no
+    attendee list)."""
+    if isinstance(reported, int) and not isinstance(reported, bool):
+        return reported > 0
+    organizer = (event.organizer or "").strip().casefold()
+    if not organizer or "@" not in organizer or account is None:
+        return None
+    owners = {(google_calendar_id(account) or "").casefold(), account.configuration.label.strip().casefold()}
+    return True if organizer not in owners else None
+
+
+def _review_guest_sentence(guests: bool | None) -> str:
+    """For the delete question: deleting from the R1 never emails anyone."""
+    if guests:
+        return "Its guests won't be notified (the R1 sends no emails)."
+    return "No emails are sent, so guests, if it has any, won't be told."
 
 
 def _event_when(event: CalendarEvent, zone: tzinfo) -> str:

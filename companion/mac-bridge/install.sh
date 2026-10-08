@@ -181,7 +181,8 @@ print(f"generated UIs: {'on' if ui.get('available') else 'OFF'} (Claude Code {'f
 cal = health.get("calendarWrite") or {}
 print(f"calendar changes: {'on' if cal.get('available') else 'OFF'} (Composio CLI "
       f"{cal.get('path') or 'missing'}, Google calendar {cal.get('calendarId') or 'primary'}"
-      f"{', account ' + cal['account'] if cal.get('account') else ''})")
+      f"{', account ' + cal['account'] if cal.get('account') else ''}"
+      f"{', problem ' + cal['lastError'] if cal.get('lastError') and not cal.get('available') else ''})")
 EOF
 IP=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || echo "<this Mac's IP>")
 echo "Bridge URL: http://$IP:$PORT"

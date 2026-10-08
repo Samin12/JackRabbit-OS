@@ -54,7 +54,8 @@ const BRIDGE_PROBLEMS={
   bridge_unauthorized:"The bridge rejected the R1's token. Connect the Mac bridge again with the current token.",
   bridge_token_unavailable:"The R1 cannot read its bridge token. Connect the Mac bridge again.",
   heptabase_cli_missing:"The Heptabase CLI is not installed on the Mac (Heptabase > Settings > AI Features).",
-  heptabase_cli_timeout:"Heptabase on the Mac did not answer in time. R1 retries."};
+  heptabase_cli_timeout:"Heptabase on the Mac did not answer in time. R1 retries.",
+  bridge_dry_run:"This bridge is a test copy (dry run): nothing reaches Heptabase. Entries wait on the R1. Connect the bridge that install.sh set up."};
 function macCard(){
   const b=view.bridge||{},q=view.queue||{};
   const app=b.reachable===false?"Mac unreachable":b.appReachable===true?"Running":b.appReachable===false?"Not running":"Not checked";

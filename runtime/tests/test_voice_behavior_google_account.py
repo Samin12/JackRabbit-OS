@@ -53,8 +53,27 @@ class GoogleLinkTest(unittest.TestCase):
             with self.subTest(url=url):
                 self.assertEqual(expected, with_google_account(url, EMAIL))
 
+    def test_an_account_number_is_replaced_by_the_users_email(self) -> None:
+        # authuser=N and /u/N pick "the Nth account signed in to this Chrome", which is often not the user's.
+        cases = {
+            "https://calendar.google.com/calendar/r?authuser=1": f"https://calendar.google.com/calendar/r?authuser={EMAIL}",
+            "https://calendar.google.com/calendar/r?authuser=0": f"https://calendar.google.com/calendar/r?authuser={EMAIL}",
+            "https://calendar.google.com/calendar/r/week?authuser=2&tab=mc":
+                f"https://calendar.google.com/calendar/r/week?tab=mc&authuser={EMAIL}",
+            "https://mail.google.com/mail/u/1/?authuser=1#inbox": f"https://mail.google.com/mail/?authuser={EMAIL}#inbox",
+            "https://mail.google.com/mail/u/3/#inbox": f"https://mail.google.com/mail/?authuser={EMAIL}#inbox",
+            "https://docs.google.com/document/u/2/d/abc/edit?usp=sharing":
+                f"https://docs.google.com/document/d/abc/edit?usp=sharing&authuser={EMAIL}",
+            "https://drive.google.com/drive/u/1/my-drive?AUTHUSER=1":
+                f"https://drive.google.com/drive/my-drive?authuser={EMAIL}",
+        }
+        for url, expected in cases.items():
+            with self.subTest(url=url):
+                self.assertEqual(expected, with_google_account(url, EMAIL))
+
     def test_other_links_and_chosen_accounts_are_left_alone(self) -> None:
-        for url in ("https://calendar.google.com/calendar/r?authuser=1",
+        for url in ("https://calendar.google.com/calendar/r?authuser=other@example.com",
+                    "https://calendar.google.com/calendar/u/1/r?authuser=other%40example.com",
                     "https://mail.google.com/mail/?AuthUser=other@example.com",
                     "https://www.google.com/search?q=calendar", "https://example.com/calendar",
                     "https://calendar.google.com.evil.example/", "ftp://calendar.google.com/"):

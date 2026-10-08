@@ -52,7 +52,10 @@ _CODE = re.compile(r"[^a-z0-9_]")
 _PRIVATE_V4 = tuple(ipaddress.ip_network(net) for net in
                     ("127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16"))
 _PRIVATE_V6 = tuple(ipaddress.ip_network(net) for net in ("::1/128", "fc00::/7", "fe80::/10"))
+DRY_RUN_ERROR = "bridge_dry_run"
 _MESSAGES = {
+    DRY_RUN_ERROR: "This Mac bridge is a test copy (dry run) that never writes to Heptabase. Entries wait on the "
+                   "R1 until the installed bridge is connected.",
     "heptabase_app_unavailable": "The Heptabase app is not running on the Mac. Entries wait on the R1 until it is.",
     "heptabase_cli_missing": "The Heptabase CLI is not installed on the Mac.",
     "heptabase_cli_timeout": "Heptabase on the Mac did not answer in time.",
@@ -302,6 +305,7 @@ class MacBridgeClient:
         response = self._request("POST", url, "/v1/heptabase/journal/append", token, body=body,
                                  timeout=APPEND_TIMEOUT_SECONDS, writing=True)
         value = self._result(response, writing=True)
+        self._refuse_dry_run(value)
         self._store.record_status(reachable=True, appReachable=True, lastError=None, lastOkAt=_now())
         return value
 
@@ -310,6 +314,7 @@ class MacBridgeClient:
         response = self._request("GET", url, "/v1/heptabase/journal/read?date=" + quote(journal_date, safe=""), token,
                                  timeout=READ_TIMEOUT_SECONDS, writing=False)
         value = self._result(response, writing=False)
+        self._refuse_dry_run(value)
         if not isinstance(value.get("text"), str):
             raise HeptabaseError("bridge_invalid_response", "The Mac bridge sent an unreadable journal.")
         self._store.record_status(reachable=True, appReachable=True, lastError=None)
@@ -327,6 +332,13 @@ class MacBridgeClient:
         return "\n".join(day for day in days if day)
 
     # ------------------------------------------------------------------ plumbing
+
+    def _refuse_dry_run(self, value: dict[str, object]) -> None:
+        """A dry-run bridge (a test or dev copy) keeps journal text in its own memory: its "written" is not
+        Heptabase, so the entry stays queued (never "sent") and its reads are not the user's journal."""
+        if value.get("dryRun") is True:
+            self._store.record_status(reachable=True, appReachable=False, lastError=DRY_RUN_ERROR)
+            raise HeptabaseError(DRY_RUN_ERROR, _MESSAGES[DRY_RUN_ERROR], retryable=True, sent=False)
 
     def _credentials(self) -> tuple[str, str]:
         config = self._store.config()

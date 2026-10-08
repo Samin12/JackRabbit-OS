@@ -6,9 +6,15 @@ create operations." and the voice model told the user "The calendar action is st
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+import tempfile
 import unittest
 
+from mac_fakes import FakeMacControlBridge, make_mac
+
 from sam_runtime.agents import AgentKind
+from sam_runtime.domains.mac import register_mac_tools
 from sam_runtime.mcp.server import PROTOCOL_VERSION, VOICE_TOOL_FAILURE_NOTE, LocalMcpServer
 from sam_runtime.realtime.modes import (
     CALENDAR_WINDOW_INSTRUCTION,
@@ -18,6 +24,7 @@ from sam_runtime.realtime.modes import (
 )
 from sam_runtime.tools import ToolCatalog, ToolInvocationResult
 from sam_runtime.tools.calendar import CalendarToolPackage
+from sam_runtime.storage.database import RuntimeDatabase
 from sam_runtime.tools.genui import GENUI_VOICE_INSTRUCTION
 
 READ_ONLY = "This calendar does not allow create operations."
@@ -30,9 +37,10 @@ class _ReadOnlyCalendar:
         return ToolInvocationResult("[]", {"result": []})
 
 
-def _server(agent: AgentKind) -> tuple[LocalMcpServer, str]:
-    catalog = ToolCatalog()
-    CalendarToolPackage(_ReadOnlyCalendar()).register(catalog)
+def _server(agent: AgentKind, catalog: ToolCatalog | None = None) -> tuple[LocalMcpServer, str]:
+    if catalog is None:
+        catalog = ToolCatalog()
+        CalendarToolPackage(_ReadOnlyCalendar()).register(catalog)
     server = LocalMcpServer(lambda: {"status": "ready"}, catalog=catalog, agent=agent)
     initialized = server.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
         "protocolVersion": PROTOCOL_VERSION, "capabilities": {}, "clientInfo": {"name": "test", "version": "1"}}},
@@ -75,6 +83,41 @@ class ToolFailureHonestyTest(unittest.TestCase):
                             {"calendarAccountId": "x", "title": "y", "startsAt": "2026-10-08T10:30:00-04:00"})
         self.assertTrue(text_result["isError"])
         self.assertEqual(1, len(text_result["content"]), "only the Voice model gets the spoken-reply note")
+
+    def test_a_failure_that_says_what_to_tell_the_user_gets_no_host_note(self) -> None:
+        # mac_look without screen vision: "tell the user once", then "do not mention it again". The generic note
+        # ("tell the user plainly that it did not work") would contradict the second one.
+        with tempfile.TemporaryDirectory() as directory:
+            database = RuntimeDatabase(Path(directory) / "runtime.sqlite3")
+            database.migrate()
+            fake = FakeMacControlBridge()
+            self.addCleanup(fake.close)
+            store, client = make_mac(database, fake)
+            catalog = ToolCatalog()
+            register_mac_tools(catalog, client)
+            server, session = _server(AgentKind.VOICE, catalog)
+            first = _call(server, session, "mac_look", {})
+            again = _call(server, session, "mac_look", {})
+        for result in (first, again):
+            self.assertTrue(result["isError"])
+            self.assertEqual(1, len(result["content"]), "only the tool's own instruction")
+            self.assertNotIn(VOICE_TOOL_FAILURE_NOTE, json.dumps(result))
+        self.assertIn("Tell the user once", json.loads(first["content"][0]["text"])["message"])
+        self.assertIn("Do not mention it again", json.loads(again["content"][0]["text"])["message"])
+
+    def test_the_flag_is_only_for_results_that_carry_an_instruction(self) -> None:
+        self.assertFalse(ToolInvocationResult("x", is_error=True).model_note, "the note stays the default")
+        catalog = ToolCatalog()
+
+        class _Own:
+            def invoke_tool(self, name, context, arguments):
+                return ToolInvocationResult('{"message":"Say: the calendar is read-only."}', is_error=True,
+                                            model_note=True)
+
+        CalendarToolPackage(_Own()).register(catalog)
+        server, session = _server(AgentKind.VOICE, catalog)
+        result = _call(server, session, "calendar_create_event", {"title": "y", "startsAt": "now"})
+        self.assertEqual(1, len(result["content"]))
 
     def test_the_primary_voice_instruction_demands_honest_failures(self) -> None:
         self.assertIn(TOOL_RESULT_HONESTY_INSTRUCTION, PRIMARY_VOICE_INSTRUCTION)

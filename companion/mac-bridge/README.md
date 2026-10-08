@@ -71,9 +71,9 @@ private-LAN peers are accepted (10/8, 172.16/12, 192.168/16, 169.254/16, fc00::/
 
 | Route | Result |
 |---|---|
-| `GET /health` | `{ok, service, version, cli:{available, version, mode ("real" or "dry-run")}, app:{reachable, detail}, mac:{…capabilities, screenLocked}, sync, genui, calendarWrite:{available, composio, path, calendarId, account, lastError, lastOkAt}, checkedAt}` (cached 10 s) |
-| `POST /v1/heptabase/journal/append` `{date:"YYYY-MM-DD", content:"<markdown>"}` | the CLI's `{date, title, contentMd5}` |
-| `GET /v1/heptabase/journal/read?date=YYYY-MM-DD` | `{date, title, text, contentMd5}`: the day as plain text lines (paragraphs, headings, `- ` bullets, `1. ` numbers, `[ ]`/`[x]` todos, `+ ` toggles, `> ` quotes; marks removed; nested items indented) |
+| `GET /health` | `{ok, service, version, cli:{available, version, mode ("real" or "dryRun")}, app:{reachable, detail}, dryRun, mac:{…capabilities, screenLocked}, sync, genui, calendarWrite:{available, composio, path, calendarId, account, lastError, lastOkAt}, checkedAt}` (cached 10 s) |
+| `POST /v1/heptabase/journal/append` `{date:"YYYY-MM-DD", content:"<markdown>"}` | the CLI's `{date, title, contentMd5}` (plus `dryRun: true` on a dry-run bridge) |
+| `GET /v1/heptabase/journal/read?date=YYYY-MM-DD` | `{date, title, text, contentMd5}` (plus `dryRun: true` on a dry-run bridge): the day as plain text lines (paragraphs, headings, `- ` bullets, `1. ` numbers, `[ ]`/`[x]` todos, `+ ` toggles, `> ` quotes; marks removed; nested items indented) |
 
 - `content` is Markdown as the desktop CLI parses it: CommonMark plus Heptabase's list (`+` toggles, `- [ ]` todos)
   and `{{...}}` mention syntax. Hepta Markdown tags such as `<hepta-color>` are **not** parsed and would show as
@@ -244,16 +244,21 @@ R1 runtime ──POST /v1/calendar/events…──▶ bridge ──composio exec
 - Times are RFC 3339 with an offset (`2026-10-08T10:33:00-04:00`); events end after they start and last at most 31 days.
   All-day events are not supported yet.
 - `calendarId` defaults to `primary` (`--calendar-id` / `SAMRABBIT_CALENDAR_ID` to change it). The R1 sends the
-  calendar its iCal address shows, so new events land where the R1 reads them.
+  calendar its iCal address shows, so new events land where the R1 reads them. A malformed `--calendar-id` (or a
+  private working folder that can't be created) turns calendar changes off, never the bridge: it logs the reason,
+  `/health` says `calendarWrite.available: false` with `lastError` `calendar_id_invalid` / `calendar_setup_failed`,
+  and changes answer 503 `calendar_unavailable`.
 - An iCal UID `<eventId>@google.com` is the event id directly; any other UID is looked up first with the read-only
   `GOOGLECALENDAR_EVENTS_LIST`. `recurrenceId` (`YYYYMMDD` or `YYYYMMDDTHHMMSSZ`, the occurrence's original start) makes
   the instance id `<seriesId>_<recurrenceId>`, so one occurrence of a repeating event is changed alone, never the series.
 - New events have no Meet link and no attendee list (`create_meeting_room: false`, `exclude_organizer: true`); no
-  change sends emails (`send_updates: "none"`).
+  change sends emails (`send_updates: "none"`). Update answers carry `event.guests`, Google's count of the event's
+  guests (not you, not rooms), so the R1 can say that the guests were not notified.
 - One CLI call at a time (another request waits up to 15 s, then 503 `calendar_busy`), 30 s per call, no shell, a small
   environment, its own private working folder, and the whole process group is killed on timeout.
 - Errors are `{"error":{"code","message","retryable","written"[,"fix"]}}`: 409 `calendar_not_connected` (fix:
-  `composio link googlecalendar`), 403 `calendar_forbidden` (not the organizer, or a read-only calendar), 404
+  `composio link googlecalendar`), 403 `calendar_forbidden` (not the organizer, or a read-only calendar; Google's 403
+  `rateLimitExceeded` / `userRateLimitExceeded` and any 429 are 503 `calendar_rate_limited`, retryable), 404
   `calendar_event_not_found` / `calendar_not_found`, 400 `calendar_invalid_request` / `invalid_time` / `invalid_event`,
   422 `calendar_rejected`, 503 `composio_missing` / `composio_signed_out` / `calendar_rate_limited`, 502
   `calendar_google_error` / `calendar_bad_answer` / `composio_failed`, 504 `calendar_timeout`. `written` is `"unknown"`
@@ -289,7 +294,6 @@ first (`calendar_confirm_action`).
   contains journal text, window text, typed text, links, file names, query strings, CLI output or the token. Sync
   routes are logged as templates (`/v1/sync/conversations/{id}/events`), so not even conversation ids or image hashes
   are written; conversation text and image bytes never are.
-  contains journal text, window text, typed text, links, file names, query strings, CLI output or the token.
   Generated UIs log only the artifact id, the outcome and timings: never the prompt, the data or the widget.
   Calendar changes log only the route, the status and an error code: never a title, a time or Composio's output.
 - Error replies never repeat the CLI's own messages, because they could quote journal content.
@@ -300,11 +304,13 @@ first (`calendar_confirm_action`).
 
 `--cli` (or `SAMRABBIT_HEPTABASE_CLI`) picks it: a path (used as given), `auto` (the real `heptabase` on `PATH` or
 `/opt/homebrew/bin/heptabase`) or `dry-run` (nothing reaches Heptabase: appends stay in the bridge's memory and are
-answered with `dryRun: true`; reads return them). Without a choice, only the installed LaunchAgent copy in
-`~/Library/Application Support/SamRabbit/bridge/` uses the real CLI; every other copy, such as a second bridge run from
-a checkout on another port, is `dry-run`. `install.sh` also passes `--cli auto` in the LaunchAgent. `/health` reports
-it as `cli.mode` (`real` or `dry-run`), and a dry-run bridge logs a warning at start. To test against a fake CLI, pass
-its path; pass `--cli auto` only when you really want writes in your Heptabase journal.
+answered with `dryRun: true`; reads return them, also with `dryRun: true`). Without a choice, only the installed
+LaunchAgent copy in `~/Library/Application Support/SamRabbit/bridge/` uses the real CLI; every other copy, such as a
+second bridge run from a checkout on another port, is `dry-run`. `install.sh` also passes `--cli auto` in the
+LaunchAgent. `/health` reports it as `cli.mode` (`real` or `dryRun`) and `dryRun`; a dry-run bridge's `app` is
+`{reachable: false, detail: "bridge_dry_run"}`, and it logs a warning at start. An R1 paired with a dry-run bridge
+keeps its journal entries queued (never "sent") and shows "test copy (dry run)" on its Heptabase card. To test against
+a fake CLI, pass its path; pass `--cli auto` only when you really want writes in your Heptabase journal.
 
 ## Tests
 
@@ -312,14 +318,15 @@ its path; pass `--cli auto` only when you really want writes in your Heptabase j
 python3 -m unittest discover -s companion/mac-bridge/tests
 ```
 
-The tests pass a fake `heptabase` executable by path (`tests/fake_heptabase.py`), drive Mac control through a
-fake `cua-driver` / `open` / `lsappinfo` (`tests/fake_cua_driver.py`), and run the installer against a throwaway home
-with `SAMRABBIT_SKIP_LAUNCHCTL=1`. `tests/test_sync.py` covers the conversation store, dedupe, drafts, blobs, the auth
-matrix (R1 token vs desktop token, loopback vs a real LAN peer through this Mac's own address), SSE and screenshots.
-fake `cua-driver` / `open` / `lsappinfo` (`tests/fake_cua_driver.py`), generate UIs with a fake `claude`
-(`tests/fake_claude.py`) and a fake renderer (one test renders for real when agent-browser is installed), change a
-fake Google calendar through a fake `composio` (`tests/fake_composio.py`; no test ever runs the real CLI), and run the
-installer against a throwaway home with `SAMRABBIT_SKIP_LAUNCHCTL=1`.
+The tests pass a fake `heptabase` executable by path (`tests/fake_heptabase.py`); the CLI-choice tests
+(`tests/test_heptabase_cli_choice.py`) run with a PATH that holds only their recording fake, point the
+`/opt/homebrew/bin/heptabase` fallback at a missing file, and check the resolved CLI is the fake before anything runs.
+They drive Mac control through a fake `cua-driver` / `open` / `lsappinfo` (`tests/fake_cua_driver.py`), generate UIs
+with a fake `claude` (`tests/fake_claude.py`) and a fake renderer (one test renders for real when agent-browser is
+installed), change a fake Google calendar through a fake `composio` (`tests/fake_composio.py`; no test ever runs the
+real CLI), and run the installer against a throwaway home with `SAMRABBIT_SKIP_LAUNCHCTL=1`. `tests/test_sync.py`
+covers the conversation store, dedupe, drafts, blobs, the auth matrix (R1 token vs desktop token, loopback vs a real
+LAN peer through this Mac's own address), SSE and screenshots.
 
 ## Troubleshooting
 

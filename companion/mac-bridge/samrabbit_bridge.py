@@ -88,6 +88,12 @@ FALLBACK_CLI = "/opt/homebrew/bin/heptabase"
 # so a stray test or dev bridge can never write to the user's journal.
 CLI_AUTO = "auto"
 CLI_DRY_RUN = "dry-run"
+# ``/health`` ``cli.mode`` of a dry-run bridge. Its health also says ``dryRun: true`` and ``app.reachable: false``
+# (detail ``bridge_dry_run``), and every journal answer carries ``dryRun: true``, so a runtime paired with it can
+# never report an entry as written to Heptabase.
+MODE_REAL = "real"
+MODE_DRY_RUN = "dryRun"
+DRY_RUN_DETAIL = "bridge_dry_run"
 INSTALLED_DIR = "~/Library/Application Support/SamRabbit/bridge"
 MAX_BODY_BYTES = 64 * 1024
 MAX_CLI_OUTPUT_BYTES = 32 * 1024 * 1024
@@ -140,7 +146,7 @@ def _app_unavailable() -> BridgeError:
 class HeptabaseCli:
     """Runs the ``heptabase`` CLI. Output is parsed, never logged."""
 
-    mode = "real"
+    mode = MODE_REAL
 
     def __init__(self, executable: Optional[str] = None) -> None:
         self._explicit = executable
@@ -217,7 +223,7 @@ class DryRunHeptabaseCli:
     memory only (and answered like the real CLI, plus ``dryRun: true``), reads return them. The default for
     every bridge that is not the installed LaunchAgent copy (see ``cli_for``)."""
 
-    mode = CLI_DRY_RUN
+    mode = MODE_DRY_RUN
 
     def __init__(self) -> None:
         self._journal: Dict[str, List[str]] = {}
@@ -494,9 +500,9 @@ class BridgeServer(ThreadingHTTPServer):
         self._health: Optional[Tuple[float, Dict[str, Any]]] = None
         self._health_lock = threading.Lock()
         self.sync: Any = None  # samrabbit_sync.SyncService when a sync folder is given
-        self.calendar: Any = calendar_writer  # samrabbit_calendar.CalendarWriter
+        self.calendar: Any = calendar_writer  # samrabbit_calendar.CalendarWriter (or UnavailableWriter)
         if self.calendar is None and gcal is not None:
-            self.calendar = gcal.make_writer()
+            self.calendar = gcal.make_writer_or_unavailable()
         super().__init__(address, BridgeHandler)
         if sync is not None and sync_dir:
             try:
@@ -515,6 +521,11 @@ class BridgeServer(ThreadingHTTPServer):
             self.calendar.close()
         self.genui.stop()
 
+    @property
+    def dry_run(self) -> bool:
+        """True when journal writes never reach Heptabase (``--cli dry-run`` or the default for a checkout)."""
+        return getattr(self.cli, "mode", MODE_REAL) == MODE_DRY_RUN
+
     def health(self) -> Dict[str, Any]:
         with self._health_lock:
             cached = self._health
@@ -523,7 +534,10 @@ class BridgeServer(ThreadingHTTPServer):
             version = self.cli.version()
             reachable = False
             detail: Optional[str] = None
-            if version is None:
+            dry_run = self.dry_run
+            if dry_run:
+                detail = DRY_RUN_DETAIL  # answers, but never reaches Heptabase: not "reachable"
+            elif version is None:
                 detail = "heptabase_cli_missing"
             else:
                 try:
@@ -550,8 +564,9 @@ class BridgeServer(ThreadingHTTPServer):
             value: Dict[str, Any] = {
                 "ok": True, "service": SERVICE, "version": VERSION,
                 "cli": {"available": version is not None, "version": version,
-                        "mode": getattr(self.cli, "mode", "real")},
+                        "mode": MODE_DRY_RUN if dry_run else MODE_REAL},
                 "app": {"reachable": reachable, "detail": detail},
+                "dryRun": dry_run,
                 "mac": capabilities,
                 "sync": self.sync.health() if self.sync is not None else {"available": False},
                 "genui": generated_ui,
@@ -581,8 +596,11 @@ class BridgeServer(ThreadingHTTPServer):
             self.append_lock.release()
         with self._health_lock:
             self._health = None
-        return {"date": str(result.get("date") or journal_date), "title": result.get("title"),
-                "contentMd5": result.get("contentMd5")}
+        value = {"date": str(result.get("date") or journal_date), "title": result.get("title"),
+                 "contentMd5": result.get("contentMd5")}
+        if self.dry_run or result.get("dryRun") is True:
+            value["dryRun"] = True  # kept in this process only: nothing reached Heptabase
+        return value
 
     def read(self, journal_date: str) -> Dict[str, Any]:
         if not self.read_slots.acquire(timeout=self.cli_timeout + 5):
@@ -597,8 +615,11 @@ class BridgeServer(ThreadingHTTPServer):
         except ValueError:
             raise BridgeError(502, "heptabase_cli_bad_output", "The journal content was unreadable.",
                               retryable=True) from None
-        return {"date": str(result.get("date") or journal_date), "title": result.get("title"),
-                "text": "\n".join(prosemirror_lines(document)), "contentMd5": result.get("contentMd5")}
+        value = {"date": str(result.get("date") or journal_date), "title": result.get("title"),
+                 "text": "\n".join(prosemirror_lines(document)), "contentMd5": result.get("contentMd5")}
+        if self.dry_run or result.get("dryRun") is True:
+            value["dryRun"] = True  # this process's own copy, not the Heptabase journal
+        return value
 
 
 class BridgeHandler(BaseHTTPRequestHandler):
@@ -796,7 +817,8 @@ def make_server(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, *, token_fil
     """Conversation sync runs only with a ``sync_dir`` (the command line passes the default one). ``cli`` is a
     path, ``auto`` or ``dry-run``; without it only the installed copy uses the real CLI (``cli_for``)."""
     if calendar_writer is None and gcal is not None:
-        calendar_writer = gcal.make_writer(composio, calendar_id=calendar_id)
+        # A bad SAMRABBIT_CALENDAR_ID or an unusable temp folder turns calendar changes off, never the bridge.
+        calendar_writer = gcal.make_writer_or_unavailable(composio, calendar_id=calendar_id)
     return BridgeServer((host, port), token=TokenFile(token_file), cli=cli_for(cli),
                         cli_timeout=cli_timeout, allow_any_client=allow_any_client,
                         mac_control=mac_control or mac.MacControl(mac.CuaDriver(driver)),
@@ -860,7 +882,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     signal.signal(signal.SIGINT, stop)
     server.genui.start()
     cli_path = server.cli.executable()
-    if getattr(server.cli, "mode", "real") == CLI_DRY_RUN:
+    if server.dry_run:
         _LOG.warning("heptabase CLI: dry-run, journal writes stay in this process and never reach Heptabase "
                      "(pass --cli auto for the real CLI)")
     composio_found = server.calendar is not None and server.calendar.cli.executable() is not None

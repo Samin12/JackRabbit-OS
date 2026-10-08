@@ -286,9 +286,10 @@ class HeptabaseJournalService:
     def _record_health(self, health: dict[str, object], *, force: bool = False) -> None:
         cli = health.get("cli") if isinstance(health.get("cli"), dict) else {}
         app = health.get("app") if isinstance(health.get("app"), dict) else {}
-        reachable = app.get("reachable") is True
+        dry_run = health.get("dryRun") is True or cli.get("mode") == "dryRun"
+        reachable = app.get("reachable") is True and not dry_run  # a dry-run bridge never reaches Heptabase
         version = cli.get("version")
-        detail = app.get("detail")
+        detail = "bridge_dry_run" if dry_run else app.get("detail")
         self._bridge_store.record_status(
             force=force, reachable=True, appReachable=reachable,
             cliVersion=str(version)[:32] if isinstance(version, str) else None,

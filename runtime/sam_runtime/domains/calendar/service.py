@@ -15,7 +15,7 @@ from sam_runtime.connectors.calendar import (
 )
 from sam_runtime.connectors.calendar.caldav import CaldavCalendarCreateRequest
 from sam_runtime.domains.calendar.google_bridge import GoogleCalendarBridge
-from sam_runtime.domains.calendar.google_writes import LOCAL_WRITE_GRACE, GoogleCalendarWrites, duration, event_zone, is_google_feed, local_fields, parse_moment
+from sam_runtime.domains.calendar.google_writes import LOCAL_WRITE_GRACE, GoogleCalendarWrites, duration, event_zone, google_calendar_id, is_google_feed, is_now, local_fields, parse_moment, whole_number
 from sam_runtime.domains.calendar.models import CalendarAccount, CalendarAccountConfiguration, CalendarCapabilities, CalendarEvent
 from sam_runtime.domains.calendar.repository import CalendarRepository, calendar_event_key
 from sam_runtime.security.credentials import ConnectionCredentialEnvelopes
@@ -128,20 +128,57 @@ class CalendarService:
         """The calendar a change is for: the one named, else the event's, else the Google Calendar feed (or the
         only writable calendar)."""
         if account_id:
-            return account_id
+            return self._named_account_id(account_id)
         event = self._repository.get_event(event_id) if event_id else None
         if event is not None:
             return event.account_id
         accounts = [item for item in self._repository.list_accounts() if item.enabled]
-        for item in accounts:
-            if self._google_route(item):
-                return item.configuration.account_id
+        routes = [item for item in accounts if self._google_route(item)]
+        if routes:
+            return self._primary_google(routes).configuration.account_id
         writable = [item for item in accounts if item.capabilities.can_create]
         if len(writable) == 1:
             return writable[0].configuration.account_id
         if len(accounts) == 1:
             return accounts[0].configuration.account_id
         raise ValueError("calendarAccountId is required.")
+
+    def _named_account_id(self, value: str) -> str:
+        """calendarAccountId as given, or what a model says instead of the id: "primary" (or "google"), the Google
+        account's email, or a calendar's label. Those name the Google Calendar subscription (the Mac bridge writes
+        it); anything else stays as given, so an unknown id is still "Calendar connection was not found."."""
+        if self._repository.get_account(value) is not None:
+            return value
+        wanted = " ".join(value.split()).casefold()
+        if not wanted:
+            return value
+        accounts = [item for item in self._repository.list_accounts() if item.enabled]
+        google = [item for item in accounts if is_google_feed(item)]
+        if google and wanted in _PRIMARY_CALENDAR_NAMES:
+            return self._primary_google(google).configuration.account_id
+        for item in (*google, *(item for item in accounts if item not in google)):
+            names = {" ".join(item.configuration.label.split()).casefold()}
+            if is_google_feed(item) and google_calendar_id(item):
+                names.add(str(google_calendar_id(item)).casefold())
+            if wanted in names:
+                return item.configuration.account_id
+        status = self._google.bridge.cached_status() if self._google is not None else None
+        if google and wanted == str((status or {}).get("account") or "").strip().casefold():
+            return self._primary_google(google).configuration.account_id  # the Google account the Mac writes with
+        return value
+
+    def _primary_google(self, google: list[CalendarAccount]) -> CalendarAccount:
+        """Of the Google Calendar feeds, the user's main one: the Mac bridge's Google account's own calendar when
+        known, else a personal calendar (its id is an address, not ``…@group.calendar.google.com``), else the first."""
+        status = self._google.bridge.cached_status() if self._google is not None else None
+        owner = str((status or {}).get("account") or "").strip().casefold()
+        ids = [(google_calendar_id(item) or "").casefold() for item in google]
+        if owner and owner in ids:
+            return google[ids.index(owner)]
+        for item, value in zip(google, ids):
+            if "@" in value and not value.endswith("calendar.google.com"):
+                return item
+        return google[0]
 
     def _google_route(self, account: CalendarAccount) -> bool:
         return self._google is not None and is_google_feed(account)
@@ -155,7 +192,7 @@ class CalendarService:
             raise ValueError("Calendar event was not found.")
         if operation == "update":
             return self._google.update(account, event, context, arguments)
-        review = self._google.review_delete(event)
+        review = self._google.review_delete(event, account)
         self._google.ready()
         payload = {"title": event.title, "startsAt": event.starts_at, "endsAt": event.ends_at, "allDay": event.all_day, "calendar": review["calendar"]}
         value = self._repository.create_pending_action(account_id=account.configuration.account_id, event_id=event.event_id, operation="delete", payload=payload, voice_session_id=context.voice_session_id or "", tool_call_id=context.tool_call_id or "", utterance_id=context.user_utterance_id or 0, writable_elsewhere=True)
@@ -165,11 +202,11 @@ class CalendarService:
 
     def _plain_times(self, operation: str, event_id: str | None, arguments: dict[str, object]) -> dict[str, object]:
         """``startsAt: "now"`` and ``durationMinutes`` for calendars written directly (CalDAV)."""
-        if arguments.get("startsAt") != "now" and arguments.get("durationMinutes") is None:
+        if not is_now(arguments.get("startsAt")) and arguments.get("durationMinutes") is None:
             return arguments
         _, zone = event_zone(self._timezone_name, arguments.get("timezone"))
         value = {key: item for key, item in arguments.items() if key != "durationMinutes"}
-        if value.get("startsAt") == "now":
+        if is_now(value.get("startsAt")):
             value["startsAt"] = parse_moment("now", "startsAt", zone).isoformat()
         length = duration(arguments)
         if length is not None and not value.get("endsAt"):
@@ -309,6 +346,10 @@ def _optional_date_time(value: dict[str, object], key: str) -> datetime | None:
     return _date_time(value, key) if _optional(value, key) else None
 
 
+# calendarAccountId values that mean "the user's Google Calendar" (Google's own id for the main calendar is primary).
+_PRIMARY_CALENDAR_NAMES = frozenset({"primary", "default", "google", "google calendar", "my calendar", "my google calendar"})
+
+
 def _limit(arguments: dict[str, object]) -> int:
-    value = arguments.get("limit", 25)
-    return max(1, min(value, 50)) if isinstance(value, int) and not isinstance(value, bool) else 25
+    value = whole_number(arguments.get("limit", 25))
+    return max(1, min(value, 50)) if value is not None else 25

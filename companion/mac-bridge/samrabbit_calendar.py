@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import json
+import logging
 import os
 import re
 import shutil
@@ -34,6 +35,8 @@ import subprocess
 import tempfile
 import threading
 from typing import Any, Dict, List, Optional, Tuple
+
+_LOG = logging.getLogger("samrabbit-bridge.calendar")
 
 ROUTE_PREFIX = "/v1/calendar/"
 STATUS_ROUTE = "/v1/calendar/status"
@@ -66,6 +69,10 @@ _TIMEZONE = re.compile(r"^[A-Za-z][A-Za-z0-9_+\-]*(?:/[A-Za-z0-9_+\-]+){0,2}$")
 _DATETIME = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?)(?:\.\d+)?(Z|[+-]\d{2}:\d{2})$")
 _EMAIL = re.compile(r"^[^@\s]{1,128}@[^@\s]{1,128}$")
 _CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+# In Composio's message: any rate-limit wording. Anywhere in its data: only Google's own reasons
+# (rateLimitExceeded, userRateLimitExceeded), so an unrelated key never turns a refusal into "try again".
+_RATE_LIMIT_WORDS = ("ratelimit", "rate limit")
+_RATE_LIMIT_REASONS = ("ratelimitexceeded",)  # also matches userratelimitexceeded
 _HTTP_STATUS = re.compile(r"\b([45]\d\d) (?:Client|Server) Error|status(?:_code| code)?[\"':= ]+([45]\d\d)\b",
                           re.IGNORECASE)
 
@@ -198,6 +205,10 @@ def _failure(value: Dict[str, Any], writing: bool) -> CalendarError:
     data = value.get("data") if isinstance(value.get("data"), dict) else {}
     message = str(value.get("error") or data.get("message") or "")
     low = (message + " " + str(value.get("slug") or "")).lower()
+    try:  # Google's own reason (e.g. "rateLimitExceeded") may sit anywhere in data
+        details = json.dumps(data, ensure_ascii=True, default=str)[:20000].lower()
+    except (TypeError, ValueError):
+        details = ""
     status = data.get("status_code") if isinstance(data.get("status_code"), int) else None
     if status is None:
         match = _HTTP_STATUS.search(message)
@@ -215,6 +226,12 @@ def _failure(value: Dict[str, Any], writing: bool) -> CalendarError:
     if status == 401 or "invalid_grant" in low or "unauthenticated" in low or "invalid credentials" in low:
         return CalendarError(409, "calendar_not_connected", "Google Calendar needs to be linked again in Composio "
                              "on the Mac.", written=False, fix=LINK_FIX)
+    # Google answers 403 rateLimitExceeded / userRateLimitExceeded (and 429) when it wants a slower client: a
+    # retry later works, so this is not "forbidden".
+    if status == 429 or any(word in low for word in _RATE_LIMIT_WORDS) or \
+            any(reason in details for reason in _RATE_LIMIT_REASONS):
+        return CalendarError(503, "calendar_rate_limited", "Google Calendar is busy. Try again in a minute.",
+                             retryable=True, written=False)
     if status == 403:
         return CalendarError(403, "calendar_forbidden", "Google Calendar didn't allow that change (you may not be "
                              "the organizer, or that calendar is read-only).", written=False)
@@ -224,9 +241,6 @@ def _failure(value: Dict[str, Any], writing: bool) -> CalendarError:
                                  written=False)
         return CalendarError(404, "calendar_event_not_found", "That event is not in Google Calendar (it may "
                              "have been deleted already).", written=False)
-    if status == 429 or "ratelimit" in low or "rate limit" in low:
-        return CalendarError(503, "calendar_rate_limited", "Google Calendar is busy. Try again in a minute.",
-                             retryable=True, written=False)
     if status is not None and status >= 500:
         return CalendarError(502, "calendar_google_error", "Google Calendar failed while handling that.",
                              retryable=True, written="unknown" if writing else False)
@@ -310,6 +324,17 @@ def _time_of(part: Any) -> Optional[str]:
             if isinstance(part.get(key), str) and part[key].strip():
                 return part[key].strip()
     return None
+
+
+def _guests(event: Dict[str, Any]) -> Optional[int]:
+    """Guests on Google's event (attendees other than the user and rooms); ``None`` when Google sent no event."""
+    if not event:
+        return None
+    attendees = event.get("attendees")
+    if not isinstance(attendees, list):
+        return 0  # Google leaves "attendees" out when there are none
+    return sum(1 for item in attendees if isinstance(item, dict) and not item.get("self")
+               and not item.get("resource"))
 
 
 def _email(value: Any) -> Optional[str]:
@@ -528,6 +553,9 @@ class CalendarWriter:
         }
         if isinstance(event.get("recurringEventId"), str):
             value["recurringEventId"] = event["recurringEventId"]
+        guests = _guests(event)
+        if guests is not None:
+            value["guests"] = guests  # changes never email them (send_updates "none"); the R1 says so
         return value
 
 
@@ -551,7 +579,65 @@ def _method(method: str, expected: str) -> None:
         raise CalendarError(405, "method_not_allowed", f"Use {expected}.")
 
 
+class _NoCli:
+    """The CLI of an ``UnavailableWriter``: never found, never run."""
+
+    def executable(self) -> Optional[str]:
+        return None
+
+    def close(self) -> None:
+        return None
+
+
+class UnavailableWriter:
+    """Stands in for ``CalendarWriter`` when it could not be set up (a malformed ``SAMRABBIT_CALENDAR_ID``, no
+    usable temp folder): ``/health`` says ``calendarWrite.available: false`` with the reason code, every change
+    is refused with 503 ``calendar_unavailable``, and the rest of the bridge keeps working."""
+
+    def __init__(self, code: str, message: str) -> None:
+        self.cli = _NoCli()
+        self.calendar_id: Optional[str] = None
+        self.code = code
+        self.message = message
+
+    def close(self) -> None:
+        return None
+
+    def capabilities(self) -> Dict[str, Any]:
+        return {"available": False, "composio": False, "path": None, "calendarId": None, "account": None,
+                "lastError": self.code, "lastOkAt": None}
+
+    def route(self, handler: Any, method: str, route: str) -> Tuple[int, Dict[str, Any]]:
+        if route == STATUS_ROUTE and method == "GET":
+            return 200, self.capabilities()
+        if route not in ROUTES:
+            return 404, CalendarError(404, "not_found", "Not found.").payload()
+        return 503, CalendarError(503, "calendar_unavailable", self.message, written=False).payload()
+
+
 def make_writer(executable: Optional[str] = None, *, calendar_id: Optional[str] = None,
                 account: Optional[str] = None) -> CalendarWriter:
-    return CalendarWriter(ComposioCli(executable), calendar_id=calendar_id,
-                          account=account or os.environ.get("SAMRABBIT_CALENDAR_ACCOUNT") or None)
+    cli = ComposioCli(executable)
+    try:
+        return CalendarWriter(cli, calendar_id=calendar_id,
+                              account=account or os.environ.get("SAMRABBIT_CALENDAR_ACCOUNT") or None)
+    except BaseException:
+        cli.close()  # no stray temp folder
+        raise
+
+
+def make_writer_or_unavailable(executable: Optional[str] = None, *, calendar_id: Optional[str] = None,
+                               account: Optional[str] = None) -> Any:
+    """``make_writer``, or an ``UnavailableWriter`` (logged by code only) when the setup fails."""
+    try:
+        return make_writer(executable, calendar_id=calendar_id, account=account)
+    except ValueError:
+        _LOG.warning("calendar changes off: the Google calendar id (--calendar-id / SAMRABBIT_CALENDAR_ID) is "
+                     "malformed")
+        return UnavailableWriter("calendar_id_invalid", "The Google calendar id configured on the Mac "
+                                 "(--calendar-id / SAMRABBIT_CALENDAR_ID) is malformed, so Google Calendar can't be "
+                                 "changed from the R1. Fix it and restart the bridge.")
+    except OSError as error:
+        _LOG.warning("calendar changes off: no private working folder (%s)", type(error).__name__)
+        return UnavailableWriter("calendar_setup_failed", "The Mac bridge could not create its private working "
+                                 "folder, so Google Calendar can't be changed from the R1. Restart the bridge.")
