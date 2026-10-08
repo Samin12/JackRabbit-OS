@@ -114,6 +114,11 @@ class HeptabaseJournalService:
 
     # ------------------------------------------------------------------ state views
 
+    @property
+    def bridge_store(self) -> BridgeStore:
+        """The Mac bridge configuration (URL + sealed token), shared with Mac control from Voice."""
+        return self._bridge_store
+
     def connected(self) -> bool:
         """The Mac bridge is configured, or a grant exists (possibly needing reconnect: notes still queue)."""
         return self.mode() is not None

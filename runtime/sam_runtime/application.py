@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from .api.events import RuntimeEventStream
 from .api.http_server import RuntimeHttpServer
@@ -89,6 +90,8 @@ from .domains.t3.tools import T3_TOOL_SET, register_t3_tools
 from .domains.t3.voice import T3VoiceContext
 from .domains.t3.placement import OrchestrationSetting, ProjectPlacement
 from .api.t3_routes import T3Routes
+from .domains.mac import MAC_TOOL_SET, MacControlClient, MacVoiceContext, register_mac_tools
+from .api.mac_routes import MacRoutes
 from .domains.heptabase_journal import JOURNAL_TOOL_SET, HeptabaseJournalService, register_journal_tools
 from .api.heptabase_routes import HeptabaseRoutes
 
@@ -201,6 +204,11 @@ class RuntimeApplication:
         self._t3_placement = ProjectPlacement(self._t3, OrchestrationSetting(self._database))
         self._t3_routes = T3Routes(self._t3, self._t3_placement)
         register_t3_tools(self._tools, self._t3, self._t3_placement)
+        # Mac control from Voice: the journal's Mac bridge (same URL and sealed token) plus T3 for mac_task.
+        self._mac = MacControlClient(self._heptabase_journal.bridge_store)
+        self._mac_routes = MacRoutes(self._mac)
+        register_mac_tools(self._tools, self._mac, t3=self._t3, placement=self._t3_placement,
+                           owner_name=lambda: self._profile.profile().display_name)
         self._background_agent_runs = AgentRunRepository(self._database)
         self._background_agent_settings = BackgroundAgentSettingsRepository(self._database)
         self._run_workspaces = RunWorkspaceRegistry(config.background_runs_path)
@@ -321,7 +329,7 @@ class RuntimeApplication:
             ),
             voice_skill_instructions=self._instruction_documents.voice_instructions,
             voice_modes=self._voice_modes,
-            t3_voice_context=T3VoiceContext(self._t3).render,
+            t3_voice_context=_joined(T3VoiceContext(self._t3).render, MacVoiceContext(self._mac).render),
         )
         self._text_runner = AgentsSdkTextRunner(
             credentials=credentials,
@@ -433,6 +441,13 @@ class RuntimeApplication:
                 changed_by="runtime-bootstrap",
                 reason="enable built-in T3 Code orchestration for Voice",
             )
+        if self._audience_router.binding_for(MAC_TOOL_SET) is None:
+            self._audience_router.set_audience(
+                MAC_TOOL_SET,
+                AgentAudience.VOICE,
+                changed_by="runtime-bootstrap",
+                reason="enable control of the user's Mac for Voice (shown only when the Mac bridge is configured)",
+            )
         if self._audience_router.binding_for(JOURNAL_TOOL_SET) is None:
             self._audience_router.set_audience(
                 JOURNAL_TOOL_SET,
@@ -484,6 +499,7 @@ class RuntimeApplication:
             t3=self._t3_routes,
             announcements=self._announcement_routes,
             heptabase=self._heptabase_routes,
+            mac=self._mac_routes,
         )
         self._server.start()
         self._background_agent.start()
@@ -531,3 +547,17 @@ class RuntimeApplication:
         if callback is not None:
             callback.run()
 
+
+def _joined(*renders: Callable[[], str]) -> Callable[[], str]:
+    """One instructions block from several voice addenda (each may be empty or fail on its own)."""
+    def render() -> str:
+        parts = []
+        for part in renders:
+            try:
+                value = part()
+            except Exception:
+                value = ""
+            if value:
+                parts.append(value)
+        return "\n\n".join(parts)
+    return render

@@ -28,6 +28,7 @@ from .background_agent_routes import BackgroundAgentRoutes
 from .t3_routes import T3Routes
 from .announcement_routes import AnnouncementRoutes
 from .heptabase_routes import HeptabaseRoutes
+from .mac_routes import MacRoutes
 
 if TYPE_CHECKING:
     from .http_server import HealthReader, RestartRequest
@@ -100,6 +101,7 @@ class RuntimeRoutes:
         t3: T3Routes | None = None,
         announcements: AnnouncementRoutes | None = None,
         heptabase: HeptabaseRoutes | None = None,
+        mac: MacRoutes | None = None,
     ) -> None:
         self._health = health
         self._lifecycle = lifecycle
@@ -126,6 +128,7 @@ class RuntimeRoutes:
         self._t3 = t3
         self._announcements = announcements
         self._heptabase = heptabase
+        self._mac = mac
 
     def handle_get(self, req: RouteRequest) -> None:
         path = req.path.split("?", 1)[0]
@@ -164,6 +167,7 @@ class RuntimeRoutes:
         if self._t3 is not None and self._t3.handle_get(req, pairing): return
         if self._announcements is not None and self._announcements.handle_get(req, pairing): return
         if self._heptabase is not None and self._heptabase.handle_get(req, pairing): return
+        if self._mac is not None and self._mac.handle_get(req, pairing): return
         if path == "/v1/health":
             req.respond_json(200, self._health())
             return
@@ -292,6 +296,7 @@ class RuntimeRoutes:
         if self._t3 is not None and self._t3.handle_post(req, pairing): return
         if self._announcements is not None and self._announcements.handle_post(req, pairing): return
         if self._heptabase is not None and self._heptabase.handle_post(req, pairing): return
+        if self._mac is not None and self._mac.handle_post(req, pairing): return
         if path == "/v1/mcp" and mcp is not None:
             payload = req.request_json(max_bytes=65_536)
             if payload is None:
