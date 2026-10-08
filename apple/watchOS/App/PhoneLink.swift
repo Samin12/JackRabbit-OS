@@ -133,7 +133,7 @@ final class PhoneLink: NSObject, WCSessionDelegate, BridgeRelay, @unchecked Send
 
     private func forget() {
         guard account.pairing != nil || account.token != nil else { return }
-        account.unpair()
+        account.forget() // the phone unpaired: the bridge revoked this watch with it
         SummaryCache.shared.clear()
         log.notice("the iPhone unpaired")
         changed()

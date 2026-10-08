@@ -11,9 +11,14 @@ import Synchronization
 /// With a `relay` (the Apple Watch relays through the iPhone), a request that reached no address at
 /// all goes through the relay instead; one that may have reached the bridge (a POST that timed
 /// out) is never sent a second time.
+///
+/// A client owns two `URLSession`s: make one per pairing and keep it (`BridgeAccount.client()` does),
+/// never one per request. Each request carries its own timeout (`BridgeRequest.timeout`, else the
+/// client's default).
 public final class BridgeClient: Sendable {
     public let hosts: [BridgeHost]
     private let token: String?
+    private let defaultTimeout: TimeInterval
     private let session: URLSession
     private let streamSession: URLSession
     private let preferred: Mutex<Int>
@@ -23,7 +28,7 @@ public final class BridgeClient: Sendable {
     /// - Parameters:
     ///   - hosts: the bridge addresses, best first.
     ///   - token: the mobile token (`nil` only for `pair` and `health`).
-    ///   - timeout: the default per-request timeout in seconds.
+    ///   - timeout: the timeout in seconds of requests that do not set their own.
     ///   - relay: another route to the bridge for when no address answers.
     public init(hosts: [BridgeHost], token: String?, timeout: TimeInterval = 12, relay: (any BridgeRelay)? = nil,
                 onPreferredHostChange: (@Sendable (BridgeHost) -> Void)? = nil) {
@@ -31,9 +36,11 @@ public final class BridgeClient: Sendable {
         self.token = token
         self.relay = relay
         self.onPreferredHostChange = onPreferredHostChange
+        defaultTimeout = timeout
         preferred = Mutex(0)
         let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = timeout
+        // Every request sets its own timeout (`makeRequest`); this is only the ceiling.
+        configuration.timeoutIntervalForRequest = 60
         configuration.timeoutIntervalForResource = 120
         configuration.waitsForConnectivity = false
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
@@ -74,10 +81,19 @@ public final class BridgeClient: Sendable {
     }
 
     /// `POST /v1/mobile/devices/child {name, platform}`: a separate, revocable token for the
-    /// Apple Watch, issued with this device's token.
+    /// Apple Watch, issued with this device's token. The bridge replaces an earlier child of this
+    /// device with the same name (its old token stops working).
     public func childDevice(name: String, platform: DevicePlatform = .watchos) async throws -> PairResponse {
         try await json(.post("/v1/mobile/devices/child", body: ["name": .string(name),
                                                                  "platform": .string(platform.rawValue)]))
+    }
+
+    /// `POST /v1/mobile/unpair`: the bridge forgets the device whose token this client holds (an
+    /// iPhone takes its watch with it). Returns how many devices it revoked.
+    @discardableResult
+    public func unpair(timeout: TimeInterval = 6) async throws -> Int {
+        let value: JSONValue = try await json(.post("/v1/mobile/unpair", body: [:], timeout: timeout))
+        return value["revoked"].int ?? 0
     }
 
     // MARK: - Dashboard
@@ -203,9 +219,9 @@ public final class BridgeClient: Sendable {
     // MARK: - T3 tasks
 
     /// `GET /v1/mobile/t3/threads?filter=`
-    public func threads(filter: ThreadFilter? = nil) async throws -> [TaskThread] {
+    public func threads(filter: ThreadFilter? = nil, timeout: TimeInterval? = nil) async throws -> [TaskThread] {
         let query = filter.map { [URLQueryItem(name: "filter", value: $0.rawValue)] } ?? []
-        let list: ThreadList = try await json(.get("/v1/mobile/t3/threads", query: query))
+        let list: ThreadList = try await json(.get("/v1/mobile/t3/threads", query: query, timeout: timeout))
         return list.threads
     }
 
@@ -434,7 +450,7 @@ public final class BridgeClient: Sendable {
         var urlRequest = URLRequest(url: url)
         urlRequest.httpMethod = request.method
         urlRequest.setValue(request.accept, forHTTPHeaderField: "Accept")
-        if let timeout = request.timeout { urlRequest.timeoutInterval = timeout }
+        urlRequest.timeoutInterval = request.timeout ?? (request.accept == "text/event-stream" ? 45 : defaultTimeout)
         if request.authorized, let token { urlRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         if let body = request.body {
             urlRequest.httpBody = body

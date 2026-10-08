@@ -175,7 +175,7 @@ struct QuickActionsGrid: View {
         GlassEffectContainer(spacing: 12) {
             LazyVGrid(columns: columns, spacing: 12) {
                 QuickActionTile(title: "Ask", symbol: "sparkles", tint: SamTheme.orb2) { model.sheet = .ask(prefill: "") }
-                QuickActionTile(title: "Note", symbol: "square.and.pencil", tint: SamTheme.mint) { model.sheet = .note }
+                QuickActionTile(title: "Note", symbol: "square.and.pencil", tint: SamTheme.mint) { model.sheet = .note(prefill: "") }
                 QuickActionTile(title: blocking ? "Blocking…" : "Block 30m", symbol: "calendar.badge.clock", tint: SamTheme.violet) {
                     guard !blocking else { return }
                     blocking = true
@@ -192,7 +192,7 @@ struct QuickActionsGrid: View {
                     model.sheet = .generate(prefill: "")
                 }
                 QuickActionTile(title: "Open on Mac", symbol: "macbook.and.iphone", tint: SamTheme.amber) {
-                    model.sheet = .openOnMac
+                    model.sheet = .openOnMac(prefill: "")
                 }
             }
         }

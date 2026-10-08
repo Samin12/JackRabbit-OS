@@ -116,19 +116,19 @@ final class WatchModel {
     /// The summary and the thread list, each with its own error: T3 Code not running (the list
     /// answers 503) leaves the orb, Up next and the complications fresh.
     func refresh() async {
-        guard paired, let client = account.client(timeout: 6) else { return }
+        guard paired, let client = account.client() else { return }
         refreshing = true
         defer { refreshing = false }
         async let summaryCall = BridgeError.capture { try await client.summary(timeout: 6) }
-        async let threadsCall = BridgeError.capture { try await client.threads() }
+        async let threadsCall = BridgeError.capture { try await client.threads(timeout: 8) }
         let (summaryResult, threadsResult) = await (summaryCall, threadsCall)
         switch summaryResult {
         case .success(let fresh):
             summary = fresh
             summaryDate = .now
             lastError = nil
-            SummaryCache.shared.save(fresh)
-            SamRabbitActions.reloadWidgets()
+            // The complications reload only when what they show changed (not every 30 s).
+            SummaryCache.shared.publish(fresh)
         case .failure(let error):
             if error != .cancelled { lastError = error }
         }
@@ -232,14 +232,14 @@ final class WatchModel {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         await run(thread.threadId) {
-            try await self.account.requireClient(timeout: 15).sendMessage(threadId: thread.threadId, text: trimmed)
+            try await self.account.requireClient().sendMessage(threadId: thread.threadId, text: trimmed)
             self.show(.success, "Reply sent", detail: thread.title)
         }
     }
 
     func stop(_ thread: TaskThread) async {
         await run(thread.threadId) {
-            try await self.account.requireClient(timeout: 15).stop(threadId: thread.threadId)
+            try await self.account.requireClient().stop(threadId: thread.threadId)
             self.show(.success, "Stopped", detail: thread.title)
         }
     }

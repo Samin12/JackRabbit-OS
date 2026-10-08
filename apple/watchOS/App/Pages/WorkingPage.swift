@@ -132,7 +132,7 @@ struct ThreadDetailView: View {
     }
 
     private func load() async {
-        guard let client = model.account.client(timeout: 8) else { return }
+        guard let client = model.account.client() else { return }
         do {
             detail = try await client.thread(route.threadId)
             failed = false

@@ -28,6 +28,9 @@ public struct WatchContext: Codable, Sendable, Equatable {
     /// person asked to reconnect).
     public static let requestKey = "samrabbit.contextRequest"
     public static let reissueValue = "reissue"
+    /// The name the watch's child token is issued under. Always the same, so the bridge replaces
+    /// the previous watch token of this iPhone when it issues a new one.
+    public static let watchName = "Apple Watch"
 
     public var applicationContext: [String: Any] {
         guard let data = try? BridgeJSON.encoder().encode(self) else { return [:] }
@@ -42,11 +45,17 @@ public struct WatchContext: Codable, Sendable, Equatable {
 }
 
 /// A bridge request relayed through the iPhone (`WCSession.sendMessage`) when the watch cannot
-/// reach the Mac directly. The phone performs it with its own token and answers with the status
-/// and body, so the watch decodes exactly what the bridge said.
+/// reach the Mac directly. The phone performs it with the watch's own child token (the one it
+/// issued and keeps in its Keychain, `BridgeAccount.performRelayed`), never with its own, and
+/// answers with the status and body, so the watch decodes exactly what the bridge said: a watch
+/// revoked on the Mac gets 401 through the phone just as it does directly.
 public enum WatchRelay {
     public static let requestKey = "samrabbit.relay"
     public static let responseKey = "samrabbit.relayResponse"
+
+    static let prefix = "/v1/mobile/"
+    /// The first path segments under `/v1/mobile/` the phone relays (an allowlist).
+    static let relayable: Set<String> = ["summary", "t3", "calendar", "journal", "conversations", "blobs", "ui", "mac"]
 
     public struct Request: Codable, Sendable, Equatable {
         public var method: String
@@ -71,10 +80,18 @@ public enum WatchRelay {
                           body: body, authorized: true, accept: accept, timeout: timeout)
         }
 
-        /// Only the mobile API may be relayed.
+        /// Only what the watch itself does may be relayed: the dashboard, tasks, the calendar, the
+        /// journal, conversations, generated UIs and the Mac. Never pairing, unpairing or device
+        /// management (`pair`, `pairing/start`, `unpair`, `devices`, `devices/child`), and never the
+        /// SSE stream.
         public var allowed: Bool {
-            path.hasPrefix("/v1/mobile/") && !path.contains("..") && ["GET", "POST", "DELETE"].contains(method)
-                && !path.hasPrefix("/v1/mobile/pair") && !path.hasPrefix("/v1/mobile/devices")
+            guard ["GET", "POST"].contains(method), path.hasPrefix(WatchRelay.prefix) else { return false }
+            let lowered = path.lowercased()
+            guard !lowered.contains(".."), !lowered.contains("//"), !lowered.contains("%2e"), !lowered.contains("%2f"),
+                  !path.contains("?"), !path.contains("#") else { return false }
+            let rest = String(path.dropFirst(WatchRelay.prefix.count))
+            let first = rest.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? ""
+            return WatchRelay.relayable.contains(first)
         }
 
         public var message: [String: Any] {
@@ -97,6 +114,12 @@ public enum WatchRelay {
         public init(status: Int, body: Data) {
             self.status = status
             self.body = body
+        }
+
+        /// The phone's own refusal, in the bridge's error envelope.
+        static func refusal(_ status: Int, _ code: String, _ message: String) -> Response {
+            let envelope: JSONValue = ["error": ["code": .string(code), "message": .string(message), "retryable": false]]
+            return Response(status: status, body: (try? JSONEncoder().encode(envelope)) ?? Data())
         }
 
         public var message: [String: Any] {
@@ -136,7 +159,7 @@ extension BridgeClient {
 
 /// Another route to the bridge, used by `BridgeClient` when no address can be connected to. The
 /// Apple Watch implements it with `WCSession.sendMessage` (the iPhone performs the request with
-/// its own token and answers with `WatchRelay.Response`).
+/// the watch's own child token and answers with `WatchRelay.Response`).
 public protocol BridgeRelay: Sendable {
     /// True when requests should go through the relay first (the direct route failed a moment ago).
     var prefersRelay: Bool { get }

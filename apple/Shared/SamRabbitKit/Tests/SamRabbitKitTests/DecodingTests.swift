@@ -119,7 +119,7 @@ struct DecodingTests {
             TaskThread(threadId: "t", title: "Deploy", status: .needsApproval,
                        pending: PendingAction(kind: .approval, text: text, requestId: requestId))
         }
-        let first = AlertPlanner.plan(threads: [thread("r1", "Run deploy")], announced: [], tracked: [])
+        let first = AlertPlanner.plan(threads: [thread("r1", "Run deploy")], announced: [:], tracked: [])
         #expect(first.alerts.count == 1)
         let again = AlertPlanner.plan(threads: [thread("r1", "Run deploy (edited)")], announced: first.announced, tracked: [])
         #expect(again.alerts.isEmpty)

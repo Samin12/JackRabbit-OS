@@ -15,7 +15,9 @@ public enum BridgeError: Error, Sendable, Equatable, LocalizedError {
     case cancelled
 
     public var errorDescription: String? {
-        switch self {
+        if isPairingCodeRejected { return "That code is wrong or expired — get a new one on your Mac." }
+        if isPairingRateLimited { return "Too many wrong codes. Wait a few minutes, then get a new code on your Mac." }
+        return switch self {
         case .notPaired: "Pair SamRabbit with your Mac first."
         case .unauthorized: "Your Mac no longer accepts this iPhone. Pair again in Settings."
         case .server(_, _, let message, _): message.isEmpty ? "The Mac couldn't do that." : message
@@ -34,6 +36,21 @@ public enum BridgeError: Error, Sendable, Equatable, LocalizedError {
         default: nil
         }
     }
+
+    /// `POST /v1/mobile/pair` refused the code: wrong, already used or expired (401 `invalid_code` /
+    /// `expired_code`). Not the same as `.unauthorized`, which is a token the Mac stopped accepting.
+    public var isPairingCodeRejected: Bool {
+        guard case .server(_, let code, _, _) = self else { return false }
+        return Self.pairingCodeRejectedCodes.contains(code)
+    }
+
+    /// Too many wrong pairing codes: the Mac refuses pairing for a few minutes (429).
+    public var isPairingRateLimited: Bool {
+        guard case .server(let status, let code, _, _) = self else { return false }
+        return status == 429 || code == "pairing_rate_limited"
+    }
+
+    static let pairingCodeRejectedCodes: Set<String> = ["invalid_code", "expired_code", "code_expired", "code_used"]
 
     /// The approval or question this answered is no longer the open one (answered elsewhere, or T3
     /// moved on to a new request): refresh and let the person look again.
@@ -66,7 +83,9 @@ public enum BridgeError: Error, Sendable, Equatable, LocalizedError {
         case .unauthorized: "Pair again"
         case .unreachable: "Mac unreachable"
         case .server(_, let code, _, _):
-            code == "screen_locked" ? "Screen locked"
+            isPairingCodeRejected ? "That code didn't work"
+                : isPairingRateLimited ? "Too many tries"
+                : code == "screen_locked" ? "Screen locked"
                 : isStaleRequest ? "That request changed"
                 : isTaskServiceDown ? "T3 not connected" : "Mac error"
         case .invalidResponse: "Unexpected answer"
@@ -74,12 +93,14 @@ public enum BridgeError: Error, Sendable, Equatable, LocalizedError {
         }
     }
 
+    /// A non-2xx answer. A 401 is a refused token (`.unauthorized`), except when it refuses a pairing
+    /// code (`invalid_code`, `expired_code`): that stays `.server` so pairing can say the code was wrong.
     static func from(status: Int, data: Data) -> BridgeError {
         if let envelope = try? JSONDecoder().decode(JSONValue.self, from: data) {
             let error = envelope["error"]
             let code = error["code"].string ?? error.string ?? "http_\(status)"
             let message = error["message"].string ?? envelope["message"].string ?? ""
-            if status == 401 { return .unauthorized }
+            if status == 401, !pairingCodeRejectedCodes.contains(code) { return .unauthorized }
             return .server(status: status, code: code, message: message,
                            retryable: error["retryable"].bool ?? (status >= 500))
         }

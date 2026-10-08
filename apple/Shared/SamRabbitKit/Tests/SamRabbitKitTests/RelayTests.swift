@@ -6,8 +6,9 @@ import Testing
 @testable import SamRabbitKit
 
 /// The iPhone's half of the watch relay, in process: every request goes through the same
-/// `WatchRelay` message encoding as `WCSession.sendMessage` and is performed with the phone's
-/// own client (`BridgeClient.raw`), exactly like `iOS/App/WatchLink.swift`.
+/// `WatchRelay` message encoding as `WCSession.sendMessage` and is performed by the phone's
+/// `BridgeAccount.performRelayed` (with the watch's own child token), exactly like
+/// `iOS/App/WatchLink.swift`.
 final class PhoneRelayStandIn: BridgeRelay, @unchecked Sendable {
     struct State {
         var prefersRelay = false
@@ -18,10 +19,10 @@ final class PhoneRelayStandIn: BridgeRelay, @unchecked Sendable {
         var direct: [Bool] = []
     }
 
-    let phone: BridgeClient?
+    let phone: BridgeAccount
     let state = Mutex(State())
 
-    init(phone: BridgeClient?) { self.phone = phone }
+    init(phone: BridgeAccount) { self.phone = phone }
 
     var prefersRelay: Bool { state.withLock { $0.prefersRelay } }
 
@@ -30,21 +31,13 @@ final class PhoneRelayStandIn: BridgeRelay, @unchecked Sendable {
     func relay(_ request: BridgeRequest) async throws -> (status: Int, body: Data) {
         let (down, zero) = state.withLock { ($0.down, $0.answerZero) }
         if down { throw BridgeError.unreachable("phone not reachable") }
-        guard let decoded = WatchRelay.Request(message: WatchRelay.Request(request).message), decoded.allowed else {
-            return (400, Data())
-        }
+        guard let decoded = WatchRelay.Request(message: WatchRelay.Request(request).message) else { return (400, Data()) }
         state.withLock {
             $0.relayed.append("\(decoded.method) \(decoded.path)")
             $0.bodies.append(decoded.body.map { String(decoding: $0, as: UTF8.self) } ?? "")
         }
         if zero { return (0, Data()) }
-        let answer: WatchRelay.Response
-        do {
-            let (status, body) = try await phone!.raw(decoded.bridgeRequest)
-            answer = WatchRelay.Response(status: status, body: body)
-        } catch {
-            answer = WatchRelay.Response(status: 0, body: Data())
-        }
+        let answer = await phone.performRelayed(decoded)
         let received = WatchRelay.Response(message: answer.message)!
         return (received.status, received.body)
     }
@@ -86,17 +79,24 @@ final class SilentPort: @unchecked Sendable {
 
 @Suite("Watch relay through the iPhone", .serialized)
 struct RelayTests {
-    /// The phone paired with a fake bridge, and a watch client whose only address is `watchHost`.
+    /// The phone paired with a fake bridge and provisioned its watch (child token); a watch client
+    /// whose only address is `watchHost`.
     func setUp(watchHost: BridgeHost? = nil) async throws -> (FakeBridgeProcess, PhoneRelayStandIn, BridgeClient) {
+        let (bridge, relay, watch, _) = try await setUpWithContext(watchHost: watchHost)
+        return (bridge, relay, watch)
+    }
+
+    func setUpWithContext(watchHost: BridgeHost? = nil) async throws
+        -> (FakeBridgeProcess, PhoneRelayStandIn, BridgeClient, WatchContext) {
         let bridge = try FakeBridgeProcess()
-        let (phone, _) = try await bridge.pairedClient()
+        let (_, phone) = try await bridge.pairedClient()
         let relay = PhoneRelayStandIn(phone: phone)
-        let child = try await phone.childDevice(name: "Apple Watch")
+        let context = try await phone.provisionWatch()
         let account = BridgeAccount(container: .temporary(), secrets: MemorySecretStore(), relay: relay)
-        let pairing = BridgePairing(hosts: [watchHost ?? bridge.host], deviceId: child.deviceId,
-                                    bridgeName: child.bridgeName, bridgeVersion: nil, deviceName: "Apple Watch")
-        #expect(account.save(pairing, token: child.token))
-        return (bridge, relay, try account.requireClient(timeout: 2))
+        let pairing = BridgePairing(hosts: [watchHost ?? bridge.host], deviceId: context.deviceId,
+                                    bridgeName: context.bridgeName, bridgeVersion: nil, deviceName: "Apple Watch")
+        #expect(account.save(pairing, token: context.token))
+        return (bridge, relay, try account.requireClient(), context)
     }
 
     @Test func directWhenTheMacAnswers() async throws {
@@ -202,6 +202,54 @@ struct RelayTests {
         #expect(summary.t3.working == 2)
         #expect(relay.state.withLock { $0.relayed } == ["GET /v1/mobile/summary"])
         _ = bridge
+    }
+
+    /// The phone performs relayed requests with the watch's own child token, never its own: once
+    /// the watch is revoked on the Mac, its relayed requests fail with 401 like direct ones, while
+    /// the phone itself keeps working.
+    @Test func relayedRequestsUseTheWatchTokenAndStopWhenTheWatchIsRevoked() async throws {
+        let closed = try SilentPort(listening: false)
+        let (bridge, relay, watch, context) = try await setUpWithContext(watchHost: closed.host)
+        #expect(relay.phone.watchToken == context.token)
+        #expect(relay.phone.watchToken != relay.phone.token)
+        #expect(try await watch.summary().t3.needsYou == 2) // through the phone
+        try await bridge.revoke(context.deviceId)
+        await #expect(throws: BridgeError.unauthorized) { _ = try await watch.summary() }
+        await #expect(throws: BridgeError.unauthorized) {
+            try await watch.respond(threadId: "t_deploy24", requestId: "req_deploy_1", approve: true)
+        }
+        // Refused before T3 saw it: the approval is still waiting.
+        let phone = try relay.phone.requireClient()
+        #expect(try await phone.thread("t_deploy24").thread.status == .needsApproval)
+        #expect(try await phone.summary().t3.needsYou == 2)
+        #expect(relay.state.withLock { $0.relayed }.count == 3)
+    }
+
+    /// A phone that has no watch token (never provisioned, or forgot it) refuses with 401 too, and
+    /// pairing, unpairing and device management are never relayed.
+    @Test func thePhoneRelaysOnlyTheWatchsOwnRequests() async throws {
+        let bridge = try FakeBridgeProcess()
+        let (_, phone) = try await bridge.pairedClient()
+        let summary = WatchRelay.Request(.get("/v1/mobile/summary"))
+        #expect(await phone.performRelayed(summary).status == 401) // no watch token yet
+        let context = try await phone.provisionWatch()
+        #expect(await phone.performRelayed(summary).status == 200)
+        for refused in [BridgeRequest.post("/v1/mobile/unpair", body: [:]),
+                        .post("/v1/mobile/devices/child", body: ["name": "Apple Watch"]),
+                        .get("/v1/mobile/devices"), .post("/v1/mobile/pair", body: ["code": "SAMRABBT"]),
+                        .post("/v1/mobile/pairing/start", body: [:]), .get("/v1/mobile/stream"),
+                        .get("/v1/mobile/t3/../devices"), .get("/v1/mobile/t3%2F..%2Fdevices"), .get("/health")] {
+            let request = WatchRelay.Request(refused)
+            #expect(!request.allowed, "\(refused.method) \(refused.path)")
+            let answer = await phone.performRelayed(request)
+            #expect(answer.status == 403)
+            #expect(String(decoding: answer.body, as: UTF8.self).contains("relay_forbidden"))
+        }
+        // The watch (and the phone) are still paired: the refused unpair never reached the Mac.
+        #expect(try await BridgeClient(hosts: [bridge.host], token: context.token).summary().t3.available)
+        #expect(try await phone.requireClient().summary().t3.available)
+        phone.forgetWatch()
+        #expect(await phone.performRelayed(summary).status == 401)
     }
 }
 #endif

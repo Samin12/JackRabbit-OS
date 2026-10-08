@@ -89,12 +89,13 @@ struct SheetView: View {
     var body: some View {
         switch sheet {
         case .ask(let prefill): ComposerSheet(kind: .ask, prefill: prefill)
-        case .note: ComposerSheet(kind: .note)
-        case .generate(let prefill): ComposerSheet(kind: .generate, prefill: prefill)
-        case .openOnMac: ComposerSheet(kind: .openOnMac)
+        case .note(let prefill): ComposerSheet(kind: .note, prefill: prefill)
+        case .generate(let prefill, let start): ComposerSheet(kind: .generate, prefill: prefill, startAtOnce: start)
+        case .openOnMac(let prefill): ComposerSheet(kind: .openOnMac, prefill: prefill)
         case .newTask: NewTaskSheet()
         case .pair(let link): PairConfirmSheet(link: link)
         case .manualPair: NavigationStack { ManualPairView() }
+        case .confirm(let action): LinkConfirmSheet(action: action)
         }
     }
 }

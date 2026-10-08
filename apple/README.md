@@ -72,13 +72,18 @@ xcodebuild -project apple/SamRabbit.xcodeproj -scheme SamRabbitWatch \
 ```
 
 The fake-bridge tests start `fake_bridge.py` on a free port per test (macOS only: the iOS simulator cannot spawn
-processes). They cover pairing (bad codes, host failover and promotion), the summary, threads
+processes). They cover pairing (a wrong or expired code, the rate limit, host failover and promotion), unpairing
+(the Mac revokes the phone and its watch), re-provisioning the watch (the old child token stops working), one
+reused client per pairing, the summary, threads
 (approve/answer/reply/stop/create, a stale card refused with 409, T3 down while the summary works), conversations
 and events into the timeline, SSE, blobs, generated UIs,
 calendar, the journal, the Mac, child (watch) tokens and the shared actions/notification planning. The relay tests
 run the watch's `BridgeClient` against a closed port, a port that never answers and the fake bridge, with the iPhone's
-half of the relay in process: reads and unsent writes go through the phone, a write that may have reached the Mac
-(a POST that timed out) is never sent twice, and the bridge's error envelope survives the relay.
+half of the relay in process (`BridgeAccount.performRelayed`): reads and unsent writes go through the phone with the
+watch's own token (a revoked watch gets 401 through the phone too), pairing/unpairing/device routes are never relayed,
+a write that may have reached the Mac (a POST that timed out) is never sent twice, and the bridge's error envelope
+survives the relay. Unit tests cover the links (every link that writes needs confirmation), the notification keys
+and the widget reload rule.
 
 The watch walkthrough (`watchOS/UITests/WatchWalkthroughTests.swift`, needs the fake bridge and the paired simulators)
 opens every page, approves, answers a question, taps Approve on a card whose request was replaced on the Mac
@@ -111,9 +116,9 @@ adds Infograph, Modular and Activity Digital faces with the SamRabbit complicati
 |---|---|
 | Models (lenient decoding, ISO-8601 or epoch-ms dates) | `MobileSummary`, `TaskThread`, `ThreadStatus`, `PendingAction`, `ThreadDetail`, `ConversationSummary`, `SyncEvent`, `CalendarEvent`, `Agenda`, `MacState`, `GeneratedArtifact`, `JSONValue`, `MobileSummary.sample()` |
 | Client | `BridgeClient` (every mobile route, multi-host failover, `stream(after:)` SSE, `raw(_:)`), `BridgeError`, `LiveSyncFeed` (reconnecting SSE), `ServerSentEventParser` |
-| Pairing | `PairLink` (`samrabbit://pair?h=&c=&n=`), `BridgeHost`, `PairingCode`, `Pairer` (tries hosts in order), `PairResponse` |
-| Storage | `BridgeAccount` (pairing in the App Group, token in the Keychain), `KeychainStore`, `SharedContainer`, `SummaryCache`, `TaskTracker` |
-| Shared behaviour | `SamRabbitActions` (ask, block, note, open on Mac, approve, answer, refresh + widget reload, spoken "what needs me"), `AlertPlanner`, `SpokenSummary`, `Formatting` |
+| Pairing and links | `PairLink` (`samrabbit://pair?h=&c=&n=`), `AppLink` / `LinkAction` (every `samrabbit://` link; the ones that write become `.confirm`), `BridgeHost`, `PairingCode`, `Pairer` (tries hosts in order), `PairResponse` |
+| Storage | `BridgeAccount` (pairing in the App Group, token in the Keychain, one cached `BridgeClient` per pairing, `unpair()` tells the bridge, the watch's child token and `performRelayed`), `KeychainStore`, `SharedContainer`, `SummaryCache` (`publish`: reloads widgets only on change), `TaskTracker` |
+| Shared behaviour | `SamRabbitActions` (ask, block, note, open on Mac, approve, answer, refresh + widget reload, spoken "what needs me"), `AlertPlanner` (keyed by thread + request id), `SpokenSummary`, `Formatting` |
 | Conversations | `ConversationTimeline` (port of the desktop `store.js`), `TimelineItem`, `GenCard` |
 | Look | `SamTheme` (colours, `glassCard()`, `samScreen()`, `StatusChip`, `PulseDot`, `SectionHeader`), `OrbView(mood:)`, `OrbRenderer`, `OrbMood` |
 | Watch link | `WatchContext` (applicationContext), `WatchRelay` (sendMessage relay), `BridgeRelay` (the client's second route) |
@@ -137,21 +142,34 @@ pinch zoom, Generate UI), Settings (QR scan via VisionKit, manual entry, `samrab
 addresses, notifications, widget gallery). Dictation: the keyboard mic everywhere, plus a mic button
 (`SFSpeechRecognizer`, on-device when available).
 
-**Deep links**: `samrabbit://pair?…`, `ask[?text=]`, `note`, `generate[?text=]`, `block[?minutes=]`,
-`thread/<id>`, `conversation/<id>`, `tab/<home|chats|tasks|mac|settings>`, `mac/screenshot`.
+**Deep links** (`AppLink`): `samrabbit://pair?…`, `ask[?text=]`, `note[?text=]`, `generate[?text=]`,
+`block[?minutes=&title=]`, `mac/open?app=|url=`, `thread/<id>`, `conversation/<id>`,
+`tab/<home|chats|tasks|mac|settings>`, `mac/screenshot`. A link can come from any web page or message, so the ones
+that write (`block`, and `ask`/`note`/`generate`/`mac/open` with content) never act on their own: they open a
+confirmation sheet ("A link wants to Block 45 minutes on your calendar", now until when, Confirm / Cancel, and Edit
+first for text). Without content they only open the empty composer. App Intents (Siri, Shortcuts, the widgets'
+buttons, the control) still run directly: the person started them.
 
 **Widgets** (`SamRabbitWidgets`): Status (small), Tasks (medium), Up Next (medium, interactive Block 30m),
 Dashboard (large, Ask + Block), Needs You (Lock Screen circular + inline), Next Up (Lock Screen rectangular),
 the "Ask SamRabbit" control, and the "Task running" Live Activity (Lock Screen + Dynamic Island). The timeline
 provider reads the summary the app saved in the App Group and fetches a fresh one itself (8 s budget), every
-15 minutes; the app and every action reload the widgets.
+15 minutes. The app, the background refresh and the actions hand fresh summaries to `SummaryCache.publish`, which
+reloads the timelines only when the summary changed (`generatedAt` aside) or the last reload is 30 minutes old.
 
 **App Intents** (Siri and Shortcuts, phrases in `AppShortcuts.swift`): Ask SamRabbit, Block Time ("Block 30
 minutes with SamRabbit"), Add Journal Note, What Needs Me (spoken), Open on Mac, Screenshot My Mac.
 
 **Notifications** (no push): `BGAppRefreshTask` (`com.samrabbit.mobile.refresh`, about every 15 min) and the
-foreground refresh (every 20 s) run `AlertPlanner`: a local notification for each new needs-you item and for
-tasks started from the phone that finish. The Simulator has no `BGTaskScheduler` ("not available on this
+foreground refresh (every 20 s) run `AlertPlanner`: a local notification for each new needs-you request and for
+tasks started from the phone that finish. Needs-you alerts are keyed by thread id + T3 request id (kept a week in
+the App Group), never by the pending text or the list they came from, so the foreground and background agree and a
+request is announced once; a thread whose request id is not known yet (summary threads) waits for one.
+
+**Unpair** (Settings) calls `POST /v1/mobile/unpair` first (the Mac revokes this iPhone and the watch it
+provisioned; best effort, 6 s), then forgets the pairing, the token and the watch's token here either way. A wrong
+or expired pairing code (401 `invalid_code`) says "That code is wrong or expired — get a new one on your Mac", too
+many tries (429) says to wait; neither is confused with a token the Mac stopped accepting. The Simulator has no `BGTaskScheduler` ("not available on this
 platform"), so the background part only runs on a device; to try it there from the debugger:
 `e -l objc -- (void)[[BGTaskScheduler sharedScheduler] _simulateLaunchForTaskWithIdentifier:@"com.samrabbit.mobile.refresh"]`.
 
@@ -195,16 +213,22 @@ A result line slides in after every action; failures say why ("Mac and iPhone ar
 (`WatchContext.requestKey`). The watch stores it like the phone does (App Group + Keychain), so the complications use
 it too. Every request goes to the bridge directly (`URLSession`, 6 s). The watch's `BridgeClient` has the iPhone as
 its `BridgeRelay` (`watchOS/App/PhoneLink.swift`): a request that reached no address goes to the phone with
-`sendMessage` (`WatchRelay`), the phone performs it with its own token and answers with the bridge's status and body.
+`sendMessage` (`WatchRelay`), the phone performs it with the watch's own child token (which it keeps in its Keychain;
+never the phone's token) and answers with the bridge's status and body, so a watch revoked on the Mac is refused
+through the phone too. Only the watch's own kinds of request are relayed (summary, tasks, calendar, journal,
+conversations, generated UIs, Mac); pairing, `unpair` and device management never are.
 After a direct failure the watch prefers the phone for two minutes. A POST that may have reached the Mac (it timed
 out) is never sent again another way. If the Mac revokes the watch, the status page offers **Reconnect**, which asks
 the phone for a new child token (`WatchContext.reissueValue`). Re-pairing the iPhone reissues the watch's token too.
+A new child token replaces the old one: the bridge drops this phone's earlier watch of the same name, and the phone
+revokes a still older watch token (from before it re-paired) with `POST /v1/mobile/unpair`.
 
 **Complications** (`SamRabbitWatchWidgets`, WidgetKit accessory families): **Needs You**: circular (the count in a
 ring of everything open), corner (the count, with the next event along the bezel), inline ("2 need you · 2 working",
 shorter when the slot is small); **Next Up**: rectangular (next event, time and "in 20m", working and needs-you
 counts). The timeline reads the summary the watch app saved and fetches a fresh one itself, with an entry every 5
-minutes for an hour (so "in 20m" stays right) and a refresh every 15 minutes; the app reloads them after each refresh.
+minutes for an hour (so "in 20m" stays right) and a refresh every 15 minutes; the watch app reloads them only when
+the summary it fetched (every 30 s) says something new (`SummaryCache.publish`).
 Tapping opens the matching page (`samrabbit://tab/needs`, `samrabbit://tab/upnext`).
 
 **Debug launch arguments**: `-SamRabbitPage <status|needs|working|upnext|quick>`, `-SamRabbitRoute phone` (everything
@@ -212,7 +236,8 @@ through the iPhone), `-SamRabbitRenderComplications YES` (renders the complicati
 
 **Kit additions for the watch**: `BridgeRelay` and `BridgeClient(relay:)`, `BridgeAccount(relay:)`,
 `WatchContext.requestKey`/`reissueValue`, `OrbView(frameRate:)`. The iPhone side (`iOS/App/WatchLink.swift`) answers
-context requests and can reissue the child token.
+context requests and relays with the watch's token; the logic is in the Kit (`BridgeAccount.provisionWatch`,
+`performRelayed`) so `swift test` covers it.
 
 ## Screenshots
 

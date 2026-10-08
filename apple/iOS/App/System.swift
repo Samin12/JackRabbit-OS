@@ -7,8 +7,9 @@ import UserNotifications
 
 private let log = Logger(subsystem: "com.samrabbit.mobile", category: "system")
 
-/// Local notifications (no push: the bridge has no APNs). New needs-you items and tasks started
-/// from the phone that finish are announced once.
+/// Local notifications (no push: the bridge has no APNs). Each T3 request that needs you (keyed by
+/// thread and request id, shared with the background refresh through the App Group) and each task
+/// started from the phone that finishes is announced once.
 final class NotificationController: Sendable {
     private let tracker = TaskTracker.shared
 
@@ -85,14 +86,14 @@ enum BackgroundRefresh {
     static func run() async {
         schedule()
         let account = BridgeAccount.shared
-        guard let client = account.client(timeout: 15) else { return }
+        guard let client = account.client() else { return }
         do {
-            let summary = try await client.summary()
-            SummaryCache.shared.save(summary)
-            SamRabbitActions.reloadWidgets()
+            let summary = try await client.summary(timeout: 15)
+            SummaryCache.shared.publish(summary) // reloads the widgets only when something changed
             var threads = summary.t3.threads
             // What waits for you comes from the thread list: its entries carry the request ids the
-            // notifications are keyed on (summary threads don't, and would be announced again).
+            // notifications are keyed on (summary threads don't, so they are never announced), the
+            // same keys the foreground app uses: a request is announced once, by whichever runs first.
             var complete = true
             if summary.t3.needsYou > 0 {
                 if let waiting = try? await client.threads(filter: .needsYou) {

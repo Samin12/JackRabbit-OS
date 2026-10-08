@@ -8,6 +8,8 @@ struct ComposerSheet: View {
 
     let kind: Kind
     var prefill = ""
+    /// Submit the prefilled text right away (a link's prompt the person already confirmed).
+    var startAtOnce = false
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @State private var text = ""
@@ -87,7 +89,11 @@ struct ComposerSheet: View {
         .presentationBackground(.clear)
         .onAppear {
             if text.isEmpty { text = prefill }
-            focused = true
+            if startAtOnce, !text.isEmpty, artifact == nil, !working {
+                submit()
+            } else {
+                focused = true
+            }
         }
     }
 

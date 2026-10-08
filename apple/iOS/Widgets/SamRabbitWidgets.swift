@@ -54,7 +54,7 @@ struct SummaryProvider: TimelineProvider {
 
     static func fresh() async -> WidgetSnapshot {
         let account = BridgeAccount.shared
-        guard account.pairing != nil, let client = account.client(timeout: 8) else { return cached() }
+        guard account.pairing != nil, let client = account.client() else { return cached() }
         do {
             let summary = try await client.summary(timeout: 8)
             SummaryCache.shared.save(summary)

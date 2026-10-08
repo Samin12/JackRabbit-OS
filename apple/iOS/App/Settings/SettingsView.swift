@@ -40,13 +40,20 @@ struct SettingsView: View {
                 } label: {
                     Label("Enter code manually", systemImage: "keyboard")
                 }
-                if model.isPaired {
+                if model.isPaired || model.unpairing {
                     Button(role: .destructive) {
                         confirmUnpair = true
                     } label: {
-                        Label("Unpair this iPhone", systemImage: "link.badge.minus")
+                        HStack {
+                            Label(model.unpairing ? "Unpairing…" : "Unpair this iPhone", systemImage: "link.badge.minus")
+                            if model.unpairing {
+                                Spacer()
+                                ProgressView()
+                            }
+                        }
                     }
                     .foregroundStyle(SamTheme.red)
+                    .disabled(model.unpairing)
                 }
             } header: {
                 Text("Pairing")
@@ -131,9 +138,9 @@ struct SettingsView: View {
             }
         }
         .confirmationDialog("Unpair this iPhone?", isPresented: $confirmUnpair, titleVisibility: .visible) {
-            Button("Unpair", role: .destructive) { model.unpair() }
+            Button("Unpair", role: .destructive) { Task { await model.unpair() } }
         } message: {
-            Text("The widgets stop updating until you pair again. You can also revoke this iPhone from the Mac.")
+            Text("Your Mac forgets this iPhone and its Apple Watch. The widgets stop updating until you pair again.")
         }
         .task { await loadNotificationStatus() }
         .task(id: model.pairing?.deviceId) { health = try? await model.client?.health() }
@@ -215,6 +222,9 @@ struct ManualPairView: View {
                 .buttonStyle(.glassProminent)
                 .controlSize(.extraLarge)
                 .disabled(parsedHost == nil || parsedCode == nil || pairing)
+                if let problem = model.pairingProblem, !pairing {
+                    PairingProblemView(text: problem)
+                }
                 Button {
                     scanning = true
                 } label: {
@@ -228,6 +238,7 @@ struct ManualPairView: View {
         .navigationTitle("Pair")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
+            model.pairingProblem = nil
             if host.isEmpty, let current = model.pairing?.hosts.first { host = current.description }
         }
         .sheet(isPresented: $scanning) {
@@ -282,6 +293,9 @@ struct PairConfirmSheet: View {
                 .font(.system(size: 13.5)).foregroundStyle(SamTheme.ink2).multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.horizontal, 8)
+            if let problem = model.pairingProblem, !pairing {
+                PairingProblemView(text: problem)
+            }
             Spacer(minLength: 0)
             VStack(spacing: 10) {
                 Button {
@@ -308,6 +322,25 @@ struct PairConfirmSheet: View {
         .padding(.bottom, 16)
         .samScreen()
         .presentationDetents([.fraction(0.62), .large])
+        .onAppear { model.pairingProblem = nil }
+    }
+}
+
+/// Why pairing failed, under the Pair button ("That code is wrong or expired — get a new one on your Mac.").
+struct PairingProblemView: View {
+    let text: String
+
+    var body: some View {
+        Label {
+            Text(text).font(.system(size: 14, weight: .medium)).fixedSize(horizontal: false, vertical: true)
+        } icon: {
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(SamTheme.amber)
+        }
+        .foregroundStyle(SamTheme.ink)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 16).fill(SamTheme.amber.opacity(0.14)))
+        .accessibilityElement(children: .combine)
     }
 }
 

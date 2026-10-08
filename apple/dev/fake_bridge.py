@@ -20,6 +20,11 @@ What is in it:
 * An agenda relative to now, Block / new events, an in-memory journal, Mac state, open and a
   screenshot JPEG, and generated UIs (``/ui/generate`` is ready after about four seconds).
 
+Devices follow the real bridge's rules: a wrong or expired code answers 401 ``invalid_code`` and ten wrong
+codes in ten minutes 429 ``pairing_rate_limited``; ``POST /v1/mobile/devices/child`` works only with an
+iPhone's token and replaces that phone's earlier watch of the same name; ``POST /v1/mobile/unpair`` (and the
+desktop's ``DELETE /v1/mobile/devices/<id>``) revokes a device together with the watch it provisioned.
+
 Pending approvals and questions carry a ``requestId`` (and questions a ``questionId``) like the real
 bridge's; ``respond`` with a ``requestId`` that is no longer the open one answers 409
 ``t3_request_not_pending``, as the real bridge does.
@@ -186,7 +191,7 @@ class FakeBridge:
         self.port = 0
         self.closed = False
         self.devices: Dict[str, Dict[str, Any]] = {}
-        self.bad_codes: Dict[str, List[float]] = {}
+        self.bad_codes_all: List[float] = []
         self.used_codes: set = set()
         self.jobs: List[Tuple[float, Callable[[], None]]] = []
         self._load_devices()
@@ -631,9 +636,27 @@ class FakeBridge:
         if parent:
             device["parentId"] = parent
         with self.lock:
+            if parent:
+                # A phone that provisions its watch again replaces that watch's old token (real bridge rule;
+                # at most 3 watches per phone).
+                children = [d for d, item in self.devices.items() if item.get("parentId") == parent]
+                same = [d for d in children if self.devices[d].get("name") == device["name"]]
+                drop = same or children[:max(0, len(children) - 2)]
+                for d in drop:
+                    self.devices.pop(d, None)
             self.devices[device["deviceId"]] = device
             self._save_devices()
         return token, device
+
+    def revoke(self, device_id: str) -> List[str]:
+        """Removes a device and the devices it provisioned (its watch), like the real bridge."""
+        with self.lock:
+            gone = [d for d, item in self.devices.items() if d == device_id or item.get("parentId") == device_id]
+            for d in gone:
+                self.devices.pop(d, None)
+            if gone:
+                self._save_devices()
+            return gone
 
     def hosts(self) -> List[str]:
         return self.advertise or ["127.0.0.1:%d" % self.port]
@@ -803,23 +826,30 @@ class Handler(BaseHTTPRequestHandler):
                                                     for d in b.devices.values()]})
         if rest.startswith("devices/") and method == "DELETE" and rest != "devices/child":
             self.require_desktop()
-            with b.lock:
-                removed = b.devices.pop(unquote(rest[len("devices/"):]), None)
-                b._save_devices()
-            if removed is None:
+            removed = b.revoke(unquote(rest[len("devices/"):]))
+            if not removed:
                 raise ApiError(404, "device_not_found", "No such device.")
-            return self.send_json(200, {"ok": True})
+            return self.send_json(200, {"ok": True, "revoked": len(removed)})
 
         device = self.require_mobile()
         if rest == "devices/child":
+            # Like the real bridge: only a paired iPhone (not a watch) adds its watch, and a new token for the
+            # same name replaces that phone's earlier watch (its old token stops working).
             self.only(method, "POST")
+            if device.get("parentId") or device.get("platform") != "ios":
+                raise ApiError(403, "forbidden", "Only a paired iPhone can add its watch.")
             body = self.body()
-            platform = body.get("platform") or "watchos"
-            if platform not in ("ios", "watchos"):
-                raise ApiError(400, "invalid_platform", "platform must be ios or watchos.")
-            token, child = b.issue(str(body.get("name") or "Apple Watch"), platform, parent=device["deviceId"])
+            if (body.get("platform") or "watchos") != "watchos":
+                raise ApiError(400, "invalid_platform", "platform must be watchos.")
+            token, child = b.issue(str(body.get("name") or "Apple Watch")[:60] or "Apple Watch", "watchos",
+                                   parent=device["deviceId"])
             return self.send_json(200, {"token": token, "deviceId": child["deviceId"], "bridgeName": b.mac_name,
                                         "bridgeVersion": VERSION})
+        if rest == "unpair":
+            # A device forgets itself (an iPhone takes its watch with it).
+            self.only(method, "POST")
+            removed = b.revoke(device["deviceId"])
+            return self.send_json(200, {"ok": True, "revoked": len(removed)})
         if rest == "summary":
             with b.lock:
                 return self.send_json(200, b.summary())
@@ -861,24 +891,25 @@ class Handler(BaseHTTPRequestHandler):
             raise ApiError(405, "method_not_allowed", "Use %s." % expected)
 
     def pair(self) -> None:
+        # The real bridge's answers: 429 ``pairing_rate_limited`` after 10 wrong codes in 10 minutes (checked
+        # first), 401 ``invalid_code`` for a wrong, used or expired code.
         b = self.bridge
-        peer = self.client_address[0]
         now = time.time()
         with b.lock:
-            recent = [t for t in b.bad_codes.get(peer, []) if now - t < 600]
-            b.bad_codes[peer] = recent
-            if len(recent) >= 10:
-                raise ApiError(429, "rate_limited", "Too many wrong codes. Wait a few minutes.", retryable=True)
+            b.bad_codes_all = [t for t in b.bad_codes_all if now - t < 600]
+            if len(b.bad_codes_all) >= 10:
+                raise ApiError(429, "pairing_rate_limited", "Too many wrong codes. Wait a few minutes, then make a "
+                               "new code on the Mac.", retryable=True)
         body = self.body()
         code = re.sub(r"[\s-]", "", str(body.get("code") or "")).upper()
-        platform = body.get("platform") or "ios"
+        platform = body.get("platform")
         if platform not in ("ios", "watchos"):
             raise ApiError(400, "invalid_platform", "platform must be ios or watchos.")
         valid = len(code) == 8 and all(ch in CODE_ALPHABET for ch in code)
         if not valid or code != b.code or (b.single_use and code in b.used_codes):
             with b.lock:
-                b.bad_codes.setdefault(peer, []).append(now)
-            raise ApiError(403, "invalid_code", "That pairing code is wrong or expired.")
+                b.bad_codes_all.append(now)
+            raise ApiError(401, "invalid_code", "That code is wrong or expired. Make a new one on the Mac.")
         if b.single_use:
             b.used_codes.add(code)
         token, device = b.issue(str(body.get("deviceName") or "iPhone"), platform)

@@ -61,6 +61,24 @@ final class FakeBridgeProcess: @unchecked Sendable {
         return try JSONDecoder().decode(JSONValue.self, from: data)
     }
 
+    /// The desktop app's `DELETE /v1/mobile/devices/<id>` (loopback + desktop token): revokes a device.
+    func revoke(_ deviceId: String) async throws {
+        var request = URLRequest(url: base.appendingPathComponent("v1/mobile/devices/\(deviceId)"))
+        request.httpMethod = "DELETE"
+        request.setValue("fake-desktop-token", forHTTPHeaderField: "X-SamRabbit-Desktop")
+        let (_, response) = try await URLSession.shared.data(for: request)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw BridgeError.invalidResponse("revoke") }
+    }
+
+    /// The desktop app's `GET /v1/mobile/devices`: the paired devices' ids.
+    func deviceIds() async throws -> Set<String> {
+        var request = URLRequest(url: base.appendingPathComponent("v1/mobile/devices"))
+        request.setValue("fake-desktop-token", forHTTPHeaderField: "X-SamRabbit-Desktop")
+        let (data, _) = try await URLSession.shared.data(for: request)
+        let devices = try JSONDecoder().decode(JSONValue.self, from: data)["devices"].array ?? []
+        return Set(devices.compactMap { $0["deviceId"].string })
+    }
+
     func journal() async throws -> [String] {
         let (data, _) = try await URLSession.shared.data(from: base.appendingPathComponent("__fake/journal"))
         return try JSONDecoder().decode(JSONValue.self, from: data)["lines"].array?.compactMap(\.string) ?? []
@@ -95,17 +113,132 @@ struct FakeBridgeTests {
         #expect(health.ok && health.mobileAvailable)
     }
 
+    /// A wrong or expired code (401 `invalid_code`) says so, distinct from a token the Mac stopped
+    /// accepting (`.unauthorized`, also 401); ten wrong codes lock pairing (429).
     @Test func wrongCodeAndBadTokenAreRefused() async throws {
         let bridge = try FakeBridgeProcess()
         let account = BridgeAccount(container: .temporary(), secrets: MemorySecretStore())
-        await #expect(throws: BridgeError.self) {
-            _ = try await Pairer.pair(link: PairLink(hosts: [bridge.host], code: "WRNGCDE2"), deviceName: "x", account: account)
+        let wrong = await BridgeError.capture {
+            try await Pairer.pair(link: PairLink(hosts: [bridge.host], code: "WRNGCDE2"), deviceName: "x", account: account)
         }
+        guard case .failure(let error) = wrong else { Issue.record("a wrong code paired"); return }
+        #expect(error != .unauthorized)
+        #expect(error.code == "invalid_code")
+        #expect(error.isPairingCodeRejected)
+        #expect(error.errorDescription == "That code is wrong or expired — get a new one on your Mac.")
+        #expect(error.shortDescription == "That code didn't work")
         #expect(!account.isPaired)
+
         let stranger = BridgeClient(hosts: [bridge.host], token: "srm_not-a-real-token")
         await #expect(throws: BridgeError.unauthorized) { _ = try await stranger.summary() }
+        #expect(BridgeError.unauthorized.errorDescription != error.errorDescription)
+        #expect(!BridgeError.unauthorized.isPairingCodeRejected)
         let unpaired = BridgeClient(hosts: [bridge.host], token: nil)
         await #expect(throws: BridgeError.notPaired) { _ = try await unpaired.summary() }
+
+        // Nine more wrong codes, then even the right one is refused for a while.
+        for _ in 0..<9 {
+            _ = await BridgeError.capture {
+                try await Pairer.pair(link: PairLink(hosts: [bridge.host], code: "WRNGCDE2"), deviceName: "x", account: account)
+            }
+        }
+        let locked = await BridgeError.capture {
+            try await Pairer.pair(link: PairLink(hosts: [bridge.host], code: "SAMRABBT"), deviceName: "x", account: account)
+        }
+        guard case .failure(let limit) = locked else { Issue.record("pairing was not rate limited"); return }
+        #expect(limit.isPairingRateLimited)
+        #expect(!limit.isPairingCodeRejected)
+        #expect(limit.shortDescription == "Too many tries")
+        #expect(limit.errorDescription?.hasPrefix("Too many wrong codes.") == true)
+        #expect(!account.isPaired)
+    }
+
+    /// Unpair tells the Mac (`POST /v1/mobile/unpair`): the phone's and its watch's tokens stop
+    /// working; the local pairing is gone either way, also when the Mac can't be reached.
+    @Test func unpairRevokesThePhoneAndItsWatchOnTheMac() async throws {
+        let bridge = try FakeBridgeProcess()
+        let (client, account) = try await bridge.pairedClient()
+        let phoneToken = try #require(account.token)
+        let watch = try await account.provisionWatch()
+        #expect(try await bridge.deviceIds().count == 2)
+        #expect(await account.unpair())
+        #expect(!account.isPaired)
+        #expect(account.pairing == nil && account.token == nil && account.watchToken == nil)
+        #expect(account.client() == nil)
+        #expect(try await bridge.deviceIds().isEmpty)
+        await #expect(throws: BridgeError.unauthorized) {
+            _ = try await BridgeClient(hosts: [bridge.host], token: phoneToken).summary()
+        }
+        await #expect(throws: BridgeError.unauthorized) {
+            _ = try await BridgeClient(hosts: [bridge.host], token: watch.token).summary()
+        }
+        _ = client
+
+        // The Mac is away: unpairing still forgets everything here.
+        let (_, again) = try await bridge.pairedClient()
+        again.updateHosts([BridgeHost(host: "127.0.0.1", port: 1)])
+        #expect(await again.unpair(timeout: 2) == false)
+        #expect(!again.isPaired && again.pairing == nil)
+    }
+
+    /// Provisioning the watch again replaces its token: the old one stops working on the Mac. Without
+    /// `reissue` the same token is sent again (no new device).
+    @Test func reprovisioningTheWatchReplacesItsOldToken() async throws {
+        let bridge = try FakeBridgeProcess()
+        let (_, account) = try await bridge.pairedClient()
+        let first = try await account.provisionWatch()
+        let same = try await account.provisionWatch()
+        #expect(same.token == first.token)
+        #expect(try await bridge.deviceIds().count == 2)
+        let second = try await account.provisionWatch(reissue: true)
+        #expect(second.token != first.token)
+        #expect(account.watchToken == second.token)
+        #expect(account.watchContext?.token.isEmpty == true) // the token itself stays in the secret store
+        #expect(try await bridge.deviceIds() == [try #require(account.pairing?.deviceId), second.deviceId])
+        await #expect(throws: BridgeError.unauthorized) {
+            _ = try await BridgeClient(hosts: [bridge.host], token: first.token).summary()
+        }
+        #expect(try await BridgeClient(hosts: [bridge.host], token: second.token).summary().t3.available)
+
+        // The phone pairs again (a new device on the Mac): its new watch token retires the old
+        // watch's, which belonged to the old phone record.
+        _ = try await Pairer.pair(link: PairLink(hosts: [bridge.host], code: "SAMRABBT"), deviceName: "Again", account: account)
+        let third = try await account.provisionWatch(reissue: true)
+        await #expect(throws: BridgeError.unauthorized) {
+            _ = try await BridgeClient(hosts: [bridge.host], token: second.token).summary()
+        }
+        #expect(try await BridgeClient(hosts: [bridge.host], token: third.token).summary().t3.available)
+        // Only an iPhone mints watch tokens.
+        await #expect { _ = try await BridgeClient(hosts: [bridge.host], token: third.token).childDevice(name: "x") }
+            throws: { ($0 as? BridgeError)?.code == "forbidden" }
+    }
+
+    /// One client per pairing: the same instance (and its URLSessions) for every request, a new one
+    /// only when the token or the addresses change.
+    @Test func theAccountReusesOneClient() async throws {
+        let bridge = try FakeBridgeProcess()
+        let (client, account) = try await bridge.pairedClient()
+        #expect(account.client() === client)
+        #expect(try account.requireClient() === client)
+        _ = try await client.summary()
+        #expect(account.client() === client)
+        let dead = BridgeHost(host: "127.0.0.1", port: 1)
+        account.updateHosts([bridge.host, dead])
+        let widened = try #require(account.client())
+        #expect(widened !== client)
+        #expect(account.client() === widened)
+        // The client moving to the address that answered keeps the same instance.
+        account.updateHosts([dead, bridge.host])
+        let moving = try #require(account.client())
+        _ = try await moving.summary()
+        #expect(account.pairing?.hosts.first == bridge.host)
+        #expect(account.client() === moving)
+        _ = try await Pairer.pair(link: PairLink(hosts: [bridge.host], code: "SAMRABBT"), deviceName: "y", account: account)
+        #expect(account.client() !== moving)
+        _ = try await account.provisionWatch()
+        let watch = try #require(account.watchClient())
+        #expect(account.watchClient() === watch)
+        #expect(watch !== account.client())
     }
 
     @Test func pairingTriesHostsInOrderAndRemembersTheOneThatAnswered() async throws {
@@ -347,10 +480,19 @@ struct FakeBridgeTests {
         #expect(actions.cache.load()?.summary.t3.working == 3)
         try await bridge.control("settle")
         let summary = try await actions.refresh()
-        let plan = AlertPlanner.plan(threads: summary.t3.threads + [try await account.requireClient().thread(created.threadId).thread],
-                                     announced: [], tracked: actions.tracker.tasks)
+        // Summary threads carry no request ids: nothing in them is announced as needing you.
+        let fromSummary = AlertPlanner.plan(threads: summary.t3.threads, announced: [:], tracked: [])
+        #expect(fromSummary.alerts.isEmpty)
+        let list = try await account.requireClient().threads()
+        let plan = AlertPlanner.plan(threads: list + [try await account.requireClient().thread(created.threadId).thread],
+                                     announced: [:], tracked: actions.tracker.tasks)
         #expect(plan.alerts.contains { $0.kind == .finished && $0.threadId == created.threadId })
         #expect(plan.alerts.filter { $0.kind == .needsYou }.count == 2)
+        // The background refresh's list (needs-you filter + summary) agrees: nothing new to say.
+        let waiting = try await account.requireClient().threads(filter: .needsYou)
+        let background = AlertPlanner.plan(threads: waiting + summary.t3.threads, announced: plan.announced,
+                                           tracked: plan.tracked)
+        #expect(background.alerts.isEmpty)
         let spoken = await actions.whatNeedsMe()
         #expect(spoken.hasPrefix("Two tasks need you"))
     }

@@ -50,6 +50,15 @@ public enum Formatting {
         return prefix + "\(start.formatted(.dateTime.hour().minute())) – \(end.formatted(.dateTime.hour().minute()))"
     }
 
+    /// "30 minutes", "1 hour", "1 h 30 min", "2 hours".
+    public static func minutes(_ value: Int) -> String {
+        if value < 60 { return value == 1 ? "1 minute" : "\(value) minutes" }
+        let hours = value / 60
+        let rest = value % 60
+        if rest == 0 { return hours == 1 ? "1 hour" : "\(hours) hours" }
+        return "\(hours) h \(rest) min"
+    }
+
     /// "1 task", "3 tasks".
     public static func count(_ value: Int, _ singular: String, _ plural: String? = nil) -> String {
         "\(value) \(value == 1 ? singular : (plural ?? singular + "s"))"

@@ -12,12 +12,15 @@ enum AppTab: String, Hashable, CaseIterable {
 /// Sheets the app can present from anywhere (quick actions, widgets, Siri, deep links).
 enum AppSheet: Identifiable, Equatable {
     case ask(prefill: String)
-    case note
-    case generate(prefill: String)
-    case openOnMac
+    case note(prefill: String)
+    /// `start`: generate right away (the person confirmed a link's prompt).
+    case generate(prefill: String, start: Bool = false)
+    case openOnMac(prefill: String)
     case newTask
     case pair(PairLink)
     case manualPair
+    /// A link asked for something that writes: what will happen, and a Confirm button.
+    case confirm(LinkAction)
 
     var id: String {
         switch self {
@@ -28,6 +31,7 @@ enum AppSheet: Identifiable, Equatable {
         case .newTask: "newTask"
         case .pair: "pair"
         case .manualPair: "manualPair"
+        case .confirm: "confirm"
         }
     }
 }
@@ -74,6 +78,8 @@ final class AppModel {
 
     /// Approve / deny / answer in flight, by thread id.
     var busyThreads: Set<String> = []
+    /// `unpair()` is waiting for the Mac.
+    var unpairing = false
 
     private var refreshLoop: Task<Void, Never>?
     let notifications = NotificationController()
@@ -100,6 +106,7 @@ final class AppModel {
     /// is unreachable: `lastError` says so already).
     var tasksProblem: BridgeError? { lastError == nil ? tasksError : nil }
 
+    /// The account's one client (rebuilt only when the pairing changes).
     var client: BridgeClient? { account.client() }
 
     // MARK: - Refresh
@@ -121,8 +128,7 @@ final class AppModel {
             summary = fresh
             summaryDate = .now
             lastError = nil
-            SummaryCache.shared.save(fresh)
-            SamRabbitActions.reloadWidgets()
+            SummaryCache.shared.publish(fresh) // reloads the widgets only when something changed
         case .failure(let error):
             if error == .cancelled { return }
             lastError = error
@@ -169,7 +175,11 @@ final class AppModel {
 
     // MARK: - Pairing
 
+    /// Why the last pairing attempt failed, in words for the pairing screens (nil after a success).
+    var pairingProblem: String?
+
     func pair(with link: PairLink) async -> Bool {
+        pairingProblem = nil
         do {
             let pairing = try await Pairer.pair(link: link, deviceName: UIDevice.current.name, platform: .ios,
                                                 account: account)
@@ -184,21 +194,32 @@ final class AppModel {
             return true
         } catch let error as BridgeError {
             Haptics.error()
-            if case .server(_, let code, _, _) = error, code == "invalid_code" {
-                show(.failure, "That code didn't work", detail: "Codes work once and expire after 10 minutes. Make a new one on your Mac.")
-            } else {
-                show(error)
-            }
+            // A wrong or expired code (401 invalid_code) and too many tries (429) are about the code,
+            // not about a token the Mac stopped accepting (`.unauthorized`).
+            pairingProblem = error.errorDescription
+            show(error)
             return false
         } catch {
+            pairingProblem = "Pairing failed."
             show(.failure, "Pairing failed")
             return false
         }
     }
 
-    func unpair() {
+    /// Unpairs: tells the Mac (`POST /v1/mobile/unpair`, which revokes this iPhone and its watch; best
+    /// effort, a few seconds at most), then forgets the pairing here either way.
+    func unpair() async {
+        guard !unpairing else { return }
+        unpairing = true
+        defer { unpairing = false }
+        stopRefreshing()
+        let confirmed = await account.unpair()
         WatchLink.shared.reset()
-        account.unpair()
+        if confirmed {
+            show(.info, "Unpaired", detail: "Your Mac forgot this iPhone and its watch.")
+        } else {
+            show(.info, "Unpaired here", detail: "Your Mac didn't answer. Revoke this iPhone there too.")
+        }
         SummaryCache.shared.clear()
         pairing = nil
         summary = nil
@@ -206,9 +227,8 @@ final class AppModel {
         threadsLoaded = false
         tasksError = nil
         lastError = nil
-        stopRefreshing()
         SamRabbitActions.reloadWidgets()
-        Task { await liveActivities.endAll() }
+        await liveActivities.endAll()
     }
 
     private func handleUnauthorized() {
@@ -244,15 +264,18 @@ final class AppModel {
         }
     }
 
-    func block(minutes: Int = 30) async {
+    @discardableResult
+    func block(minutes: Int = 30, title: String? = nil) async -> Bool {
         do {
-            let result = try await actions.block(minutes: minutes)
+            let result = try await actions.block(minutes: minutes, title: title)
             Haptics.success()
             let range = result.event.map { Formatting.range($0.startsAt, $0.endsAt) } ?? "now"
             show(.success, "Blocked \(minutes) min", detail: result.dryRun ? "\(range) (test copy: not written)" : range)
             await refresh()
+            return true
         } catch {
             fail(error)
+            return false
         }
     }
 
@@ -352,44 +375,67 @@ final class AppModel {
 
     // MARK: - Navigation
 
-    /// `samrabbit://pair?…`, `ask`, `note`, `thread/<id>`, `conversation/<id>`, `tab/<name>`, `mac/screenshot`.
+    /// Follows a `samrabbit://` link (`AppLink`). Links that would change something (`block`, `ask`
+    /// or `note` with text, `mac/open`, `generate` with a prompt) never act on their own: they open
+    /// a confirmation sheet showing what will happen, performed only by its Confirm button.
     func handle(url: URL) {
-        guard url.scheme?.lowercased() == SamRabbit.urlScheme else { return }
-        if let link = PairLink(url: url) {
-            sheet = .pair(link)
-            return
-        }
-        let target = (url.host ?? "").lowercased()
-        let parts = url.path.split(separator: "/").map(String.init)
-        let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
-        let text = query.first { $0.name == "text" }?.value ?? ""
-        switch target {
-        case "pair":
+        guard let link = AppLink(url: url) else { return }
+        switch link {
+        case .pair(let pairLink):
+            sheet = .pair(pairLink)
+        case .manualPair:
             tab = .settings
             sheet = .manualPair
-        case "ask":
-            sheet = .ask(prefill: text)
-        case "note":
-            sheet = .note
-        case "generate":
-            sheet = .generate(prefill: text)
-        case "block":
-            Task { await block(minutes: Int(query.first { $0.name == "minutes" }?.value ?? "") ?? 30) }
-        case "thread", "task":
+        case .compose(let composer):
+            switch composer {
+            case .ask: sheet = .ask(prefill: "")
+            case .note: sheet = .note(prefill: "")
+            case .generate: sheet = .generate(prefill: "")
+            case .openOnMac: sheet = .openOnMac(prefill: "")
+            }
+        case .confirm(let action):
+            sheet = .confirm(action)
+        case .thread(let id):
             tab = .tasks
             tasksPath = NavigationPath()
-            if let id = parts.first { tasksPath.append(ThreadRoute(threadId: id)) }
-        case "conversation", "chat":
+            if let id { tasksPath.append(ThreadRoute(threadId: id)) }
+        case .conversation(let id):
             tab = .chats
             chatsPath = NavigationPath()
-            if let id = parts.first { chatsPath.append(ConversationRoute(conversationId: id, title: nil)) }
-        case "mac":
+            if let id { chatsPath.append(ConversationRoute(conversationId: id, title: nil)) }
+        case .mac(let screenshot):
             tab = .mac
-            if parts.first == "screenshot" { pendingScreenshot = true }
-        case "tab":
-            if let name = parts.first, let value = AppTab(rawValue: name) { tab = value }
-        default:
-            break
+            if screenshot { pendingScreenshot = true }
+        case .tab(let name):
+            if let value = AppTab(rawValue: name) { tab = value }
+        }
+    }
+
+    /// Performs what a link asked for, after the person tapped Confirm on its sheet. True when done.
+    func perform(_ action: LinkAction) async -> Bool {
+        switch action {
+        case .block(let minutes, let title):
+            return await block(minutes: minutes, title: title)
+        case .ask(let text):
+            return await ask(text)
+        case .note(let text):
+            return await note(text)
+        case .openOnMac(let app, let url):
+            return await openOnMac(app: app, url: url)
+        case .generate(let prompt):
+            sheet = .generate(prefill: prompt, start: true)
+            return true
+        }
+    }
+
+    /// The composer for a link's text, to change it before sending.
+    func edit(_ action: LinkAction) {
+        switch action {
+        case .ask(let text): sheet = .ask(prefill: text)
+        case .note(let text): sheet = .note(prefill: text)
+        case .generate(let prompt): sheet = .generate(prefill: prompt)
+        case .openOnMac(let app, let url): sheet = .openOnMac(prefill: url ?? app ?? "")
+        case .block: break
         }
     }
 

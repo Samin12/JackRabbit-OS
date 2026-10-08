@@ -25,7 +25,7 @@ public struct SamRabbitActions: Sendable {
     public func ask(_ text: String, projectId: String? = nil) async throws -> CreatedThread {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw BridgeError.server(status: 400, code: "empty", message: "Say what to do.", retryable: false) }
-        let created = try await account.requireClient(timeout: 25).createThread(text: trimmed, projectId: projectId)
+        let created = try await account.requireClient().createThread(text: trimmed, projectId: projectId)
         tracker.track(TrackedTask(threadId: created.threadId, title: created.title ?? Formatting.clip(trimmed, 60),
                                   projectName: created.projectName, startedAt: .now))
         await refreshQuietly()
@@ -35,7 +35,7 @@ public struct SamRabbitActions: Sendable {
     /// Blocks the calendar from now for `minutes` ("Focus" unless titled).
     @discardableResult
     public func block(minutes: Int, title: String? = nil) async throws -> CalendarWrite {
-        let result = try await account.requireClient(timeout: 25).block(minutes: minutes, title: title)
+        let result = try await account.requireClient().block(minutes: minutes, title: title)
         await refreshQuietly()
         return result
     }
@@ -45,12 +45,12 @@ public struct SamRabbitActions: Sendable {
     public func note(_ text: String) async throws -> JournalWrite {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw BridgeError.server(status: 400, code: "empty", message: "The note is empty.", retryable: false) }
-        return try await account.requireClient(timeout: 20).addJournalNote(trimmed)
+        return try await account.requireClient().addJournalNote(trimmed)
     }
 
     @discardableResult
     public func openOnMac(app: String? = nil, url: String? = nil) async throws -> MacOpenResult {
-        try await account.requireClient(timeout: 20).openOnMac(app: app, url: url)
+        try await account.requireClient().openOnMac(app: app, url: url)
     }
 
     /// Approves or denies exactly the request `requestId` (the one the person saw). Throws
@@ -66,12 +66,11 @@ public struct SamRabbitActions: Sendable {
         await refreshQuietly()
     }
 
-    /// Fetches the summary, caches it for the widgets and reloads them.
+    /// Fetches the summary and hands it to the widgets (reloaded only when it changed).
     @discardableResult
     public func refresh(timeout: TimeInterval = 10) async throws -> MobileSummary {
-        let summary = try await account.requireClient(timeout: timeout).summary(timeout: timeout)
-        cache.save(summary)
-        Self.reloadWidgets()
+        let summary = try await account.requireClient().summary(timeout: timeout)
+        cache.publish(summary)
         return summary
     }
 
@@ -114,12 +113,14 @@ public struct TrackedTask: Codable, Sendable, Equatable, Identifiable {
     }
 }
 
-/// Tasks started from the phone and the needs-you items already announced (App Group).
+/// Tasks started from the phone and the needs-you requests already announced (App Group).
 public final class TaskTracker: Sendable {
     public static let shared = TaskTracker()
     private let container: SharedContainer
     private static let tasksFile = "tracked-tasks.json"
-    private static let announcedFile = "announced.json"
+    private static let announcedFile = "announced-requests.json"
+    /// The earlier format (a list of keys), read once.
+    private static let legacyAnnouncedFile = "announced.json"
     /// Tracked tasks are dropped after a day either way.
     static let maxAge: TimeInterval = 86_400
 
@@ -139,10 +140,18 @@ public final class TaskTracker: Sendable {
 
     public func untrack(_ threadId: String) { update(tasks.filter { $0.threadId != threadId }) }
 
-    /// Keys of needs-you items that already raised a notification.
-    public var announced: Set<String> { Set(container.load([String].self, from: Self.announcedFile) ?? []) }
+    /// The needs-you requests that already raised a notification (`threadId|requestId` -> when),
+    /// shared by the foreground app and the background refresh.
+    public var announced: [String: Date] {
+        if let value = container.load([String: Date].self, from: Self.announcedFile) { return value }
+        let legacy = container.load([String].self, from: Self.legacyAnnouncedFile) ?? []
+        return Dictionary(legacy.map { ($0, Date.now) }, uniquingKeysWith: { first, _ in first })
+    }
 
-    public func setAnnounced(_ keys: Set<String>) { container.save(Array(keys).sorted().suffix(200), as: Self.announcedFile) }
+    public func setAnnounced(_ keys: [String: Date]) {
+        container.save(keys, as: Self.announcedFile)
+        container.remove(Self.legacyAnnouncedFile)
+    }
 }
 
 /// A local notification the app should post.
@@ -155,32 +164,47 @@ public struct PlannedAlert: Sendable, Equatable, Identifiable {
     public var threadId: String
 }
 
-/// Decides which local notifications a fresh summary deserves (no push: the background refresh
-/// and the foreground app both run this).
+/// Decides which local notifications fresh thread states deserve (no push: the background refresh
+/// and the foreground app both run this, on different lists, and must agree).
+///
+/// A needs-you notification is keyed by the T3 request it is about (`threadId|requestId`), never by
+/// its text or by which list the thread came from: the same request is announced once, wherever it
+/// was seen first; a new request on the same thread is announced again. A thread that needs you but
+/// carries no request id (summary threads, or a list item whose request the bridge has not read yet)
+/// is not announced until a list shows its request. Keys are kept for a week whether or not the
+/// thread is in the list this time, so a thread that drops out of one list and shows up in another
+/// is not announced twice.
 public enum AlertPlanner {
     public struct Plan: Sendable, Equatable {
         public var alerts: [PlannedAlert]
-        public var announced: Set<String>
+        public var announced: [String: Date]
         public var tracked: [TrackedTask]
     }
 
+    static let keepAnnounced: TimeInterval = 7 * 86_400
+    static let maxAnnounced = 400
+
     /// - Parameters:
-    ///   - threads: the freshest thread states known (summary threads plus any looked up).
-    ///   - announced: needs-you keys already notified.
+    ///   - threads: the freshest thread states known (a thread list, plus any looked up).
+    ///   - announced: needs-you requests already notified, with when.
     ///   - tracked: tasks started from the phone.
-    public static func plan(threads: [TaskThread], announced: Set<String>, tracked: [TrackedTask]) -> Plan {
+    public static func plan(threads: [TaskThread], announced: [String: Date], tracked: [TrackedTask],
+                            now: Date = .now) -> Plan {
         var alerts: [PlannedAlert] = []
-        var nextAnnounced = Set<String>()
+        var keys = announced.filter { now.timeIntervalSince($0.value) < keepAnnounced }
+        var seen = Set<String>()
         for thread in threads where thread.status.needsYou {
-            let key = needsYouKey(thread)
-            nextAnnounced.insert(key)
-            guard !announced.contains(key) else { continue }
+            guard let key = needsYouKey(thread), seen.insert(key).inserted else { continue }
+            guard keys[key] == nil else { continue }
+            keys[key] = now
             let what = thread.status == .needsApproval ? "Needs your approval" : "Has a question for you"
             let detail = thread.pending?.text.isEmpty == false ? thread.pending!.text : (thread.summary ?? what)
             alerts.append(PlannedAlert(id: "needs:\(key)", kind: .needsYou, title: thread.title,
                                        body: Formatting.clip(detail, 160), threadId: thread.threadId))
         }
-        // Keep announcing nothing twice while it still waits; forget keys that resolved.
+        if keys.count > maxAnnounced {
+            keys = Dictionary(uniqueKeysWithValues: keys.sorted { $0.value > $1.value }.prefix(maxAnnounced).map { ($0.key, $0.value) })
+        }
         let byId = Dictionary(threads.map { ($0.threadId, $0) }, uniquingKeysWith: { first, _ in first })
         var remaining: [TrackedTask] = []
         for var task in tracked {
@@ -200,14 +224,12 @@ public enum AlertPlanner {
             task.lastStatus = thread.status
             remaining.append(task)
         }
-        return Plan(alerts: alerts, announced: nextAnnounced, tracked: remaining)
+        return Plan(alerts: alerts, announced: keys, tracked: remaining)
     }
 
-    /// One key per T3 request when its id is known (a new request is announced, the same one never
-    /// twice); threads without pending details (summary threads) fall back to their status and text.
-    static func needsYouKey(_ thread: TaskThread) -> String {
-        if let requestId = thread.pending?.requestId { return "\(thread.threadId)|\(requestId)" }
-        let text = thread.pending?.text ?? ""
-        return "\(thread.threadId)|\(thread.status.rawValue)|\(text.prefix(60))"
+    /// `threadId|requestId`, or nil when the thread's request is not known.
+    static func needsYouKey(_ thread: TaskThread) -> String? {
+        guard let requestId = thread.pending?.requestId, !requestId.isEmpty else { return nil }
+        return "\(thread.threadId)|\(requestId)"
     }
 }
