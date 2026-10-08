@@ -87,8 +87,9 @@ MAC_TOOL_SPECS: tuple[tuple[str, str, str, dict[str, object]], ...] = (
         "(bring app forward); hotkey (keys, e.g. 'cmd+t' or 'return'); type_text (text; label = the field's label "
         "if it is not focused); click (label of a button, link, tab or item as mac_read shows it; role optional; "
         "if several match, the result lists options, then call again with index); invoke_menu (path, e.g. "
-        "['File', 'New Window']); scroll (direction, amount). For anything that takes several steps use mac_task. "
-        "Before deleting, sending a message or email, or buying anything, get a clear yes from the user first.",
+        "['File', 'New Window']); scroll (direction, amount). For anything that takes several steps, and for "
+        "anything in a terminal (typing there is refused), use mac_task. Before deleting, sending a message or "
+        "email, or buying anything, get a clear yes from the user first.",
         "external_write",
         {
             "type": "object",

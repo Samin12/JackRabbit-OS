@@ -326,8 +326,14 @@ class MacControlTest(unittest.TestCase):
             "~/Library": (403, "path_private"),
             "~/Documents/run.command": (403, "path_executable"),
             "~/Documents/tool": (403, "path_executable"),
+            "~/Documents/Terminal alias": (403, "path_alias"),
+            "~/Documents/server.vncloc": (403, "path_executable"),
             "~/Documents/missing.pdf": (404, "not_found"),
         }
+        # A Finder alias (bookmark file) resolves to its target, here a script outside the home folder.
+        (self.home / "Documents" / "Terminal alias").write_bytes(
+            b"book\x00\x00\x00\x00mark\x00\x00\x00\x008\x00\x00\x008\x00\x00\x00" + b"/tmp/evil.command")
+        (self.home / "Documents" / "server.vncloc").write_text("<plist/>")
         for path, (expected, code) in cases.items():
             with self.subTest(path=path):
                 status, value = self.call("POST", "/v1/mac/open", {"path": path})
@@ -430,12 +436,40 @@ class MacControlTest(unittest.TestCase):
         self.assertEqual(400, self.call("POST", "/v1/mac/act", {"action": "type_text", "text": "a\x07b"})[0])
         self.assertEqual(400, self.call("POST", "/v1/mac/act", {"action": "type_text", "text": "x" * 2001})[0])
 
+    def test_typing_and_plain_keys_in_a_terminal_are_refused(self) -> None:
+        state = base_state()
+        state["apps"].append({"pid": 606, "name": "Terminal", "bundle_id": "com.apple.Terminal"})
+        state["apps"].append({"pid": 707, "name": "iTerm2", "bundle_id": "com.googlecode.iterm2"})
+        state["windows"].append(_window(61, 606, "Terminal", "samin — -zsh — 80×24", 40))
+        state["windows"].append(_window(71, 707, "iTerm2", "zsh", 4))
+        state["front_pid"] = 606
+        self.write_state(state)
+        refused = ({"action": "type_text", "text": "rm -rf ~/Documents\n"},
+                   {"action": "type_text", "text": "ls", "app": "iTerm"},
+                   {"action": "hotkey", "keys": "return"}, {"action": "hotkey", "keys": "up"},
+                   {"action": "hotkey", "keys": "ctrl+c"}, {"action": "hotkey", "keys": "cmd+v"},
+                   {"action": "hotkey", "keys": "return", "app": "iTerm2"})
+        for body in refused:
+            with self.subTest(body=body):
+                status, value = self.call("POST", "/v1/mac/act", body)
+                self.assertEqual(403, status, value)
+                self.assertEqual("terminal_blocked", value["error"]["code"])
+                self.assertIn("mac_task", value["error"]["message"])
+        self.assertFalse([entry for entry in self.calls() if entry["tool"] in ("type_text", "hotkey", "press_key")],
+                         "nothing reached the terminal")
+        status, value = self.call("POST", "/v1/mac/act", {"action": "hotkey", "keys": "cmd+t"})
+        self.assertEqual(200, status, value)
+        self.assertEqual(200, self.call("POST", "/v1/mac/act", {"action": "scroll", "direction": "up"})[0])
+        status, value = self.call("POST", "/v1/mac/act", {"action": "type_text", "text": "hi", "app": "Chrome"})
+        self.assertEqual(200, status, "other apps still take typing")
+
     def test_menus_scroll_and_the_action_allowlist(self) -> None:
         status, value = self.call("POST", "/v1/mac/act", {"action": "invoke_menu", "path": "File > New Window"})
         self.assertEqual(200, status, value)
         self.assertEqual({"pid": CHROME, "window_id": 11, "path": ["File", "New Window"]},
                          [entry["args"] for entry in self.calls() if entry["tool"] == "invoke_menu"][0])
-        for path in (["Apple", "Shut Down…"], ["Finder", "Empty Trash…"], ["File", "Log Out Samin…"]):
+        for path in (["Apple", "Shut Down…"], ["Finder", "Empty Trash…"], ["File", "Log Out Samin…"],
+                     ["File", "Move to Trash"], ["File", "Delete Immediately…"], ["Finder", "Empty Bin…"]):
             with self.subTest(path=path):
                 self.assertEqual(403, self.call("POST", "/v1/mac/act", {"action": "invoke_menu", "path": path})[0])
         status, value = self.call("POST", "/v1/mac/act", {"action": "scroll", "direction": "down", "amount": 3})

@@ -111,13 +111,27 @@ _BLOCKED_CHORDS = frozenset({
     ("cmd", "ctrl", "power"), ("cmd", "option", "power"), ("cmd", "ctrl", "option", "power"),
 })
 _BLOCKED = frozenset(tuple(sorted(chord[:-1])) + (chord[-1],) for chord in _BLOCKED_CHORDS)
-_BLOCKED_MENU = re.compile(r"^(shut down|restart|log ?out|force quit|empty (the )?trash|erase|lock screen|sleep)",
-                           re.IGNORECASE)
+# Menu items that end the session or delete files (the menu twins of the blocked chords above).
+_BLOCKED_MENU = re.compile(r"^(shut down|restart|log ?out|force quit|empty (the )?(trash|bin)|secure empty trash|"
+                           r"move to (the )?(trash|bin)|delete immediately|erase|lock screen|sleep)", re.IGNORECASE)
 _BLOCKED_SUFFIXES = frozenset({
     ".app", ".command", ".tool", ".sh", ".zsh", ".bash", ".csh", ".fish", ".py", ".rb", ".pl", ".scpt",
     ".scptd", ".applescript", ".workflow", ".terminal", ".pkg", ".mpkg", ".prefpane", ".kext", ".jar",
     ".webloc", ".inetloc", ".fileloc", ".action", ".osax", ".mobileconfig", ".shortcut",
+    ".url", ".afploc", ".ftploc", ".mailloc", ".newsloc", ".vncloc", ".saver", ".mobileprovision",
+    ".provisionprofile",
 })
+# A Finder alias is a plain file that LaunchServices resolves to its target, which may be an app or a
+# script outside the home folder; realpath() does not see through it.
+_ALIAS_MAGIC = b"book\x00\x00\x00\x00mark\x00\x00\x00\x00"
+# Typing or pressing keys in these is a shell (or a script runner): terminal work goes to mac_task.
+_TERMINAL_BUNDLES = frozenset({
+    "com.apple.terminal", "com.googlecode.iterm2", "dev.warp.warp-stable", "dev.warp.warp", "com.mitchellh.ghostty",
+    "net.kovidgoyal.kitty", "org.alacritty", "io.alacritty", "com.github.wez.wezterm", "co.zeit.hyper",
+    "com.apple.scripteditor2", "org.tabby",
+})
+_TERMINAL_NAMES = frozenset({"terminal", "iterm", "iterm2", "warp", "ghostty", "kitty", "alacritty", "wezterm",
+                             "hyper", "script editor", "tabby"})
 _ACTIONS = ("bring_to_front", "hotkey", "type_text", "click", "invoke_menu", "scroll")
 
 
@@ -449,6 +463,11 @@ class MacControl:
 
     def _target(self, app: Any) -> Tuple[int, str, Optional[Dict[str, Any]]]:
         """(pid, app name, front window) for a named running app, or the frontmost app."""
+        pid, name, window, _ = self._target_app(app)
+        return pid, name, window
+
+    def _target_app(self, app: Any) -> Tuple[int, str, Optional[Dict[str, Any]], Dict[str, Any]]:
+        """``_target`` plus the app's own record (bundle id)."""
         apps, _ = self._regular_apps()
         regular = {int(item["pid"]): item for item in apps}
         visible = self._on_screen()
@@ -463,7 +482,7 @@ class MacControl:
             if front is None:
                 raise MacError(409, "no_front_app", "No app is in front on the Mac right now.")
             pid = front
-        return pid, _clean(regular[pid].get("name"), 60), self._window_for(pid, visible)
+        return pid, _clean(regular[pid].get("name"), 60), self._window_for(pid, visible), regular[pid]
 
     # ------------------------------------------------------------------ state
 
@@ -609,6 +628,8 @@ class MacControl:
             raise MacError(403, "path_executable", "Apps and scripts are not opened as files. Open the app by name.")
         if os.path.isfile(real) and os.stat(real).st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH):
             raise MacError(403, "path_executable", "Executable files are not opened from the R1.")
+        if os.path.isfile(real) and _is_alias(real):
+            raise MacError(403, "path_alias", "Aliases are not opened from the R1. Open the original file instead.")
         return real
 
     def _installed_apps(self) -> List[Dict[str, Any]]:
@@ -715,7 +736,9 @@ class MacControl:
             raise _bad("invalid_action", "action must be one of: " + ", ".join(_ACTIONS) + ".")
         with self._locked():
             self._require_accessibility()
-            pid, name, window = self._target(body.get("app"))
+            pid, name, window, record = self._target_app(body.get("app"))
+            if action in ("type_text", "hotkey") and _is_terminal(record):
+                _refuse_terminal_keys(action, body.get("keys"))
             window_id = int(window["window_id"]) if window and window.get("window_id") else None
             base: Dict[str, Any] = {"pid": pid}
             if window_id is not None:
@@ -911,6 +934,14 @@ def _computer_name() -> Optional[str]:
     return done.stdout.decode("utf-8", errors="replace").strip() or None
 
 
+def _is_alias(path: str) -> bool:
+    try:
+        with open(path, "rb") as handle:
+            return handle.read(len(_ALIAS_MAGIC)) == _ALIAS_MAGIC
+    except OSError:
+        return False  # unreadable for this user, so LaunchServices (same user) cannot resolve it either
+
+
 def _short_url(value: Any) -> Optional[str]:
     text = _clean(value)
     if not text:
@@ -1009,6 +1040,22 @@ def _keys(raw: Any) -> List[str]:
         raise MacError(403, "keys_blocked", "That shortcut (log out, force quit, lock or delete files) is not "
                                             "available from the R1.")
     return list(chord)
+
+
+def _is_terminal(app: Dict[str, Any]) -> bool:
+    bundle = str(app.get("bundle_id") or "").lower()
+    return bundle in _TERMINAL_BUNDLES or _norm(app.get("name")) in _TERMINAL_NAMES
+
+
+def _refuse_terminal_keys(action: str, keys: Any) -> None:
+    """In a terminal, typed text and plain keys (return, arrows, ctrl+c, paste) would run or change
+    commands. Window shortcuts with cmd (new tab, close, clear) stay available."""
+    if action == "hotkey":
+        chord = _keys(keys)
+        if "cmd" in chord[:-1] and chord[-1] != "v":
+            return
+    raise MacError(403, "terminal_blocked", "Typing or pressing keys in a terminal is not available from the R1. "
+                                            "Hand terminal work to mac_task.")
 
 
 def _text_of(element: Dict[str, Any]) -> str:
