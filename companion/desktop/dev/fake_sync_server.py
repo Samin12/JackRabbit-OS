@@ -568,7 +568,7 @@ class FakeHandler(BaseHTTPRequestHandler):
             after = int((query.get("after") or ["0"])[0] or 0)
             events = self.server.store.after(after, cid)
             cursor = events[-1]["cursor"] if events else max(after, 0)
-            return self.json(200, {"events": events, "cursor": cursor})
+            return self.json(200, {"events": events, "cursor": cursor, "more": False})  # like samrabbit_sync
         if path == "/v1/sync/stream":
             return self.stream(query)
         if path.startswith("/v1/sync/blobs/"):

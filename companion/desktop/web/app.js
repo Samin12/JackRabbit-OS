@@ -1,6 +1,6 @@
 // SamRabbit desktop: mirrors every R1 voice conversation live (CONTRACTS-WAVE3 hop 3).
 
-import { ApiError, SyncStream, api } from './api.js';
+import { ApiError, SyncStream, api, pageHasMore } from './api.js';
 import { tickTimers } from './cards.js';
 import { h } from './dom.js';
 import { clip, dayLabel, plural, relativeTime, shortWhen, stamp } from './format.js';
@@ -409,6 +409,21 @@ function hashId() {
   return match ? decodeURIComponent(match[1]) : null;
 }
 
+/**
+ * Applies every event after the timeline's cursor, page by page, until the bridge says there is no
+ * more (each page must advance the cursor, so this always ends). Returns whether anything changed.
+ */
+async function fetchEvents(timeline, id) {
+  let changed = false;
+  for (;;) {
+    const after = timeline.cursor;
+    const body = await api.events(id, after ?? undefined);
+    for (const event of (body && Array.isArray(body.events) ? body.events : [])) changed = timeline.apply(event) || changed;
+    if (body && body.cursor != null) timeline.cursor = body.cursor;
+    if (!pageHasMore(body, after)) return changed;
+  }
+}
+
 async function openTimeline(id) {
   const timeline = store.timeline(id);
   if (timeline.loading) return timeline.loading;
@@ -416,16 +431,7 @@ async function openTimeline(id) {
   schedule('main');
   timeline.loading = (async () => {
     try {
-      let after = timeline.cursor;
-      for (let page = 0; page < 60; page += 1) {
-        const body = await api.events(id, after ?? undefined);
-        const events = body && Array.isArray(body.events) ? body.events : [];
-        for (const event of events) timeline.apply(event);
-        const cursor = body && body.cursor != null ? body.cursor : null;
-        if (cursor != null) timeline.cursor = cursor;
-        if (!events.length || cursor == null || String(cursor) === String(after) || body.hasMore === false) break;
-        after = cursor;
-      }
+      await fetchEvents(timeline, id);
       timeline.loaded = true;
     } catch (error) {
       timeline.error = error;
@@ -466,15 +472,15 @@ function select(id, { user = false } = {}) {
 /** Fetches anything after the timeline's cursor (after a stream gap). */
 async function refreshTimeline(id) {
   const timeline = store.timelines.get(id);
-  if (!timeline || !timeline.loaded || timeline.loading) return;
+  if (!timeline || !timeline.loaded || timeline.loading || timeline.refreshing) return;
+  timeline.refreshing = true;
   try {
-    const body = await api.events(id, timeline.cursor ?? undefined);
-    let changed = false;
-    for (const event of (body && body.events) || []) changed = timeline.apply(event) || changed;
-    if (body && body.cursor != null) timeline.cursor = body.cursor;
+    const changed = await fetchEvents(timeline, id);
     if (changed && state.selectedId === id) schedule('timeline', 'foot');
   } catch {
     // the next stream event or list refresh tries again
+  } finally {
+    timeline.refreshing = false;
   }
 }
 

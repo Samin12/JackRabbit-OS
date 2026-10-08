@@ -95,7 +95,7 @@ the image), `ui.generating|generated|failed`, `conversation.started|ended`, `ses
 ## Tests
 
 ```sh
-node --test companion/desktop/tests/store.test.mjs          # timeline/store logic
+node --test companion/desktop/tests/*.mjs                   # timeline/store logic, API paging
 python3 -m unittest discover -s companion/desktop/tests     # install.sh / uninstall.sh in a throwaway home
 python3 -m unittest discover -s companion/mac-bridge/tests  # includes the /app/ route (test_desktop_app.py)
 ```

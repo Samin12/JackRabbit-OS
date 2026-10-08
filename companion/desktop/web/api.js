@@ -56,6 +56,22 @@ function query(params) {
   return text ? `?${text}` : '';
 }
 
+/** Events per page (the bridge's maximum). */
+export const EVENTS_PAGE = 500;
+
+/**
+ * Whether an events page says more follow: the sync API's `more` (or `hasMore`). Without either
+ * flag, a non-empty page whose cursor advanced means "ask again".
+ */
+export function pageHasMore(body, after) {
+  const events = body && Array.isArray(body.events) ? body.events : [];
+  const cursor = body && body.cursor != null ? body.cursor : null;
+  if (cursor == null || String(cursor) === String(after ?? '')) return false;
+  const flag = body.more ?? body.hasMore;
+  if (typeof flag === 'boolean') return flag;
+  return events.length > 0;
+}
+
 /** "sha256:<hex>" -> "<hex>" (the path form of a blob id). */
 export function blobPath(blobId) {
   const id = String(blobId ?? '');
@@ -66,8 +82,8 @@ export const api = {
   conversations({ limit = 100, before, q, signal } = {}) {
     return getJSON(`/v1/sync/conversations${query({ limit, before, q })}`, { signal });
   },
-  events(conversationId, after, { signal } = {}) {
-    return getJSON(`/v1/sync/conversations/${encodeURIComponent(conversationId)}/events${query({ after })}`,
+  events(conversationId, after, { limit = EVENTS_PAGE, signal } = {}) {
+    return getJSON(`/v1/sync/conversations/${encodeURIComponent(conversationId)}/events${query({ after, limit })}`,
       { signal });
   },
   blobUrl(blobId) {

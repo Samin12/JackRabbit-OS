@@ -1,5 +1,5 @@
 // Timeline/store logic of the desktop web UI (no DOM needed).
-// Run: node --test companion/desktop/tests/
+// Run: node --test companion/desktop/tests/*.mjs
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
