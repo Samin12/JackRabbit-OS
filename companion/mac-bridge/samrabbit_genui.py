@@ -432,12 +432,22 @@ def assemble_document(widget: Dict[str, Any], design: DesignSystem, *, static: b
 
 def render_wrapper(document: str, width: int) -> str:
     """A host page for the headless render: the widget runs in a sandboxed iframe exactly like on the
-    desktop (opaque origin, no file access) and reports its height and readiness by postMessage."""
+    desktop (opaque origin, no file access) and reports its height and readiness by postMessage.
+
+    ``frame-src 'none'`` stops the widget from navigating its own frame (``location = ...``, a meta refresh)
+    to another page, which would otherwise land in the picture: anything a loopback or LAN web page shows
+    (a dev server, a router page) would reach the R1, the conversation timeline and the voice model. The
+    srcdoc document itself still loads, and inherits the policy (no nested frames either). A blocked attempt
+    is counted in ``__srBlocked`` so the render is not used."""
     return (
         "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
+        "<meta http-equiv=\"Content-Security-Policy\" content=\"frame-src 'none'\">"
         "<style>:root{color-scheme:dark;}html,body{margin:0;padding:0;background:#090b10;}"
         "iframe{display:block;border:0;width:" + str(int(width)) + "px;height:640px;background:transparent;}</style>"
-        "<script>window.__srReady=false;window.__srHeight=0;window.__srErrors=[];"
+        "<script>window.__srReady=false;window.__srHeight=0;window.__srErrors=[];window.__srBlocked=0;"
+        "document.addEventListener('securitypolicyviolation',function(e){"
+        "if(String(e.effectiveDirective||e.violatedDirective).indexOf('frame-src')===0){window.__srBlocked+=1;"
+        "setTimeout(function(){window.__srReady=true;},80);}});"
         "addEventListener('message',function(e){var d=e.data||{};var f=document.getElementById('w');"
         "if(d.type==='widget-resize'&&d.height>0){window.__srHeight=d.height;if(f)f.style.height=d.height+'px';}"
         "else if(d.type==='widget-ready'){if(d.height>0){window.__srHeight=d.height;if(f)f.style.height=d.height+'px';}"
@@ -568,11 +578,16 @@ def parse_cli_output(out: bytes, code: int, err: bytes = b"", *, fallback: str =
 # --------------------------------------------------------------------------- headless render
 
 
+NAVIGATION_BLOCKED = ("the widget tried to replace its page with another one (blocked): never assign location, "
+                      "use a meta refresh, or open other pages")
+
+
 class RenderResult:
-    def __init__(self, css_height: int, errors: List[str], ready: bool) -> None:
+    def __init__(self, css_height: int, errors: List[str], ready: bool, *, navigated: bool = False) -> None:
         self.css_height = css_height
         self.errors = errors
         self.ready = ready
+        self.navigated = navigated  # the widget tried to leave its frame: the picture must not be used
 
 
 class AgentBrowser:
@@ -616,13 +631,19 @@ class AgentBrowser:
         deadline = time.monotonic() + timeout
         session = "samrabbit-genui-" + uuid.uuid4().hex[:12]
         env = _child_env({"AGENT_BROWSER_DEFAULT_TIMEOUT": str(RENDER_READY_WAIT_MS)})
+        # An explicit empty config: a user-level ~/.agent-browser/config.json (a real Chrome profile,
+        # auto-connect, extensions, a proxy) must never apply to rendering generated widgets.
+        config = os.path.join(os.path.dirname(os.path.abspath(out_png)), "agent-browser.json")
+        with open(config, "w", encoding="utf-8") as handle:
+            handle.write("{}\n")
+        base = [executable, "--config", config, "--session", session]
 
         def call(*command: str, stdin: Optional[bytes] = None) -> Dict[str, Any]:
             remaining = deadline - time.monotonic()
             if remaining <= 1:
                 raise GenUiError("render_timeout", "Drawing the visual took too long.", retryable=True)
             try:
-                code, out, _err = _run([executable, "--session", session, "--json", *command], timeout=remaining,
+                code, out, _err = _run(base + ["--json", *command], timeout=remaining,
                                        stdin=stdin, env=env, register=self._register)
             except subprocess.TimeoutExpired:
                 raise GenUiError("render_timeout", "Drawing the visual took too long.", retryable=True) from None
@@ -660,10 +681,17 @@ class AgentBrowser:
             shot = call("screenshot", out_png)
             if not shot.get("success") or not os.path.isfile(out_png) or os.path.getsize(out_png) == 0:
                 raise GenUiError("render_failed", "The renderer did not produce a picture.", retryable=True)
-            return RenderResult(css_height, errors, bool(metrics.get("r")) and bool(waited.get("success")))
+            # After the screenshot: a navigation attempted at any time before it is counted by now.
+            after = _eval_json(call("eval", "JSON.stringify({b: window.__srBlocked || 0})"))
+            blocked = after.get("b")
+            navigated = isinstance(blocked, (int, float)) and not isinstance(blocked, bool) and blocked > 0
+            if navigated:
+                errors = (errors + [NAVIGATION_BLOCKED])[:8]
+            return RenderResult(css_height, errors, bool(metrics.get("r")) and bool(waited.get("success")),
+                                navigated=navigated)
         finally:
             try:
-                _run([executable, "--session", session, "close"], timeout=10.0, env=env)
+                _run(base + ["close"], timeout=10.0, env=env)
             except (OSError, subprocess.SubprocessError):
                 pass
 
@@ -1131,9 +1159,12 @@ class GenUiService:
                         retry_png, retry = self._render(candidate, retry_dir, width, scale)
                     except GenUiError:
                         retry = None
-                    if retry is not None and len(retry.errors) < len(result.errors):
+                    if retry is not None and (retry.navigated, len(retry.errors)) < (result.navigated, len(result.errors)):
                         widget, png, result = candidate, retry_png, retry
                         self._save_widget(artifact_id, widget)
+            if result.navigated:  # the picture shows a blocked page, never the widget: do not keep it
+                raise GenUiError("widget_navigated", "The visual tried to open another page, so it was not used.",
+                                 retryable=True)
             render_ms = int((time.monotonic() - render_started) * 1000)
             self.store.import_file(artifact_id, "preview.png", png)
             jpeg, image_width, image_height = self.encoder.encode(png, os.path.join(work, "preview.jpg"))

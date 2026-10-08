@@ -5,6 +5,7 @@ Run: python3 -m unittest discover -s companion/mac-bridge/tests
 
 from __future__ import annotations
 
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import io
 import json
 import logging
@@ -53,6 +54,7 @@ class FakeRenderer:
     def __init__(self) -> None:
         self.pages: list[str] = []
         self.errors: list[list[str]] = []
+        self.navigated: list[bool] = []
         self.fail = False
         self.lock = threading.Lock()
 
@@ -68,11 +70,14 @@ class FakeRenderer:
         with self.lock:
             self.pages.append(text)
             errors = self.errors.pop(0) if self.errors else []
+            navigated = self.navigated.pop(0) if self.navigated else False
         if self.fail:
             raise genui.GenUiError("renderer_missing", "The renderer is missing.", status=503)
         with open(out_png, "wb") as handle:
             handle.write(make_png(width * scale, 600 * scale))
-        return genui.RenderResult(600, errors, True)
+        if navigated:
+            errors = errors + [genui.NAVIGATION_BLOCKED]
+        return genui.RenderResult(600, errors, True, navigated=navigated)
 
 
 class FakeSync:
@@ -316,6 +321,25 @@ class GenerateTest(GenUiTestBase):
         self.assertIn("ReferenceError: boom is not defined", self.calls()[1]["stdin"])
         args = json.loads((self.artifacts / body["artifactId"] / "args.json").read_text())
         self.assertEqual(["mark();"], args["jsExpressions"], "the repaired widget is kept")
+
+    def test_a_widget_that_leaves_its_frame_is_repaired_or_never_used(self) -> None:
+        self.modes("ok")
+        self.renderer.navigated = [True, False]
+        _, body = self.generate(request_id="nav-1")
+        self.finish()
+        meta = self.service.store.meta(body["artifactId"])
+        self.assertEqual("ready", meta["status"])
+        self.assertTrue(meta["repaired"])
+        self.assertIn("never assign location", self.calls()[1]["stdin"], "the model is told what went wrong")
+        self.renderer.navigated = [True, True]
+        _, body = self.generate(request_id="nav-2", conversationId="c_" + "f" * 20)
+        self.assertTrue(self.service.wait_idle(30))
+        meta = self.service.store.meta(body["artifactId"])
+        self.assertEqual(("failed", "widget_navigated"), (meta["status"], meta["error"]))
+        folder = self.artifacts / body["artifactId"]
+        self.assertFalse((folder / "preview.png").exists(), "the picture of a blocked page is never kept")
+        self.assertFalse((folder / "preview.jpg").exists())
+        self.assertEqual([], self.sync.blobs[1:], "no blob for the failed one")
 
     def test_claude_errors_fail_with_a_stable_code(self) -> None:
         for index, (mode, code) in enumerate((("busy", "claude_busy"), ("signed_out", "claude_signed_out"),
@@ -564,9 +588,50 @@ class RealRenderTest(unittest.TestCase):
             with open(out, "rb") as handle:
                 size = genui.png_size(handle.read(32))
         self.assertTrue(result.ready)
+        self.assertFalse(result.navigated)
         self.assertEqual(960, size[0])
         self.assertGreaterEqual(result.css_height, genui.MIN_RENDER_HEIGHT)
         self.assertTrue(any("missing" in error for error in result.errors), result.errors)
+
+    @unittest.skipUnless(genui.AgentBrowser().executable(), "agent-browser is not installed")
+    def test_a_widget_cannot_put_a_local_web_page_into_the_picture(self) -> None:
+        hits: list[str] = []
+
+        class Local(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802
+                hits.append(self.path)
+                body = b"<p>LOCAL-SECRET-PAGE</p>"
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *_args: object) -> None:
+                pass
+
+        local = ThreadingHTTPServer(("127.0.0.1", 0), Local)
+        threading.Thread(target=local.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
+        self.addCleanup(local.server_close)
+        self.addCleanup(local.shutdown)
+        url = f"http://127.0.0.1:{local.server_address[1]}/secret"
+        variants = (
+            {"html": "<p>x</p>", "jsExpressions": [f"location.href = '{url}';"]},
+            {"html": f'<meta http-equiv="refresh" content="0;url={url}"><p>x</p>', "jsExpressions": []},
+            {"html": "<p>x</p>", "jsExpressions": [f"setTimeout(function () {{ location.replace('{url}'); }}, 300);"]},
+        )
+        for variant in variants:
+            widget = dict({"title": "x", "summary": "", "css": "", "jsFunctions": ""}, **variant)
+            with tempfile.TemporaryDirectory() as folder:
+                page = os.path.join(folder, "render.html")
+                with open(page, "w", encoding="utf-8") as handle:
+                    handle.write(genui.render_wrapper(genui.assemble_document(widget, genui.DesignSystem(),
+                                                                              static=True), 480))
+                result = genui.AgentBrowser().render(page, os.path.join(folder, "out.png"), width=480, scale=1,
+                                                     timeout=40)
+            self.assertTrue(result.navigated, variant)
+            self.assertIn(genui.NAVIGATION_BLOCKED, result.errors)
+        self.assertEqual([], hits, "the local page is never even requested")
 
 
 if __name__ == "__main__":
