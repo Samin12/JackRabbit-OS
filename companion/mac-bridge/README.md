@@ -43,10 +43,13 @@ You can run it again at any time. It:
    `/opt/homebrew/bin`, `--sync-dir` and `--desktop-token-file`, and logs to `~/Library/Logs/samrabbit-bridge.log`);
 4. reloads the agent (`launchctl bootout`/`bootstrap`/`kickstart`), waits for `/health`, and prints the bridge URL.
 
-Then point the R1 at the bridge. You can do this from the R1's management page (Connections > Heptabase journal >
-"Connect through your Mac", then paste the URL and token), or with the Mac helper
-`~/jr-toolchain/heptabase-bridge-connect.sh`, which installs the bridge and configures the R1 over a paired
-management session.
+Then point the R1 at the bridge from the R1's management page (Connections > Heptabase journal >
+"Connect through your Mac"), and paste the URL and token.
+
+If you use the Heptabase sign-in instead of the bridge, `heptabase-connect.py` in this folder finishes it from the
+Mac: `python3 companion/mac-bridge/heptabase-connect.py --r1 https://<R1 address>:8443 --pairing-code <code on the R1>`.
+It pairs a management session, listens on the loopback redirect the R1 returns, opens Heptabase's Allow screen,
+and forwards the one-time code to the R1, which does the token exchange itself. It uses only the standard library.
 
 `uninstall.sh` stops and removes the agent and keeps the tokens. `uninstall.sh --purge` also deletes both tokens.
 Neither ever deletes the synced conversations in `~/Library/Application Support/SamRabbit/sync/`.
@@ -262,4 +265,4 @@ installer against a throwaway home with `SAMRABBIT_SKIP_LAUNCHCTL=1`.
   to install `samrabbit_sync.py`), and `desktopToken: true` (else the desktop token file is missing). The R1's
   management API (`GET /v1/management/conversation-sync`) shows its outbox: `pending`, `lastError`
   (`bridge_outdated` = this bridge predates sync), `lastOkAt`.
-- The Mac's IP changed: run `heptabase-bridge-connect.sh` again, or update the URL on the R1's management page.
+- The Mac's IP changed: run `install.sh` again to print the new address, then update the URL on the R1's management page.

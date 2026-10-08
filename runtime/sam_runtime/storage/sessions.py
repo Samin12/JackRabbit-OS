@@ -104,8 +104,7 @@ class SessionTranscriptRepository:
     def list_finalized_sessions(self) -> tuple[str, ...]:
         """Session ids with a completed summary, most recently finalized first.
 
-        Mirrors the donor's ``list_completed_session_summaries`` ordering
-        (``updated_at DESC, created_at DESC``), used to select the previous
+        Ordered by ``updated_at DESC, created_at DESC``; used to select the previous
         session's summary at session start. Only sessions whose review
         produced a non-empty summary text are considered.
         """

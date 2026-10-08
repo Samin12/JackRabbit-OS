@@ -7,7 +7,7 @@ This document gives a coding assistant the minimum complete context needed to wo
 SamRabbit is a standalone, Voice-first software platform for the Rabbit R1. The Android application replaces the normal HOME experience, hosts an embedded Python runtime, provides native OpenAI Realtime Voice over WebRTC, displays Cards, and serves a same-LAN management website from the device.
 
 The project is source-available for noncommercial use under `LICENSE` and is
-not licensed under an OSI-approved license. Community modification and sharing
+not licensed under an OSI-approved license. Modification and sharing
 are allowed only for noncommercial purposes. Commercial use, paid licensing,
 and monetized distribution are not part of this project and must not be implied
 in code, documentation, packaging, or contributor guidance.
@@ -295,7 +295,7 @@ Verify the process:
 adb shell pidof com.resonolabs.voice.engineering
 ```
 
-The historical package `com.resonolabs.r1` is obsolete. Do not use it.
+Debug builds install as `com.resonolabs.voice.engineering` (release builds as `com.resonolabs.voice`); use the debug package ID in these commands.
 
 ## Runtime and management verification
 
@@ -375,7 +375,7 @@ For a normal APK/runtime/web correction:
 3. Rebuild only `system.img` from the verified base.
 4. Byte-compare the APK extracted from the new image with the tested APK.
 5. Run read-only `e2fsck` against the resulting image.
-6. Publish the image hash and manifest to the installer developer.
+6. Publish the image hash and manifest for the installer release.
 
 The local system-only builder is:
 
@@ -402,9 +402,9 @@ llm.md
 .gitignore
 ```
 
-Internal planning, tests, installer work in progress, architecture graph output, device logs, donor repositories, downloaded firmware, accepted binary evidence, and generated images remain local until deliberately prepared for publication.
+Internal planning, tests, installer work in progress, architecture graph output, device logs, external reference repositories, downloaded firmware, accepted binary evidence, and generated images remain local until deliberately prepared for publication.
 
-Never modify a donor repository. Copy approved donor behavior into this repository only after recording provenance and retained/omitted behavior in the project's local engineering records.
+Never modify an external reference repository. Copy approved behavior from another repository into this one only after recording provenance and retained/omitted behavior in the project's local engineering records.
 
 ## Safe coding workflow
 

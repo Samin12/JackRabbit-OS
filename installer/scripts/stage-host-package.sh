@@ -9,11 +9,11 @@ contract="$installer_root/images/HOST-DEPENDENCIES.json"
 
 case "$platform" in
   linux-x64|macos-x64|macos-arm64|windows-x64) ;;
-  *) printf 'JR-HOST-PACKAGE-PLATFORM: unsupported platform: %s\n' "$platform" >&2; exit 1 ;;
+  *) printf 'SAM-HOST-PACKAGE-PLATFORM: unsupported platform: %s\n' "$platform" >&2; exit 1 ;;
 esac
 
-[[ -f "$cli_binary" ]] || { printf 'JR-HOST-PACKAGE-CLI: missing binary: %s\n' "$cli_binary" >&2; exit 1; }
-[[ -d "$release_root/images" ]] || { printf 'JR-HOST-PACKAGE-RELEASE: missing verified release images: %s\n' "$release_root" >&2; exit 1; }
+[[ -f "$cli_binary" ]] || { printf 'SAM-HOST-PACKAGE-CLI: missing binary: %s\n' "$cli_binary" >&2; exit 1; }
+[[ -d "$release_root/images" ]] || { printf 'SAM-HOST-PACKAGE-RELEASE: missing verified release images: %s\n' "$release_root" >&2; exit 1; }
 node "$installer_root/scripts/verify-release-directory.mjs" "$release_root"
 
 read_contract() {
@@ -22,10 +22,10 @@ read_contract() {
 
 cache_root="$installer_root/dist/dependency-cache"
 bundle_root="$(cd "$release_root/.." && pwd -P)"
-[[ "$(basename "$release_root")" == release ]] || { printf 'JR-HOST-PACKAGE-RELEASE: expected the shared bundle release directory: %s\n' "$release_root" >&2; exit 1; }
+[[ "$(basename "$release_root")" == release ]] || { printf 'SAM-HOST-PACKAGE-RELEASE: expected the shared bundle release directory: %s\n' "$release_root" >&2; exit 1; }
 output_root="$bundle_root/hosts/$platform"
 mkdir -p "$cache_root" "$bundle_root/hosts"
-[[ ! -e "$output_root" ]] || { printf 'JR-HOST-PACKAGE-EXISTS: remove the existing package first: %s\n' "$output_root" >&2; exit 1; }
+[[ ! -e "$output_root" ]] || { printf 'SAM-HOST-PACKAGE-EXISTS: remove the existing package first: %s\n' "$output_root" >&2; exit 1; }
 mkdir -p "$output_root/bin" "$output_root/tools" "$output_root/drivers"
 
 fetch_exact() {
@@ -86,4 +86,4 @@ cp "$installer_root/$([[ "$platform" == windows-x64 ]] && printf windows || prin
 cp "$installer_root/INSTALL.md" "$installer_root/TROUBLESHOOTING.md" "$output_root/"
 cp "$contract" "$output_root/HOST-DEPENDENCIES.json"
 
-printf 'JR-HOST-PACKAGE-OK: %s\n' "$output_root"
+printf 'SAM-HOST-PACKAGE-OK: %s\n' "$output_root"

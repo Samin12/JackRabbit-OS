@@ -17,10 +17,8 @@ from ..tools.definitions import ToolDefinition, ToolInvocationContext, ToolInvoc
 from .contracts import REVIEWER_CONTRACT_VERSION
 
 
-# Donor parity: app/contracts/internal/browser_voice_tools.py defines the
-# memory_lookup Realtime function tool with parameters {query (required),
-# limit (integer 1..8)} and the description below. The donor dispatches it to
-# vault_hybrid_memory_lookup; this standalone store routes the same call to the
+# The memory_lookup Realtime function tool takes {query (required),
+# limit (integer 1..8)} and the description below; calls are routed to the
 # MemoryRetriever cosine path.
 MEMORY_LOOKUP_TOOL_NAME = "memory_lookup"
 MEMORY_LOOKUP_TOOL_DESCRIPTION = (
@@ -51,8 +49,7 @@ MEMORY_TOOL_SET = AudienceResource(AudienceResourceKind.DOMAIN_TOOL_SET, "memory
 
 # OpenAI Realtime session ``tools`` array entry. The voice model sees this tool
 # definition and calls it; the Android peer routes the call to the on-device MCP
-# server, which dispatches to ``MemoryLookupTool`` (the executor below). This
-# mirrors the donor's ``memory_lookup`` Realtime function tool.
+# server, which dispatches to ``MemoryLookupTool`` (the executor below).
 MEMORY_LOOKUP_REALTIME_TOOL = {
     "type": "function",
     "name": MEMORY_LOOKUP_TOOL_NAME,
@@ -75,8 +72,7 @@ class MemoryLookupTool:
     the configured access path: subscription token or Platform key) can call
     the embedding provider and at least one memory is embedded. When
     embeddings are unavailable the tool reports that honestly rather than
-    substituting a keyword/hash search, matching the donor's
-    ``embeddingSearch`` provenance flag and the build-contract attack rule
+    substituting a keyword/hash search, following the build-contract attack rule
     that a hash/keyword/random vector presented as semantic search fails.
     """
 

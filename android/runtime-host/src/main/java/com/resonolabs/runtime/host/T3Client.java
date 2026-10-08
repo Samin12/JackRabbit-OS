@@ -82,11 +82,11 @@ public final class T3Client implements AutoCloseable {
     private static final String BASE = "http://127.0.0.1:8765";
     private static final String TIMEOUT = "runtime_timeout";
     /**
-     * Above the runtime's own T3 Code timeouts (6-8 s per upstream request, plus waiting for an
+     * Above the runtime's own T3 Code timeouts (6-8 s per request to T3 Code, plus waiting for an
      * in-flight sync), so a slow or asleep Mac comes back as the runtime's error, not ours.
      */
     private static final int READ_TIMEOUT_MS = 15_000;
-    /** Writes may chain a pending re-check and a dispatch upstream. */
+    /** Writes may chain a pending re-check and a dispatch to T3 Code. */
     private static final int WRITE_TIMEOUT_MS = 30_000;
     private static final int MAX_BODY_BYTES = 512 * 1024;
 

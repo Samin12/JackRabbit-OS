@@ -108,10 +108,10 @@ ReviewExecutor = Callable[..., str]
 class MemoryReviewRunner:
     """Single Agents SDK runner that reviews a transcript into a summary plus memories.
 
-    Reuses the existing credential, access-path, and model selection, and the donor's
-    exact memory-summary contract: instruction text, JSON payload parsing (with
+    Reuses the existing credential, access-path, and model selection, and the
+    established memory-summary contract: instruction text, JSON payload parsing (with
     fenced-code-block stripping), allowed memory classes/confidence/sensitivity,
-    shouldStore gating, forbidden-secret rejection, and donor character limits.
+    shouldStore gating, forbidden-secret rejection, and character limits.
     No parallel agent loop and no MCP tools: review is summarization and extraction.
     """
 

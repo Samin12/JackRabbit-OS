@@ -33,7 +33,7 @@ public final class R1MotorService extends Service {
     static final int STATE_MOVING = 1;
     static final int STATE_AT_POSITION = 2;
     static final int STATE_FAILED = 3;
-    // Physically observed on product R1 919109A5P1600502814D. The donor labels were
+    // Physically observed on product R1 919109A5P1600502814D. The previously assumed labels were
     // offset by one state on this unit; physical shutter state is authoritative.
     static final int R1_OUTWARD = 180;
     static final int R1_INWARD = 0;
@@ -47,8 +47,8 @@ public final class R1MotorService extends Service {
     private static final String PRODUCTION_CLIENT = "com.resonolabs.voice";
     private static final String ENGINEERING_CERT_SHA256 =
             "a3390000a4b6c8bf43774cc235bd967e4c80a9dae30c0e8714c79c01a9b9836a";
-    // Samin12 fork: debug key used for locally built orb-ui HOME builds.
-    private static final String FORK_CERT_SHA256 =
+    // Samin's local debug key, used for locally built orb-ui HOME builds.
+    private static final String LOCAL_CERT_SHA256 =
             "5c50802e8b2cea1647bc8e73576ac1124ef3c3da0d1eb04348762cd14269394d";
 
     private final ExecutorService moves = Executors.newSingleThreadExecutor(runnable -> {
@@ -94,7 +94,7 @@ public final class R1MotorService extends Service {
                     continue;
                 }
                 String certificate = packageCertificateSha256(packageName);
-                if (ENGINEERING_CERT_SHA256.equals(certificate) || FORK_CERT_SHA256.equals(certificate)) {
+                if (ENGINEERING_CERT_SHA256.equals(certificate) || LOCAL_CERT_SHA256.equals(certificate)) {
                     return;
                 }
             }

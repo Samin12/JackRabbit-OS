@@ -7,7 +7,7 @@ extracted bundle's sibling `release/` directory.
 
 `install.cmd` opens the prompt-driven Windows installer. Its host directory
 contains `sam-installer.exe`, Android Platform Tools `fastboot.exe`, and
-the two reviewed upstream driver packages. It uses the bundle's one shared
+the two reviewed vendor driver packages. It uses the bundle's one shared
 top-level `release/images/` directory:
 
 - Rabbit's signed MediaTek Preloader USB VCOM installer for Windows 10/11.

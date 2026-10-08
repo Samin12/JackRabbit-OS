@@ -18,7 +18,7 @@ binary_for() {
 for platform in "${platforms[@]}"; do
   binary="$(binary_for "$platform")"
   [[ -f "$binary" ]] || {
-    printf 'JR-HOST-ASSEMBLY-BINARY: missing %s\n' "$binary" >&2
+    printf 'SAM-HOST-ASSEMBLY-BINARY: missing %s\n' "$binary" >&2
     exit 1
   }
 done
@@ -34,16 +34,16 @@ for platform in "${platforms[@]}"; do
   [[ "$platform" == windows-x64 ]] || chmod +x "$binary"
   output="$bundle_root/hosts/$platform"
   if [[ -e "$output" ]]; then
-    printf 'JR-HOST-ASSEMBLY-EXISTS: retaining %s for final comparison\n' "$output"
+    printf 'SAM-HOST-ASSEMBLY-EXISTS: retaining %s for final comparison\n' "$output"
   else
     "$installer_root/scripts/stage-host-package.sh" "$platform" "$binary" "$release_root"
   fi
   packaged_binary="$output/bin/sam-installer"
   [[ "$platform" != windows-x64 ]] || packaged_binary="$packaged_binary.exe"
   cmp -s "$binary" "$packaged_binary" || {
-    printf 'JR-HOST-ASSEMBLY-BINARY: %s does not contain the CI-native executable\n' "$output" >&2
+    printf 'SAM-HOST-ASSEMBLY-BINARY: %s does not contain the CI-native executable\n' "$output" >&2
     exit 1
   }
 done
 
-printf 'JR-HOST-ASSEMBLY-OK: four packages assembled and compared\n'
+printf 'SAM-HOST-ASSEMBLY-OK: four packages assembled and compared\n'

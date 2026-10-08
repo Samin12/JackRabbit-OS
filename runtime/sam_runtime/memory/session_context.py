@@ -7,11 +7,9 @@ from ..storage.memory import MemoryRecord, MemoryRepository
 from ..storage.sessions import SessionSummary, SessionTranscriptRepository
 
 
-# Donor parity: app/vault_runtime/session_context_builder.py uses
-# STARTUP_MEMORY_RECORD_LIMIT = 8 for the approved-memory section injected at
-# session start. The donor fetches beyond the limit (64) to skip legacy/fixture
-# rows; this standalone store has no legacy extractor, so the active-memory
-# query already yields only validated records and we cap at the limit.
+# The approved-memory section injected at session start is capped at 8
+# records. This store has no legacy extractor, so the active-memory query
+# already yields only validated records and we cap at the limit.
 STARTUP_MEMORY_LIMIT = 8
 STARTUP_MEMORY_CHARACTER_LIMIT = 4_096
 STARTUP_SUMMARY_CHARACTER_LIMIT = 4_096
@@ -21,8 +19,8 @@ STARTUP_SUMMARY_CHARACTER_LIMIT = 4_096
 class SessionContext:
     """Context handed to a model at the start of a session.
 
-    Mirrors the donor's startup context packet: the most recent approved memory
-    records and the previous session's completed summary. ``render()`` produces
+    The startup context packet: the most recent approved memory records and
+    the previous session's completed summary. ``render()`` produces
     a single instruction block; an empty render means there is no past context.
     """
 
@@ -59,9 +57,7 @@ class SessionContext:
 class SessionContextBuilder:
     """Builds the startup memory context for a new session.
 
-    The donor resolves the immediately-prior provider session and falls back to
-    the most recent completed summary when that one is still pending. This
-    standalone store has no provider-session table, so the previous session is
+    This store has no provider-session table, so the previous session is
     the most recently summarized session other than the current one.
     """
 
@@ -82,7 +78,7 @@ class SessionContextBuilder:
         return SessionContext(memories=memories, previous_summary=previous_summary)
 
     def _previous_completed_summary(self, current_session_id: str | None) -> SessionSummary | None:
-        # Donor parity: the previous session is the most recently *finalized*
+        # The previous session is the most recently *finalized*
         # session other than the current one, ordered by completion time
         # (summary updated_at DESC) — never by the random session_id.
         for session_id in self._sessions.list_finalized_sessions():

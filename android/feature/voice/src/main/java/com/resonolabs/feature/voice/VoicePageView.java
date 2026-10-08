@@ -915,7 +915,7 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
 
     /**
      * Posts the captured transcript to the runtime for the post-session review.
-     * Donor parity: finalization happens on every session end (explicit stop,
+     * Finalization happens on every session end (explicit stop,
      * provider/peer failure, or view teardown), not only on the stop button.
      * No-op unless a connected session produced captured entries.
      */

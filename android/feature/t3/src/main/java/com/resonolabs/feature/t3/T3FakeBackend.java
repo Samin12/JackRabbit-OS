@@ -275,8 +275,8 @@ final class T3FakeBackend {
                 T3Status.NEEDS_APPROVAL, "Needs approval", "Waiting for approval", now - 2 * MINUTE, true);
         addMessage(deploy, true, "Build the feat/t3-tab branch, deploy it to the R1 and take screenshots of the "
                 + "new tab.", now - 14 * MINUTE);
-        addMessage(deploy, false, "Building with the toolchain script first.\n\n```sh\nJR_REPO=~/jackrabbit-src/wt/t3-ui "
-                + "GRADLE_TASKS=\":app:assembleDebug\" ~/jr-toolchain/build.sh -q\n```\n\nBuild passed in 1m 52s "
+        addMessage(deploy, false, "Building with the debug build script first.\n\n```sh\n"
+                + "./android/scripts/build_debug.sh\n```\n\nBuild passed in 1m 52s "
                 + "with no warnings in **:feature:t3**.", now - 9 * MINUTE);
         addMessage(deploy, false, "To install it I need to remount `/system` read-write on the device and reboot. "
                 + "This interrupts any voice session that is running.", now - 2 * MINUTE);
@@ -351,10 +351,10 @@ final class T3FakeBackend {
                 + "## Tests\n| Suite | Result |\n|---|---|\n| webhooks | 14 passed |\n| checkout | 32 passed |\n\n"
                 + "Next I'd suggest alerting on the dead-letter table — want me to add that?", now - 12 * MINUTE);
 
-        FakeThread rename = put("fake-rename", SAM, "Rename the project to SamRabbit",
+        FakeThread tidy = put("fake-rename", SAM, "Tidy the SamRabbit theme and headers",
                 T3Status.DONE, "Done", null, now - 5 * 60 * MINUTE, false);
-        addMessage(rename, true, "Rename everything from JackRabbit to SamRabbit.", now - 6 * 60 * MINUTE);
-        addMessage(rename, false, "Renamed the package, theme class and headers. Boundary checks pass.",
+        addMessage(tidy, true, "Tidy up the theme class and file headers.", now - 6 * 60 * MINUTE);
+        addMessage(tidy, false, "Updated the theme class and headers. Boundary checks pass.",
                 now - 5 * 60 * MINUTE);
 
         FakeThread wifi = put("fake-wifi", SAM, "Investigate the Wi-Fi drop after the R1 sleeps",

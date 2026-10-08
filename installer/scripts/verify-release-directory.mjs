@@ -9,7 +9,7 @@ const stockR1Release = JSON.parse(await readFile(join(installerRoot, "images/REL
 const releaseRoot = resolve(process.argv[2] ?? "");
 
 function fail(code, message) {
-  process.stderr.write(`JR-RELEASE-DIRECTORY-${code}: ${message}\n`);
+  process.stderr.write(`SAM-RELEASE-DIRECTORY-${code}: ${message}\n`);
   process.exit(1);
 }
 
@@ -58,4 +58,4 @@ for (const artifact of stockR1Release.artifacts) {
   if (actual !== artifact.sha256) fail("HASH", `${artifact.path} is ${actual}; expected ${artifact.sha256}`);
 }
 
-process.stdout.write(`JR-RELEASE-DIRECTORY-OK: ${stockR1Release.id} at ${releaseRoot}\n`);
+process.stdout.write(`SAM-RELEASE-DIRECTORY-OK: ${stockR1Release.id} at ${releaseRoot}\n`);

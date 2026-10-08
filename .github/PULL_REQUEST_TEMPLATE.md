@@ -51,7 +51,7 @@ Physical or live-service evidence, if applicable:
 - [ ] Or: every such change is listed and justified below
 - [ ] The contribution is compatible with the repository's noncommercial
       source-available license
-- [ ] Any copied donor code has recorded revision, paths, retained/omitted
-      behavior, license decision, and tests
+- [ ] Any copied third-party code has recorded source revision, paths,
+      retained/omitted behavior, license decision, and tests
 
 Details:

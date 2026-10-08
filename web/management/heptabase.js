@@ -92,9 +92,9 @@ async function testEntry(){try{const result=await post("/v1/management/heptabase
 async function disconnectBridge(){if(!confirm(`Disconnect the Mac bridge? Queued entries stay on the R1.${view.oauth?.connected?" Your Heptabase sign-in takes over.":""}`))return;await act("/v1/management/heptabase/bridge/disconnect","Mac bridge disconnected.")}
 function authPanel(){
   const link=el("a",{class:"button",href:auth.authorizationUrl,target:"_blank",rel:"noreferrer noopener",text:"Open Heptabase Allow screen"});
-  const command=`python3 ~/jr-toolchain/heptabase-connect.py --r1 ${location.origin} --pairing-code <code on the R1>`;
+  const command=`python3 companion/mac-bridge/heptabase-connect.py --r1 ${location.origin} --pairing-code <code on the R1>`;
   const steps=auth.mode==="loopback"
-    ?[el("li",{},"Easiest: on the Mac run ",el("code",{text:command,style:"user-select:all;color:var(--sam-text)"})," (it starts its own connection)."),
+    ?[el("li",{},"Easiest: on the Mac, from your SamRabbit checkout, run ",el("code",{text:command,style:"user-select:all;color:var(--sam-text)"})," (it starts its own connection)."),
       el("li",{text:"Or, with a helper already listening on "+auth.redirectUri+", open the link below in Chrome."}),
       el("li",{text:"Click Allow in Heptabase. This page updates by itself."})]
     :[el("li",{text:"Open the link below in this browser and click Allow."}),

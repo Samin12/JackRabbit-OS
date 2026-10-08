@@ -16,7 +16,7 @@ import org.json.JSONObject;
 import java.time.OffsetDateTime;
 import java.time.format.DateTimeFormatter;
 
-/** 480x640 donor-proven upcoming Calendar list/detail projection. */
+/** 480x640 upcoming Calendar list/detail projection. */
 public final class CalendarPageView extends View implements AutoCloseable {
     private static final float W=480f,H=640f;
     private final Paint paint=new Paint(Paint.ANTI_ALIAS_FLAG);

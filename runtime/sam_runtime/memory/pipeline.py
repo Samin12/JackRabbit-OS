@@ -158,7 +158,7 @@ class MemoryPipeline:
         if embeddings_available:
             embedder = self._embedding_factory(api_key, self._safety_source)
             
-            # Embed the session summary first (donor parity)
+            # Embed the session summary first
             if review.summary.strip():
                 try:
                     summary_vector = embedder.embed(review.summary)

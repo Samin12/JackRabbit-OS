@@ -27,10 +27,10 @@ class RetrievalMatch:
 class MemoryRetriever:
     """Semantic retrieval over the canonical local memory store.
 
-    Keeps the donor's proven retrieval logic: embed the query with the configured
-    provider, load candidate embeddings from local storage, and rank by cosine
-    similarity in Python. No hash, keyword, or random vector is substituted for
-    semantic search. Unembedded memories are never returned as semantic matches.
+    Embeds the query with the configured provider, loads candidate embeddings
+    from local storage, and ranks them by cosine similarity in Python. No hash,
+    keyword, or random vector is substituted for semantic search. Unembedded
+    memories are never returned as semantic matches.
     """
 
     def __init__(
@@ -92,7 +92,7 @@ class MemoryRetriever:
 
 
 def cosine_similarity(left: list[float], right: list[float]) -> float:
-    """Pure-Python cosine similarity, matching the donor retrieval logic."""
+    """Pure-Python cosine similarity for semantic memory retrieval."""
     if not left or not right or len(left) != len(right):
         return 0.0
     numerator = sum(a * b for a, b in zip(left, right, strict=False))

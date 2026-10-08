@@ -20,10 +20,10 @@ unplug it while an image transfer is active.
    download and extraction.
 5. Extract the complete ZIP in any convenient local directory. Do not run it
    from inside the ZIP.
-   The v0.2 bundle was built before the SamRabbit rename. Inside it, the
-   installer binary, the Linux USB rule, and the typed confirmation phrase
-   still use the old name. The steps are the same; type the phrase exactly as
-   the installer shows it.
+   Inside the v0.2 bundle, the installer binary, the Linux USB rule file, and
+   the typed confirmation phrase use the bundle's internal image name rather
+   than SamRabbit, so they differ from some names in this guide. The steps are
+   the same; type the phrase exactly as the installer shows it.
 6. Open the extracted `jackrabbit-current-v0.2` folder. It must directly
    contain `START-HERE.md`, `release/`, and `hosts/`.
 
@@ -77,7 +77,7 @@ BUNDLE_DIRECTORY/
 │       │   ├── vbmeta.img
 │       │   ├── vbmeta_system.img
 │       │   └── vbmeta_vendor.img
-│       ├── sam/
+│       ├── jackrabbit/
 │       │   ├── system.img
 │       │   └── product.img
 │       └── cipheros/

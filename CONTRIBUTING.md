@@ -1,7 +1,7 @@
 # Contributing to SamRabbit
 
-SamRabbit welcomes focused, non-commercial community contributions. Keep
-`main` stable and make changes through pull requests.
+SamRabbit welcomes focused, non-commercial contributions. Keep `main` stable
+and make changes through pull requests.
 
 Before writing code, read:
 
@@ -66,9 +66,9 @@ supported layouts and current limitations.
   credentials.
 - Treat imported packages and remote MCP servers as untrusted until their
   validation, audience, and permission gates pass.
-- Record copied donor code before importing it: source revision, exact source
-  and destination paths, retained and omitted behavior, license decision, and
-  tests. Donor repositories are read-only.
+- Record copied third-party code before importing it: source revision, exact
+  source and destination paths, retained and omitted behavior, license
+  decision, and tests. Never modify the repository you copy from.
 
 ## Tests and evidence
 
