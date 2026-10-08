@@ -15,11 +15,23 @@ public final class PixelHeadMotionTest {
         for (int frame = 0; frame < PixelHeadMotion.LOOP_FRAMES; frame++) {
             int pose = PixelHeadMotion.poseForFrame(frame);
             assertTrue(pose >= 0 && pose < PixelHeadMotion.POSES);
-            double yaw = 28.0 * Math.sin(2.0 * Math.PI * frame / PixelHeadMotion.LOOP_FRAMES);
+            // The v2 art: a 3/4 view swaying around -32 degrees (frames_info.json yaw_curve).
+            double yaw = -32.0 + 12.0 * Math.sin(2.0 * Math.PI * frame / PixelHeadMotion.LOOP_FRAMES);
             assertEquals("frame " + frame, yaw, PixelHeadMotion.yawForPose(pose), 1e-9);
             used.add(pose);
         }
         assertEquals(PixelHeadMotion.POSES, used.size());
+    }
+
+    @Test public void poseYawLandmarks() {
+        assertEquals(-44.0, PixelHeadMotion.yawForPose(0), 1e-9);
+        assertEquals(-32.0, PixelHeadMotion.yawForPose(PixelHeadMotion.CENTER_POSE), 1e-9);
+        assertEquals(-20.0, PixelHeadMotion.yawForPose(24), 1e-9);
+        assertEquals(12, PixelHeadMotion.CENTER_POSE);
+        assertEquals(PixelHeadMotion.CENTER_POSE, PixelHead.CENTER_POSE);
+        for (int pose = 1; pose < PixelHeadMotion.POSES; pose++) {
+            assertTrue(PixelHeadMotion.yawForPose(pose) > PixelHeadMotion.yawForPose(pose - 1));
+        }
     }
 
     @Test public void loopLandmarks() {

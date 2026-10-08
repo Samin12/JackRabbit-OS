@@ -11,13 +11,17 @@ import android.graphics.RectF;
 import android.graphics.Shader;
 
 /**
- * The voxel "Pixel head" orb style: a monochrome winged-helmet head that slowly turns from side
- * to side. Drawn from pre-rendered poses (see {@link PixelHeadAtlas}); while listening or
- * speaking its eyes light up and a faint white ring glows behind it, and when idle it blinks
- * every few seconds. One instance per orb (it keeps the animation clock); main thread only.
- * Drawing allocates nothing.
+ * The voxel "Pixel head" orb style: a monochrome voxel bust with headphones, held in a 3/4 view
+ * that sways a little (yaw -44 to -20 degrees, see {@link PixelHeadMotion}). Drawn from
+ * pre-rendered poses (see {@link PixelHeadAtlas}); while listening or speaking its eyes and
+ * earcups light up and a faint white ring glows behind it, and when idle it blinks every 4-7 s.
+ * One instance per orb (it keeps the animation clock); main thread only. Drawing allocates
+ * nothing.
  */
 public final class PixelHead {
+    /** The resting 3/4 view (yaw -32 degrees), the pose for still heads. */
+    public static final int CENTER_POSE = PixelHeadMotion.CENTER_POSE;
+
     private static RadialGradient ringShader;
 
     private final Rect src = new Rect();
@@ -46,8 +50,9 @@ public final class PixelHead {
 
     /**
      * Draws the animated head centred on ({@code cx}, {@code cy}), about 2.2 x {@code radius}
-     * tall. {@code energy} 0..1 lights the eyes (from about 0.4) and {@code speed} sets the swing
-     * rate, as for FluidOrb. Returns false (nothing drawn) when the art is unavailable.
+     * tall. {@code energy} 0..1 lights the eyes and earcups (from about 0.4) and {@code speed}
+     * sets the sway rate, as for FluidOrb. Returns false (nothing drawn) when the art is
+     * unavailable.
      */
     public boolean draw(Canvas canvas, float cx, float cy, float radius, float energy, float speed, long nowMs) {
         long elapsed = last == 0L ? 0L : nowMs - last;
@@ -73,7 +78,8 @@ public final class PixelHead {
 
     /**
      * A still head, eyes open, for glanceable surfaces that do not animate (Cards board).
-     * {@code pose} 0..24 runs from facing screen-left through front (12) to screen-right.
+     * {@code pose} 0..24 runs from the most turned view (yaw -44 degrees, facing screen-left)
+     * through the 3/4 centre {@link #CENTER_POSE} (-32) to the most frontal (-20).
      */
     public boolean drawStill(Canvas canvas, float cx, float cy, float radius, int pose) {
         float headPx = radius * PixelHeadMotion.HEAD_PER_RADIUS;

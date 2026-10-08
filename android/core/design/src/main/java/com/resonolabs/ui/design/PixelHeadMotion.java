@@ -3,14 +3,19 @@ package com.resonolabs.ui.design;
 /**
  * Pure timing and sizing rules of the Pixel head (no Android types, unit-tested).
  *
- * <p>The art is a 48-frame head swing, yaw = 28 sin(2 pi i / 48) degrees. Frame i and frame
- * 24 - i show the same yaw, so only 25 poses are stored: pose 0 = -28, 12 = front, 24 = +28.
+ * <p>The art is a 48-frame sway around a 3/4 view, yaw = -32 + 12 sin(2 pi i / 48) degrees
+ * (negative = turned toward the viewer's left). Frame i and frame 24 - i show the same yaw, so
+ * only 25 poses are stored: pose 0 = -44 (most turned), 12 = -32 (the 3/4 centre), 24 = -20
+ * (closest to frontal).
  */
 final class PixelHeadMotion {
     static final int LOOP_FRAMES = 48;
     static final int POSES = 25;
-    static final int FRONT_POSE = 12;
-    /** Head height (wing tip to neck) per orb radius, so it fills about the orb's footprint. */
+    /** The resting 3/4 view (yaw -32), the middle of the sway. */
+    static final int CENTER_POSE = 12;
+    static final double YAW_CENTER_DEG = -32.0;
+    static final double YAW_AMPLITUDE_DEG = 12.0;
+    /** Head height (top of the headband to the hair ends) per orb radius, so it fills about the orb's footprint. */
     static final float HEAD_PER_RADIUS = 2.2f;
     /** Bigger art is preferred over upscaling smaller art past this factor. */
     static final float MAX_UPSCALE = 1.2f;
@@ -25,14 +30,15 @@ final class PixelHeadMotion {
     /** Stored pose for loop frame {@code frame} (any integer; wraps). */
     static int poseForFrame(int frame) {
         int i = Math.floorMod(frame, LOOP_FRAMES);
-        if (i <= FRONT_POSE) return FRONT_POSE + i;          // front -> +28
-        if (i < 36) return 36 - i;                           // +28 -> front -> -28 (frame 24 - i)
-        return i - 36;                                       // -28 -> front
+        if (i <= CENTER_POSE) return CENTER_POSE + i;        // centre (-32) -> most frontal (-20)
+        if (i < 36) return 36 - i;                           // -20 -> centre -> -44 (frame 24 - i)
+        return i - 36;                                       // most turned (-44) -> centre
     }
 
-    /** Head yaw in degrees of a stored pose. */
+    /** Head yaw in degrees of a stored pose: -44 (pose 0) .. -32 (12) .. -20 (24). */
     static double yawForPose(int pose) {
-        return 28.0 * Math.sin(2.0 * Math.PI * (pose - FRONT_POSE) / LOOP_FRAMES);
+        return YAW_CENTER_DEG
+                + YAW_AMPLITUDE_DEG * Math.sin(2.0 * Math.PI * (pose - CENTER_POSE) / LOOP_FRAMES);
     }
 
     /**

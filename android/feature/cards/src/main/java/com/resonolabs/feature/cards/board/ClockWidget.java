@@ -19,13 +19,13 @@ import java.util.Locale;
 
 /**
  * Big time, date and battery at the top of the board. No glass: it is the board's headline.
- * The corner mark is the orb, or a still Pixel head looking toward the clock when that orb style
- * is chosen (still, like the rest of the board).
+ * The corner mark is the orb, or a still Pixel head in its 3/4 view, turned toward the clock on
+ * its left, when that orb style is chosen (still, like the rest of the board).
  */
 public final class ClockWidget implements BoardWidget {
     private static final float HEIGHT = 112f;
-    /** Pixel head pose turned toward the clock on its left (yaw about -20 degrees). */
-    private static final int HEAD_POSE = 6;
+    /** The Pixel head's resting 3/4 view (yaw -32 degrees, facing screen-left toward the clock). */
+    private static final int HEAD_POSE = PixelHead.CENTER_POSE;
     private final BoardHost host;
     private final PixelHead head;
     private final OrbStyleSetting.Listener styleListener;
