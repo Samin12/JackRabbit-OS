@@ -64,6 +64,7 @@ class ArtifactWatcher:
         self._wake = threading.Condition(self._lock)
         self._watches: dict[str, Watch] = {}
         self._published: deque[str] = deque(maxlen=64)
+        self._finishing: dict[str, Watch] = {}  # claimed by _finish while its announcement is published
         self._loaded = False
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -93,7 +94,7 @@ class ArtifactWatcher:
         self._load()
         now = self._clock()
         with self._wake:
-            if artifact_id in self._watches or artifact_id in self._published:
+            if artifact_id in self._watches or artifact_id in self._published or artifact_id in self._finishing:
                 return False
             if len(self._watches) >= MAX_PENDING:
                 oldest = min(self._watches.values(), key=lambda item: item.started_at)
@@ -162,11 +163,27 @@ class ArtifactWatcher:
         return False
 
     def _finish(self, watch: Watch, kind: str, value: dict[str, object]) -> bool:
+        # Claim the watch, publish, and only then forget it on disk: a failed publish puts it back for the next
+        # poll, and a crash in between announces it again after the restart (never silently drops it).
         with self._lock:
-            if self._watches.pop(watch.artifact_id, None) is None:
+            if self._watches.get(watch.artifact_id) is not watch:
                 return False
-            self._published.append(watch.artifact_id)
-            self._save_locked()
+            self._finishing[watch.artifact_id] = self._watches.pop(watch.artifact_id)
+        published = False
+        try:
+            published = self._publish(watch, kind, value)
+        finally:
+            with self._lock:
+                self._finishing.pop(watch.artifact_id, None)
+                if published:
+                    self._published.append(watch.artifact_id)
+                    self._save_locked()
+                else:
+                    watch.next_poll = self._clock() + SLOW_POLL_SECONDS
+                    self._watches.setdefault(watch.artifact_id, watch)
+        return published
+
+    def _publish(self, watch: Watch, kind: str, value: dict[str, object]) -> bool:
         base: dict[str, object] = {"artifactId": watch.artifact_id, "conversationId": watch.conversation_id,
                                    "voiceSessionId": watch.voice_session_id}
         if kind == KIND_READY:
@@ -193,10 +210,11 @@ class ArtifactWatcher:
 
     # ------------------------------------------------------------------ persistence
     def _load(self) -> None:
+        # Marked loaded only after the stored watches are merged: a track() racing the first load (or a load
+        # that failed to read) must never save a list that is missing them.
         with self._lock:
             if self._loaded:
                 return
-            self._loaded = True
         try:
             with self._database.connect() as connection:
                 row = connection.execute("SELECT setting_value FROM provider_settings WHERE setting_key = ?",
@@ -209,6 +227,10 @@ class ArtifactWatcher:
             records = []
         now = self._clock()
         with self._lock:
+            if self._loaded:
+                return
+            self._loaded = True
+            unsaved = set(self._watches)  # tracked before the stored list could be read
             for record in records if isinstance(records, list) else []:
                 if not isinstance(record, dict) or not ARTIFACT_ID.match(str(record.get("artifactId") or "")):
                     continue
@@ -216,9 +238,15 @@ class ArtifactWatcher:
                 self._watches.setdefault(str(record["artifactId"]), Watch(
                     str(record["artifactId"]), _text(record.get("conversationId")),
                     _text(record.get("voiceSessionId")), float(started), now + 1.0))
+            if unsaved:
+                self._save_locked()
 
     def _save_locked(self) -> None:
-        value = json.dumps([watch.record() for watch in self._watches.values()], separators=(",", ":"))
+        if not self._loaded:
+            return  # never overwrite the stored list before it was merged (saved by _load once it is)
+        # Watches being announced right now are still stored: they are forgotten only once announced.
+        watches = list(self._watches.values()) + list(self._finishing.values())
+        value = json.dumps([watch.record() for watch in watches], separators=(",", ":"))
         stamp = datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
         try:
             with self._database.connect() as connection:

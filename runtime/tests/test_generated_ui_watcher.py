@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sqlite3
 import tempfile
 import unittest
 from unittest import mock
@@ -109,6 +110,35 @@ class ArtifactWatcherTest(unittest.TestCase):
         again.start()
         again.stop()
         self.assertEqual([], again.pending(), "announced artifacts are not followed again after a restart")
+
+    def test_a_failed_announcement_is_retried_not_dropped(self) -> None:
+        artifact_id = self.start_artifact()
+        self.fake.ready(artifact_id)
+        with mock.patch.object(self.announcements, "publish",
+                               side_effect=sqlite3.OperationalError("database is locked")):
+            self.assertEqual(0, self.advance(5))
+        self.assertEqual(0, len(self.announcements.after(0)))
+        self.assertEqual([artifact_id], self.watcher.pending(), "still followed in memory")
+        restarted = ArtifactWatcher(self.client, self.announcements, self.database, clock=self.clock)
+        restarted._load()  # noqa: SLF001
+        self.assertEqual([artifact_id], restarted.pending(), "and still stored for a runtime restart")
+        self.assertEqual(1, self.advance(watcher_module.SLOW_POLL_SECONDS + 1))
+        self.assertEqual(["ui.generated"], [item.kind for item in self.announcements.after(0)])
+        self.assertEqual([], self.watcher.pending())
+        again = ArtifactWatcher(self.client, self.announcements, self.database, clock=self.clock)
+        again._load()  # noqa: SLF001
+        self.assertEqual([], again.pending(), "forgotten on disk once announced")
+
+    def test_a_watch_tracked_before_the_stored_list_loads_does_not_erase_it(self) -> None:
+        stored = self.start_artifact("rt:x:1")
+        fresh = ArtifactWatcher(self.client, self.announcements, self.database, clock=self.clock)
+        with mock.patch.object(watcher_module.ArtifactWatcher, "_load", lambda _self: None):
+            self.assertTrue(fresh.track("ui_" + "7" * 24, conversation_id=None, voice_session_id=None))
+        fresh._load()  # noqa: SLF001
+        self.assertEqual(sorted([stored, "ui_" + "7" * 24]), fresh.pending())
+        check = ArtifactWatcher(self.client, self.announcements, self.database, clock=self.clock)
+        check._load()  # noqa: SLF001
+        self.assertEqual(sorted([stored, "ui_" + "7" * 24]), check.pending())
 
     def test_worker_thread_announces_in_the_background(self) -> None:
         watcher = ArtifactWatcher(self.client, self.announcements, self.database)
