@@ -145,7 +145,11 @@ jsExpressions: `["drawChart(['Mon','Tue','Wed','Thu','Fri'], [3,5,2,6,4]);"]`
   `<path d="M220 76 V100" class="arr" marker-end="url(#a)"/>` (every connector `fill="none"`; `.arr` is a
   1.5 px muted stroke; color important links with `stroke="#5ca2ff"`). Label an arrow with a `.ts` text
   placed beside it, never on top of it. Dashed (`stroke-dasharray="4 4"`) for optional or async links.
-- Two or three colors per diagram, by meaning (device, network, Mac, cloud...). Gray for structure.
+- Two or three colors per diagram, by meaning (device, network, Mac, cloud...). `.c-gray` is a quiet glass
+  container for grouping (for example "Mac Studio" around the services on it).
+- Before answering, check every line, divider and arrow against every text: they must not touch. A divider
+  stops 12 px before any text; notes and captions go below the diagram as HTML, not inside the SVG. Keep the
+  viewBox tight (no empty band at the bottom).
 - Every `<text>` gets a class or an explicit fill; SVG text defaults to black, which is invisible here.
 
 ## Desktop interactivity (bonus)

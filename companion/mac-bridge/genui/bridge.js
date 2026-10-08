@@ -72,6 +72,9 @@
       ctx.save();
       ctx.font = "600 12px " + (w.getComputedStyle(doc.body).getPropertyValue("--font-sans") || "system-ui");
       ctx.fillStyle = options.color || "#f5f8ff";
+      ctx.strokeStyle = options.halo || "rgba(18,22,32,0.92)";  // keeps labels legible over lines and grid
+      ctx.lineWidth = 4;
+      ctx.lineJoin = "round";
       chart.data.datasets.forEach(function (dataset, index) {
         if (!chart.isDatasetVisible(index)) return;
         var meta = chart.getDatasetMeta(index);
@@ -83,13 +86,18 @@
           var text = options.format ? options.format(value) :
             (Math.round(value * 100) / 100).toLocaleString();
           var point = element.tooltipPosition ? element.tooltipPosition() : element;
+          var radius = type === "line" && element.options && typeof element.options.radius === "number" ?
+            element.options.radius : 0;
+          var x = point.x, y = point.y;
           if (horizontal) {
             ctx.textAlign = "left"; ctx.textBaseline = "middle";
-            ctx.fillText(text, point.x + 6, point.y);
+            x += radius + 6;
           } else {
             ctx.textAlign = "center"; ctx.textBaseline = "bottom";
-            ctx.fillText(text, point.x, point.y - 6);
+            y -= radius + 6;
           }
+          ctx.strokeText(text, x, y);
+          ctx.fillText(text, x, y);
         });
       });
       ctx.restore();

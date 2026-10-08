@@ -58,6 +58,14 @@ h1 { font-size: 22px; }
 h2 { font-size: 19px; }
 h3 { font-size: 16px; }
 svg text { font-family: var(--font-sans); }
+/* SVG ramps on the R1 palette: cool ink text, and gray as a quiet glass container. */
+svg text.t, svg text.th { fill: var(--color-text-primary); }
+svg text.ts { fill: var(--color-text-secondary); }
+svg .c-gray > rect, svg .c-gray > circle, svg .c-gray > ellipse,
+svg rect.c-gray, svg circle.c-gray, svg ellipse.c-gray { fill: rgba(190, 210, 255, 0.05); stroke: rgba(190, 210, 255, 0.28); }
+svg .c-gray text.th, svg .c-gray text.t { fill: #dfe6f3; }
+svg .c-gray text.ts { fill: #9aa6bb; }
+svg .arr { stroke: #8c98ac; }
 .sr-diagram { display: block; width: 100%; max-width: 560px; height: auto; margin: 0 auto; }
 canvas { display: block; }
 
