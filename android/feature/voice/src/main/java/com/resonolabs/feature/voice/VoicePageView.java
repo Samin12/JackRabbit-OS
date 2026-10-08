@@ -1768,7 +1768,7 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
             recordTranscript("user", "conversation.item.input_image.completed", transcriptText);
             sessionState.toolOutputSent();
             transcript = "Photo sent";
-            addPicture(HostImageCards.CAMERA, image, mimeType, "Photo", "You sent this photo", filename, true);
+            addPicture(HostImageCards.CAMERA, image, mimeType, "Photo", "You sent this photo", true);
             invalidate();
             return true;
         } catch (Exception ignored) { return false; }
@@ -1782,7 +1782,7 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
      * runtime/bridge (the tool result), so only camera photos are uploaded from here.
      */
     private String addPicture(String source, byte[] bytes, String mime, String caption, String cardSubtitle,
-                              String filename, boolean cardWhileLive) {
+                              boolean cardWhileLive) {
         String ref = images.put(bytes);
         boolean camera = HostImageCards.CAMERA.equals(source);
         if (ref != null) {
@@ -1800,8 +1800,10 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
             String conversation = timeline.conversationId();
             String blob = conversation == null ? null : sync.uploadBlob(bytes, mime, conversation);
             if (blob != null) {
+                // No caption: the camera's file name (IMG_<millis>.jpg) is not words for the user; the
+                // desktop labels camera pictures itself.
                 timeline.image(blob, mime, ref == null ? 0 : images.width(ref), ref == null ? 0 : images.height(ref),
-                        bytes.length, "camera", filename);
+                        bytes.length, "camera", null);
             }
         }
         invalidate();
@@ -1813,7 +1815,7 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
         try {
             byte[] bytes = android.util.Base64.decode(image.base64, android.util.Base64.DEFAULT);
             String source = tool != null && tool.startsWith("mac_") ? HostImageCards.MAC_SCREENSHOT : "tool";
-            addPicture(source, bytes, image.mime, "Your Mac", "Screenshot", null, true);
+            addPicture(source, bytes, image.mime, "Your Mac", "Screenshot", true);
         } catch (IllegalArgumentException invalid) {
             logTool("tool picture not decodable");
         }
@@ -1992,7 +1994,7 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
         }
         boolean camera = HostImageCards.CAMERA.equals(source);
         String ref = addPicture(source, bytes, "image/jpeg", camera ? "Photo" : "Your Mac",
-                summary, null, false);
+                summary, false);
         if (ref != null) {
             JSONObject card = HostImageCards.cardJson(source, ref, images.aspect(ref, 0.75f),
                     title, summary, null, false);
