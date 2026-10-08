@@ -420,12 +420,14 @@ class ConversationSyncService:
 
     # ------------------------------------------------------------------ plumbing
     def _link(self, session_id: str, conversation_id: str, *, replace: bool) -> None:
-        self._repo.link_session(session_id, conversation_id, replace=replace)
-        if replace:
-            self._remember(session_id, conversation_id)
-        else:
+        if not replace:
             with self._lock:
-                self._sessions.pop(session_id, None)  # re-read: an earlier authoritative link wins
+                if session_id in self._sessions:
+                    return  # already linked (every R1 batch repeats it): no write
+        self._repo.link_session(session_id, conversation_id, replace=replace)
+        stored = conversation_id if replace else self._repo.conversation_for(session_id)
+        if stored is not None:
+            self._remember(session_id, stored)  # an earlier authoritative link wins
 
     def _remember(self, session_id: str, conversation_id: str) -> None:
         with self._lock:
