@@ -81,10 +81,14 @@ export class Timeline {
     if (!event || typeof event !== 'object' || typeof event.type !== 'string') return false;
     const id = eventId(event);
     if (this.seen.has(id)) return false;
-    this.seen.add(id);
+    const seq = typeof event.seq === 'number' ? event.seq : null;
+    // A draft with a message id and a seq is applied by its seq (older or equal drafts are ignored
+    // below), so its id need not be remembered: a live conversation sends one every ~300 ms.
+    if (!(event.type === 'message.assistant.delta' && typeof event.messageId === 'string' && event.messageId && seq !== null)) {
+      this.seen.add(id);
+    }
     const at = toMs(event.at) ?? Date.now();
     this.lastEventAt = Math.max(this.lastEventAt, at);
-    const seq = typeof event.seq === 'number' ? event.seq : null;
     switch (event.type) {
       case 'message.user': {
         const item = this.item(`u:${id}`, 'user', at, {});
@@ -99,14 +103,15 @@ export class Timeline {
         const messageId = text(event.messageId);
         const key = messageId ? `a:${messageId}` : (this.openAssistant || `a:${id}`);
         const item = this.item(key, 'assistant', at, { text: '', streaming: true, done: false, seq: -1 });
-        item.updatedAt = at;
         if (event.type === 'message.assistant.delta') {
-          if (item.done || (seq !== null && seq < item.seq)) return false;
+          if (item.done || (seq !== null && seq <= item.seq)) return false;
+          item.updatedAt = at;
           if (typeof event.text === 'string') item.text = event.text;
           item.streaming = true;
           if (seq !== null) item.seq = seq;
           this.openAssistant = messageId ? null : key;
         } else {
+          item.updatedAt = at;
           if (typeof event.text === 'string' && event.text) item.text = event.text;
           item.streaming = false;
           item.done = true;
@@ -395,8 +400,11 @@ export class ConversationStore {
     }
     const key = eventId(event);
     const timeline = this.timelines.get(id);
-    const firstTime = !this.counted.has(key) && !(timeline && timeline.seen.has(key));
-    this.counted.add(key);
+    // Only messages are counted, so only their ids are remembered (the page runs for weeks: every
+    // streamed draft and card update would otherwise stay in this set forever).
+    const counts = event.type === 'message.user' || event.type === 'message.assistant.done';
+    const firstTime = counts && !this.counted.has(key) && !(timeline && timeline.seen.has(key));
+    if (firstTime) this.counted.add(key);
     switch (event.type) {
       case 'conversation.started':
       case 'session.connected':

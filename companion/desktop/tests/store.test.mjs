@@ -153,3 +153,33 @@ test('timestamps accept ms, seconds and ISO strings', () => {
   assert.equal(toMs('2026-10-07T12:00:00Z'), Date.parse('2026-10-07T12:00:00Z'));
   assert.equal(toMs(''), null);
 });
+
+test('drafts are deduplicated by seq without remembering their ids; other events by id', () => {
+  const t = new Timeline(C);
+  const d1 = ev('message.assistant.delta', { messageId: 'a9', text: 'Hel' });
+  const d2 = ev('message.assistant.delta', { messageId: 'a9', text: 'Hello' });
+  assert.equal(t.apply(d1), true);
+  assert.equal(t.apply(d2), true);
+  assert.equal(t.apply(d2), false, 'the same draft again changes nothing');
+  assert.equal(t.apply(d1), false, 'an older draft never rolls the text back');
+  assert.equal(t.sorted()[0].text, 'Hello');
+  assert.equal(t.seen.has(d1.id) || t.seen.has(d2.id), false, 'draft ids are not kept');
+  const done = ev('message.assistant.done', { messageId: 'a9', text: 'Hello there.' });
+  assert.equal(t.apply(done), true);
+  assert.equal(t.seen.has(done.id), true);
+  // a draft without a seq still falls back to its id
+  const loose = { id: `${C}:loose`, conversationId: C, type: 'message.assistant.delta', messageId: 'b1', text: 'x', at: 1 };
+  assert.equal(t.apply(loose), true);
+  assert.equal(t.apply(loose), false);
+});
+
+test('the store only remembers ids it counts (messages), not every live event', () => {
+  const store = new ConversationStore();
+  for (let i = 0; i < 50; i += 1) store.applyEvent(ev('message.assistant.delta', { messageId: 'a1', text: `d${i}` }));
+  store.applyEvent(ev('card.shown', { card: { id: 'k1', title: 'x' } }));
+  const user = ev('message.user', { text: 'hi' });
+  store.applyEvent(user);
+  store.applyEvent(user);
+  assert.equal(store.counted.size, 1);
+  assert.equal(store.get(C).messageCount, 1);
+});
