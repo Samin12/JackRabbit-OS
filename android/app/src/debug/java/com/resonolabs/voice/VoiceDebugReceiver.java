@@ -25,8 +25,8 @@ import java.nio.charset.StandardCharsets;
  * an audible session with a live microphone.
  * DEBUG_SAY sends the text as the user's turn in the live session (conversation.item.create
  * user input_text + response.create), starting a session first if none is live (the text then
- * replaces the connect greeting); {@code --ez quiet true} mutes the microphone and speaker for
- * that session first (no sound, no echo). DEBUG_ANNOUNCE routes a synthetic runtime announcement exactly
+ * replaces the connect greeting). Sessions it starts are QUIET by default (microphone and speaker
+ * muted, no sound, no echo); pass {@code --ez quiet false} only when sound is really needed. DEBUG_ANNOUNCE routes a synthetic runtime announcement exactly
  * like a real one (ids &lt;= 0 are never acknowledged). The result data is the HOME state.
  */
 public final class VoiceDebugReceiver extends BroadcastReceiver {
@@ -45,7 +45,8 @@ public final class VoiceDebugReceiver extends BroadcastReceiver {
                 setResultData("missing --es text");
                 return;
             }
-            boolean quiet = intent.getBooleanExtra("quiet", false);
+            // Quiet unless a caller explicitly asks for sound (--ez quiet false): the user sits next to the R1.
+            boolean quiet = intent.getBooleanExtra("quiet", true);
             Log.i(TAG, "DEBUG_SAY (" + text.length() + " chars" + (quiet ? ", quiet" : "") + ")");
             root.debugSay(text, quiet);
         } else if (action.endsWith("DEBUG_ANNOUNCE")) {
