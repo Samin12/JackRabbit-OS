@@ -90,7 +90,11 @@ Event types the UI renders (`web/store.js`): `message.user`, `message.assistant.
 `tool.call|completed` (GenUI card tools hidden, `ui_generate` hidden behind its UI card, `blobId` on a tool shows
 the image), `ui.generating|generated|failed`, `conversation.started|ended`, `session.connected` (reconnects),
 `session.ended` (failures only), `session.finalized`. Unknown types are ignored; every event is applied once by
-`id`.
+`id` (drafts with a `messageId` and `seq` by their `seq`: an equal or older draft is ignored). An item that cannot
+be drawn shows "This item could not be shown" on its own; the rest of the conversation still renders.
+
+Links from generated UIs: a click inside the UI (it has focus, the window is focused) opens the link in the browser
+at most once a second; anything else, including a UI navigating its own frame, only offers it in a toast.
 
 ## Tests
 
