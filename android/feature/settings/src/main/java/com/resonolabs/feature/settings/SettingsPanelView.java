@@ -181,6 +181,12 @@ public final class SettingsPanelView extends View implements UiInputTarget {
         edgeFade.setXfermode(new PorterDuffXfermode(PorterDuff.Mode.DST_OUT));
         edgeFade.setShader(new LinearGradient(0f, 0f, 0f, 1f, Color.BLACK, Color.TRANSPARENT,
                 Shader.TileMode.CLAMP));
+        setFocusable(true);
+        // Take focus even in touch mode: the R1 wheel sends key events, which leave touch mode,
+        // and focus parked on the full-screen HOME root would draw the framework focus highlight
+        // over everything (a grey wash). Settings draws its own focus.
+        setFocusableInTouchMode(true);
+        setDefaultFocusHighlightEnabled(false);
         this.wifiScanner = new WifiNetworkScanner(activity, (state, networks) -> {
             wifiScanState = state;
             wifiNetworks = List.copyOf(networks);
