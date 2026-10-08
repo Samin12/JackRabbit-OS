@@ -2000,6 +2000,36 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
         }
     }
 
+    /**
+     * Debug: removes every picture from the transcript and every picture card (stack, deck and
+     * Recent), so test pictures never linger for the user. Returns how many cards went.
+     */
+    public int debugClearPictures() {
+        if (!debuggable) return 0;
+        closeViewer();
+        if (!inSession()) {
+            messages.removeIf(item -> item.kind != TranscriptItem.Kind.TEXT);
+            assistantMessage = -1;
+        }
+        GenCardStore store = genUi.store();
+        int removed = 0;
+        for (GenCard card : store.activeCards()) {
+            if (hasPicture(card) && store.dismiss(card.id, true)) removed++;
+        }
+        for (GenCard card : store.recent()) {
+            if (hasPicture(card) && store.removeRecent(card.id)) removed++;
+        }
+        invalidate();
+        return removed;
+    }
+
+    private static boolean hasPicture(GenCard card) {
+        for (com.resonolabs.feature.genui.GenBlock block : card.body) {
+            if (block.type == com.resonolabs.feature.genui.GenBlock.Type.IMAGE) return true;
+        }
+        return false;
+    }
+
     /** Debug: open or close the transcript; open the newest picture full screen. */
     public void debugTranscript(boolean open, boolean viewer) {
         if (!debuggable) return;

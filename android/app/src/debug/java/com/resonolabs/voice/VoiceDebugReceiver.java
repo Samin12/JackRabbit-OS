@@ -25,7 +25,8 @@ import java.nio.charset.StandardCharsets;
  * mac_screenshot or generated_ui (default). A generated UI takes the real announcement path
  * (live session: shown to the model; idle: a silent notification and a "New: …" pill).
  * DEBUG_TRANSCRIPT opens/closes the Voice transcript; {@code --ez viewer true} opens the newest
- * picture full screen.
+ * picture full screen. {@code DEBUG_PICTURE --ez clear true} removes every picture from the
+ * transcript, every picture card (stack, deck, Recent) and the "Generated UIs" notifications.
  * Quote the whole remote command (or use {@code --es b64}): {@code adb shell} re-splits its
  * arguments on the device, so an unquoted multi-word {@code --es text "..."} arrives as its first
  * word only and the flags after it ({@code --ez quiet true}) are silently dropped, which starts
@@ -56,6 +57,9 @@ public final class VoiceDebugReceiver extends BroadcastReceiver {
             boolean quiet = intent.getBooleanExtra("quiet", true);
             Log.i(TAG, "DEBUG_SAY (" + text.length() + " chars" + (quiet ? ", quiet" : "") + ")");
             root.debugSay(text, quiet);
+        } else if (action.endsWith("DEBUG_PICTURE") && intent.getBooleanExtra("clear", false)) {
+            int removed = root.debugClearPictures();
+            Log.i(TAG, "DEBUG_PICTURE clear (" + removed + " card(s))");
         } else if (action.endsWith("DEBUG_PICTURE")) {
             String source = extra(intent, "source");
             if (source == null || source.isBlank()) source = "generated_ui";

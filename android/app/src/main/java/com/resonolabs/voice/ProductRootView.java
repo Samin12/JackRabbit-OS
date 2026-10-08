@@ -647,6 +647,19 @@ final class ProductRootView extends FrameLayout {
         voice.debugAddPicture(source, image, title, summary, artifactId);
     }
 
+    /** DEBUG_PICTURE --ez clear true: test pictures, their cards and "Generated UIs" notifications go. */
+    int debugClearPictures() {
+        int removed = voice.debugClearPictures();
+        android.app.NotificationManager notifications =
+                getContext().getSystemService(android.app.NotificationManager.class);
+        if (notifications != null) {
+            for (android.service.notification.StatusBarNotification posted : notifications.getActiveNotifications()) {
+                if ("ui".equals(posted.getTag())) notifications.cancel(posted.getTag(), posted.getId());
+            }
+        }
+        return removed;
+    }
+
     /** DEBUG_TRANSCRIPT: open/close the Voice transcript, optionally the newest picture full screen. */
     void debugTranscript(boolean open, boolean viewer) {
         showVoicePage();
