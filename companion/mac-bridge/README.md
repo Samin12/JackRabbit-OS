@@ -210,6 +210,21 @@ Settings: `--claude`, `--agent-browser`, `--artifacts-dir`, `--genui-model` (or 
 reinstalling, write `{"model": "claude-opus-5-5"}` to `~/.config/samrabbit/genui.json` (read on every
 generation). The CLI is found on `PATH`, then `~/.local/bin/claude`; agent-browser on `PATH`, then the newest
 `~/.hermes/tools/agent-browser-*`. `/health` reports `genui: {available, claude, renderer, model, queued, sync}`.
+## Desktop app page (`/app/`)
+
+`samrabbit_app.py` serves the SamRabbit desktop app's web UI (see `companion/desktop/README.md`) at
+`GET /app/…`. It has its own rules, separate from the LAN routes above:
+
+- the peer must be **loopback** (127.0.0.0/8, ::1); LAN peers get 403 even with `--allow-any-client`;
+- the **desktop token** (`~/.config/samrabbit/desktop-token`, 0600, created by `companion/desktop/install.sh`)
+  must be sent as the header `X-SamRabbit-Desktop` or the cookie `sr_desktop`. The bridge bearer token is not
+  accepted here, and the desktop token opens none of the LAN routes;
+- files come from `$SAMRABBIT_APP_WEB_DIR`, else `/Applications/SamRabbit.app/Contents/Resources/web`, else
+  `companion/desktop/web` next to the bridge checkout. Only regular files with a known extension inside that folder
+  are served (no listings, dotfiles, `..` or symlink escapes), with `Cache-Control: no-cache`, `nosniff` and a
+  strict Content-Security-Policy on HTML. `/app` redirects to `/app/`.
+- 401/403/404/503 answers are small HTML pages (a missing token file or app install says to run
+  `companion/desktop/install.sh`). The log line is just `GET /app <status> <ms>`.
 
 ## Privacy
 

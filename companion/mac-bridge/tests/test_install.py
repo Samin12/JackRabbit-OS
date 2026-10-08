@@ -60,6 +60,8 @@ class InstallTest(unittest.TestCase):
                       "ogui-form-styles.css", "ogui-importmap.html", "LICENSE-OpenGenerativeUI"):
             self.assertTrue((script.parent / "genui" / asset).is_file(), asset)
 
+        self.assertTrue((script.parent / "samrabbit_app.py").is_file(), "the desktop web UI module is installed too")
+
         self.assertEqual(["--host", "0.0.0.0", "--port", "3780", "--token-file", str(token_file),
                           "--sync-dir", str(sync_dir), "--desktop-token-file", str(desktop_token_file)],
                          plist["ProgramArguments"][3:])

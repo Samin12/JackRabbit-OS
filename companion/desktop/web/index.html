@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>SamRabbit</title>
+  <link rel="icon" href="orb.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <div class="backdrop" aria-hidden="true"></div>
+  <div class="app" id="app">
+    <aside class="sidebar" aria-label="Conversations">
+      <header class="sidebar-head titlebar">
+        <div class="brand">
+          <img class="brand-orb" src="orb.svg" alt="">
+          <span class="brand-name">SamRabbit</span>
+        </div>
+      </header>
+      <label class="search">
+        <span class="search-icon" id="search-icon"></span>
+        <input id="search" type="search" placeholder="Search conversations" autocomplete="off" spellcheck="false" aria-label="Search conversations">
+        <kbd class="search-kbd">⌘K</kbd>
+      </label>
+      <nav class="conv-list" id="conversation-list" aria-label="Conversation list"></nav>
+      <footer class="sidebar-foot" id="sync-status" aria-live="polite"></footer>
+    </aside>
+    <main class="main">
+      <header class="main-head titlebar" id="main-head"></header>
+      <div class="scroller" id="scroller">
+        <div class="timeline" id="timeline" aria-live="polite"></div>
+        <div class="state" id="state" hidden></div>
+      </div>
+      <button class="jump" id="jump" type="button" hidden>New activity</button>
+      <footer class="main-foot" id="main-foot"></footer>
+    </main>
+  </div>
+  <div class="overlay-root" id="overlay-root"></div>
+  <div class="toast-root" id="toast-root" aria-live="polite"></div>
+</body>
+</html>

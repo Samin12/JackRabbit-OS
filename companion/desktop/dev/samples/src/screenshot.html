@@ -1,0 +1,36 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>mock desktop</title>
+<style>
+  html,body{margin:0;width:1440px;height:900px;overflow:hidden;font:13px -apple-system,system-ui,sans-serif}
+  body{background:radial-gradient(1200px 700px at 20% 10%,#3b4f9a,transparent 60%),radial-gradient(900px 700px at 90% 90%,#7a3f8f,transparent 60%),linear-gradient(135deg,#1c2a5a,#2a1f4a 60%,#120f24)}
+  .menubar{height:26px;background:rgba(30,30,40,.55);backdrop-filter:blur(20px);color:#fff;display:flex;align-items:center;gap:18px;padding:0 14px;font-size:13px}
+  .menubar b{font-weight:700}.menubar .r{margin-left:auto;display:flex;gap:16px;opacity:.9}
+  .win{position:absolute;border-radius:12px;overflow:hidden;box-shadow:0 30px 80px rgba(0,0,0,.55),0 0 0 1px rgba(255,255,255,.12)}
+  .tb{height:38px;display:flex;align-items:center;gap:8px;padding:0 14px;background:#2b2d33;color:#ddd}
+  .tl{width:12px;height:12px;border-radius:50%}
+  .url{margin-left:60px;flex:1;max-width:420px;height:24px;border-radius:7px;background:#3a3c43;display:flex;align-items:center;justify-content:center;color:#cfd2da;font-size:12px}
+  .safari{left:70px;top:70px;width:860px;height:640px;background:#f4f7fb}
+  .wx{padding:28px 36px;color:#1d2433}
+  .wx h1{margin:0;font-size:22px;font-weight:600}.wx .now{display:flex;align-items:center;gap:22px;margin:18px 0}
+  .temp{font-size:84px;font-weight:200;letter-spacing:-3px}.sun{width:86px;height:86px;border-radius:50%;background:radial-gradient(circle at 35% 35%,#ffe9a6,#ffb938);box-shadow:0 0 40px #ffcf6a}
+  .cloud{position:relative;left:-50px;top:22px;width:90px;height:40px;border-radius:30px;background:#fff;box-shadow:0 6px 18px rgba(0,0,0,.12)}
+  .hours{display:flex;gap:12px;margin-top:10px}.hours div{flex:1;background:#fff;border-radius:12px;padding:12px 0;text-align:center;box-shadow:0 2px 10px rgba(20,40,80,.06)}
+  .hours b{display:block;font-size:17px;margin-top:6px}.cards{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:16px}
+  .cards div{background:#fff;border-radius:12px;padding:14px;box-shadow:0 2px 10px rgba(20,40,80,.06);color:#556}.cards b{display:block;font-size:20px;color:#1d2433;margin-top:4px}
+  .notes{left:960px;top:150px;width:410px;height:520px;background:#1f1f22;color:#eee}
+  .notes .tb{background:#2a2a2e}.nb{padding:22px 26px}.nb h2{margin:0 0 14px;font-size:22px}
+  .nb li{list-style:none;display:flex;gap:10px;align-items:center;margin:10px 0;font-size:15px}
+  .cb{width:18px;height:18px;border-radius:50%;border:2px solid #f5c542}.cb.on{background:#f5c542}
+  .dock{position:absolute;left:50%;bottom:10px;transform:translateX(-50%);height:66px;padding:0 10px;border-radius:22px;background:rgba(255,255,255,.18);backdrop-filter:blur(20px);display:flex;gap:10px;align-items:center;box-shadow:0 0 0 1px rgba(255,255,255,.2)}
+  .dock i{display:block;width:50px;height:50px;border-radius:13px}
+</style></head><body>
+<div class="menubar"><b></b><b>Safari</b><span>File</span><span>Edit</span><span>View</span><span>History</span><span>Bookmarks</span><span>Window</span><span>Help</span><div class="r"><span>⌁</span><span>Wi‑Fi</span><span>Tue 9:41 AM</span></div></div>
+<div class="win safari"><div class="tb"><i class="tl" style="background:#ff5f57"></i><i class="tl" style="background:#febc2e"></i><i class="tl" style="background:#28c840"></i><div class="url">weather.example.com/brooklyn</div></div>
+ <div class="wx"><h1>Brooklyn, NY</h1><div class="now"><div class="sun"></div><div class="cloud"></div><div><div class="temp">64°</div><div style="color:#667">Partly cloudy · H 68° L 55°</div></div></div>
+ <div class="hours"><div>10 AM<b>62°</b></div><div>11 AM<b>64°</b></div><div>12 PM<b>66°</b></div><div>1 PM<b>67°</b></div><div>2 PM<b>68°</b></div><div>3 PM<b>67°</b></div><div>4 PM<b>65°</b></div></div>
+ <div class="cards"><div>Wind<b>8 mph NW</b></div><div>Humidity<b>54%</b></div><div>Sunset<b>6:31 PM</b></div></div></div></div>
+<div class="win notes"><div class="tb"><i class="tl" style="background:#ff5f57"></i><i class="tl" style="background:#febc2e"></i><i class="tl" style="background:#28c840"></i><span style="margin-left:14px;color:#aaa">Notes</span></div>
+ <div class="nb"><h2>Weekend packing</h2><ul style="padding:0">
+ <li><span class="cb on"></span>Rain jacket</li><li><span class="cb on"></span>Charger + R1 cable</li><li><span class="cb"></span>Hiking boots</li><li><span class="cb"></span>Camera</li><li><span class="cb"></span>Snacks for the drive</li><li><span class="cb"></span>Book: The Overstory</li></ul></div></div>
+<div class="dock"><i style="background:linear-gradient(#5ac8fa,#007aff)"></i><i style="background:linear-gradient(#fff,#ddd)"></i><i style="background:linear-gradient(#ffd60a,#ff9f0a)"></i><i style="background:linear-gradient(#34c759,#248a3d)"></i><i style="background:linear-gradient(#bf5af2,#5e5ce6)"></i><i style="background:linear-gradient(#ff375f,#ff2d55)"></i><i style="background:linear-gradient(#64d2ff,#0a84ff)"></i></div>
+</body></html>
