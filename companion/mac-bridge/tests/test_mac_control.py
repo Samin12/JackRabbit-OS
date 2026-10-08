@@ -365,7 +365,7 @@ class MacControlTest(unittest.TestCase):
         status, value = self.call("POST", "/v1/mac/act", {"action": "hotkey", "keys": "cmd+w"})
         self.assertEqual(200, status, value)
         self.assertEqual({"ok": True, "action": "hotkey", "app": "Google Chrome", "keys": "cmd+w",
-                          "effect": "confirmed"}, value)
+                          "effect": "confirmed", "delivery": "background"}, value)
         sent = [entry["args"] for entry in self.calls() if entry["tool"] == "hotkey"]
         self.assertEqual([{"pid": CHROME, "window_id": 11, "keys": ["cmd", "w"]}], sent)
         status, value = self.call("POST", "/v1/mac/act", {"action": "hotkey", "keys": ["Return"], "app": "Finder"})
@@ -377,6 +377,17 @@ class MacControlTest(unittest.TestCase):
                 status, value = self.call("POST", "/v1/mac/act", {"action": "hotkey", "keys": keys})
                 self.assertIn(status, (400, 403))
         self.assertEqual(1, len([entry for entry in self.calls() if entry["tool"] == "hotkey"]))
+
+    def test_keys_for_an_app_with_several_windows_retry_once_in_the_foreground(self) -> None:
+        self.update_state(multi_window_pids=[CHROME])
+        status, value = self.call("POST", "/v1/mac/act", {"action": "hotkey", "keys": "cmd+w"})
+        self.assertEqual(200, status, value)
+        self.assertEqual("foreground", value["delivery"])
+        sent = [entry["args"] for entry in self.calls() if entry["tool"] == "hotkey"]
+        self.assertEqual([{"pid": CHROME, "window_id": 11, "keys": ["cmd", "w"]},
+                          {"pid": CHROME, "window_id": 11, "keys": ["cmd", "w"], "delivery_mode": "foreground"}], sent)
+        status, value = self.call("POST", "/v1/mac/act", {"action": "type_text", "text": "hi"})
+        self.assertEqual((200, "foreground"), (status, value["delivery"]))
 
     def test_click_by_label_uses_a_fresh_snapshot_token(self) -> None:
         status, value = self.call("POST", "/v1/mac/act", {"action": "click", "label": "more information"})
@@ -403,7 +414,7 @@ class MacControlTest(unittest.TestCase):
         status, value = self.call("POST", "/v1/mac/act", {"action": "type_text", "text": SECRET_TEXT, "label": "Search"})
         self.assertEqual(200, status, value)
         self.assertEqual({"ok": True, "action": "type_text", "app": "Google Chrome", "characters": len(SECRET_TEXT),
-                          "effect": "unverifiable"}, value)
+                          "effect": "unverifiable", "delivery": "background"}, value)
         typed = [entry["args"] for entry in self.calls() if entry["tool"] == "type_text"]
         self.assertEqual("s00000042:13", typed[0]["element_token"])
         self.assertNotIn(SECRET_TEXT, self.log.getvalue())

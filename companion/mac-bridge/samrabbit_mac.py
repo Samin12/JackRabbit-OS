@@ -129,6 +129,8 @@ class MacError(Exception):
         self.retryable = retryable
         self.fix = fix
         self.details = details or {}
+        self.driver_code: Optional[str] = None  # cua-driver's own refusal code (internal, never sent)
+        self.refused = False
 
     def payload(self) -> Dict[str, Any]:
         error: Dict[str, Any] = {"code": self.code, "message": self.message, "retryable": self.retryable}
@@ -255,7 +257,10 @@ class CuaDriver:
         error = value.get("error")
         code = value.get("code")
         if isinstance(error, str) or (isinstance(code, str) and value.get("effect") in (None, "refused")):
-            raise _driver_error(str(error if isinstance(error, str) else code))
+            failure = _driver_error(str(error if isinstance(error, str) else code))
+            failure.driver_code = str(error if isinstance(error, str) else code)
+            failure.refused = value.get("effect") == "refused"
+            raise failure
         if expect:
             raise MacError(502, "driver_bad_output", "cua-driver answered with something unexpected.")
         return value
@@ -357,6 +362,19 @@ class MacControl:
 
     def _call(self, tool: str, arguments: Dict[str, Any], **options: Any) -> Dict[str, Any]:
         return self.driver.call(tool, arguments, **options)
+
+    def _deliver(self, tool: str, arguments: Dict[str, Any], **options: Any) -> Tuple[Dict[str, Any], str]:
+        """Background delivery first; when cua-driver refuses it (nothing was delivered) because the
+        keys could reach a sibling window or the app only listens while in front, retry once in the
+        foreground. The user asked for this step on the Mac, which is the authorization."""
+        try:
+            return self._call(tool, arguments, **options), "background"
+        except MacError as error:
+            code = (error.driver_code or "").lower()
+            if not (error.refused and arguments.get("window_id") and
+                    ("ambiguity" in code or "background" in code or "foreground" in code)):
+                raise
+        return self._call(tool, {**arguments, "delivery_mode": "foreground"}, **options), "foreground"
 
     def _require_accessibility(self) -> None:
         if self.permissions().get("accessibility") is False:
@@ -663,7 +681,8 @@ class MacControl:
             text, controls, truncated = condense(snapshot.get("elements") or [], max_chars)
             result: Dict[str, Any] = {"app": name, "window": _clean(window.get("title"), 120), "text": text,
                                       "controls": controls}
-            if truncated or snapshot.get("elements_complete") is False:
+            returned, total = snapshot.get("returned_element_count"), snapshot.get("total_element_count")
+            if truncated or (isinstance(returned, int) and isinstance(total, int) and returned < total):
                 result["truncated"] = True
             return result
 
@@ -686,10 +705,10 @@ class MacControl:
             if action == "hotkey":
                 keys = _keys(body.get("keys"))
                 if len(keys) == 1:
-                    result = self._call("press_key", {**base, "key": keys[0]})
+                    result, delivery = self._deliver("press_key", {**base, "key": keys[0]})
                 else:
-                    result = self._call("hotkey", {**base, "keys": keys})
-                return _done(action, name, result, keys="+".join(keys))
+                    result, delivery = self._deliver("hotkey", {**base, "keys": keys})
+                return _done(action, name, result, keys="+".join(keys), delivery=delivery)
             if action == "type_text":
                 text = body.get("text")
                 if not isinstance(text, str) or not text or len(text) > MAX_TYPE_CHARS:
@@ -700,8 +719,8 @@ class MacControl:
                 if isinstance(body.get("label"), str) and body["label"].strip():
                     element = self._find(pid, window_id, body["label"], "field", body.get("index"))
                     arguments["element_token"] = element["element_token"]
-                result = self._call("type_text", {**arguments, "text": text}, timeout=30.0)
-                return _done(action, name, result, characters=len(text))
+                result, delivery = self._deliver("type_text", {**arguments, "text": text}, timeout=30.0)
+                return _done(action, name, result, characters=len(text), delivery=delivery)
             if action == "click":
                 label = body.get("label")
                 if not isinstance(label, str) or not label.strip() or len(label) > 200:
@@ -709,9 +728,10 @@ class MacControl:
                 if window_id is None:
                     raise MacError(409, "no_window", "That app has no open window.")
                 element = self._find(pid, window_id, label, body.get("role"), body.get("index"))
-                result = self._call("click", {**base, "element_token": element["element_token"]})
+                result, delivery = self._deliver("click", {**base, "element_token": element["element_token"]})
                 return _done(action, name, result, clicked={"role": _role_name(element.get("role")),
-                                                            "label": _clean(_text_of(element), 80)})
+                                                            "label": _clean(_text_of(element), 80)},
+                             delivery=delivery)
             if action == "invoke_menu":
                 path = body.get("path")
                 if isinstance(path, str):
@@ -734,8 +754,8 @@ class MacControl:
             if not isinstance(amount, int) or isinstance(amount, bool) or not 1 <= amount <= 25:
                 raise _bad("invalid_amount", "amount must be 1 to 25.")
             by = "page" if body.get("by") == "page" else "line"
-            result = self._call("scroll", {**base, "direction": direction, "amount": amount, "by": by})
-            return _done("scroll", name, result, direction=direction)
+            result, delivery = self._deliver("scroll", {**base, "direction": direction, "amount": amount, "by": by})
+            return _done("scroll", name, result, direction=direction, delivery=delivery)
 
     def _find(self, pid: int, window_id: Optional[int], label: str, role: Any, index: Any) -> Dict[str, Any]:
         if window_id is None:

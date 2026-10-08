@@ -142,6 +142,10 @@ def _tool(tool: str, args: dict, state: dict):
     if tool in ("click", "hotkey", "press_key", "type_text", "invoke_menu", "scroll"):
         if "pid" not in args:
             return "Missing required integer field: pid"
+        if tool in ("hotkey", "press_key", "type_text") and args.get("delivery_mode") != "foreground" and \
+                args["pid"] in state.get("multi_window_pids", []):
+            return {"code": "same_pid_keyboard_ambiguity", "effect": "refused", "pid": args["pid"],
+                    "escalation": {"recommended": "accessibility"}}
         token = args.get("element_token")
         if token is not None and not str(token).startswith("s00000042:"):
             return {"code": "stale_element_token", "effect": "refused"}
