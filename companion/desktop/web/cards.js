@@ -15,12 +15,17 @@ const WEATHER_COLORS = {
   storm: '#7c6cff', snow: '#e8f1ff', fog: '#9aa6ba', wind: '#68decc',
 };
 
+/** table[key] for the table's own keys only (card data never reaches Object.prototype). */
+function own(table, key) {
+  return typeof key === 'string' && Object.prototype.hasOwnProperty.call(table, key) ? table[key] : undefined;
+}
+
 function str(value) {
   return value == null ? '' : String(value);
 }
 
 function statusDot(status) {
-  if (!status || !STATUS_COLORS[status]) return null;
+  if (!own(STATUS_COLORS, status)) return null;
   return h('span', { class: `status-dot status-${status}`, title: status });
 }
 
@@ -52,7 +57,7 @@ function blockKv(block) {
 }
 
 function rowIcon(name) {
-  const mapped = GEN_ICONS[name];
+  const mapped = own(GEN_ICONS, name);
   return mapped ? h('span', { class: 'gb-row-icon' }, icon(mapped, { size: 15 })) : null;
 }
 
@@ -119,8 +124,8 @@ function blockBars(block) {
 }
 
 function weatherIcon(condition, size) {
-  const name = WEATHER_ICONS[condition] || 'cloud';
-  return h('span', { class: 'gb-weather-icon', style: `color:${WEATHER_COLORS[condition] || '#b8c4d8'}` }, icon(name, { size }));
+  const name = own(WEATHER_ICONS, condition) || 'cloud';
+  return h('span', { class: 'gb-weather-icon', style: `color:${own(WEATHER_COLORS, condition) || '#b8c4d8'}` }, icon(name, { size }));
 }
 
 function blockWeather(block) {
@@ -190,7 +195,7 @@ function actionChip(action) {
 
 /** One card. `options.dismissed`, `options.updates` (count) decorate it. */
 export function renderCard(card, { dismissed = false, updates = 0 } = {}) {
-  const accent = ACCENTS[card.accent] || ACCENTS.blue;
+  const accent = own(ACCENTS, card.accent) || ACCENTS.blue;
   const compact = card.size === 'compact';
   const live = card.live && typeof card.live === 'object' ? card.live : null;
   const state = dismissed ? 'dismissed' : str(card.state || 'active');
@@ -198,7 +203,7 @@ export function renderCard(card, { dismissed = false, updates = 0 } = {}) {
     : card.terminal || state === 'done' ? h('span', { class: 'gb-badge ok', text: 'Done' })
       : live ? h('span', { class: 'gb-badge live' }, h('span', { class: 'live-dot' }), 'Live')
         : updates > 0 ? h('span', { class: 'gb-badge', text: updates === 1 ? 'Updated' : `Updated ×${updates}` }) : null;
-  const mappedIcon = GEN_ICONS[card.icon];
+  const mappedIcon = own(GEN_ICONS, card.icon);
   const liveLines = [card.liveTitle, card.liveSubtitle, card.liveNote].filter(Boolean);
   const body = Array.isArray(card.body) ? card.body : [];
   const actions = Array.isArray(card.actions) ? card.actions.filter((a) => a && a.label) : [];
@@ -219,7 +224,7 @@ export function renderCard(card, { dismissed = false, updates = 0 } = {}) {
     h('div', { class: 'gcard-live-text' }, liveLines.map((line, index) => h('div', { class: index ? 'muted' : '', text: str(line) }))),
     card.liveTrailing ? h('div', { class: 'gcard-live-trailing', text: str(card.liveTrailing) }) : null) : null,
   body.length ? h('div', { class: 'gcard-body' }, body.map((block) => {
-    const render = block && BLOCKS[block.type];
+    const render = block && own(BLOCKS, block.type);
     return render ? render(block) : null;
   })) : null,
   actions.length ? h('footer', { class: 'gcard-actions' }, actions.map(actionChip)) : null);

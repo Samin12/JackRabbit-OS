@@ -11,6 +11,21 @@ const GAP_MS = 20 * 60 * 1000;
 const STREAM_STALE_MS = 45 * 1000;
 const EAGER_TAIL = 12;
 
+/** table[key] for the table's own keys only ("constructor", "__proto__" … from event data are not keys). */
+function own(table, key) {
+  return typeof key === 'string' && Object.prototype.hasOwnProperty.call(table, key) ? table[key] : undefined;
+}
+
+/** One item that cannot be drawn (an unexpected event shape) must not take the rest of the conversation with it. */
+function safely(build, entry) {
+  try {
+    return build();
+  } catch (error) {
+    console.warn('SamRabbit: could not draw a timeline item', String(entry && entry.key).split(':')[0], error);
+    return h('div', { class: 'msg-note' }, icon('alert', { size: 11 }), 'This item could not be shown');
+  }
+}
+
 // ---------------------------------------------------------------------------- tools
 
 const TOOL_LABELS = {
@@ -55,7 +70,7 @@ const TOOL_LABELS = {
 };
 
 function toolLabel(tool, args) {
-  const make = TOOL_LABELS[tool];
+  const make = own(TOOL_LABELS, tool);
   if (make) {
     try {
       return make(args && typeof args === 'object' ? args : {});
@@ -191,7 +206,7 @@ const SOURCE_LABELS = {
 };
 
 function renderImage(item, ctx, eager) {
-  const [glyph, label] = SOURCE_LABELS[item.source] || ['image', 'Image'];
+  const [glyph, label] = own(SOURCE_LABELS, item.source) || ['image', 'Image'];
   const ratio = item.width && item.height ? `aspect-ratio:${item.width} / ${item.height}` : '';
   return h('figure', { class: `shot source-${item.source || 'image'}` },
     h('button', { class: 'shot-frame', type: 'button', title: 'Click to zoom', style: ratio, onclick: () => ctx.openImage(item) },
@@ -242,7 +257,7 @@ const T3_STATUS = {
 };
 
 function renderT3(item, ctx) {
-  const [tone, label] = T3_STATUS[item.status] || ['active', item.status ? humanize(item.status) : 'Update'];
+  const [tone, label] = own(T3_STATUS, item.status) || ['active', item.status ? humanize(item.status) : 'Update'];
   return h('div', { class: `sys sys-t3 tone-${tone}` },
     h('div', { class: 'sys-icon' }, icon('code', { size: 15 })),
     h('div', { class: 'sys-main' },
@@ -376,11 +391,11 @@ export class TimelineView {
     for (const entry of entries) {
       let record = this.nodes.get(entry.key);
       if (!record) {
-        record = { node: entry.build(), signature: entry.signature };
+        record = { node: safely(entry.build, entry), signature: entry.signature };
         this.nodes.set(entry.key, record);
       } else if (record.signature !== entry.signature) {
-        if (!(entry.patch && entry.patch(record.node))) {
-          const node = entry.build();
+        if (!(entry.patch && safely(() => entry.patch(record.node), entry) === true)) {
+          const node = safely(entry.build, entry);
           record.node.replaceWith(node);
           record.node = node;
         }
