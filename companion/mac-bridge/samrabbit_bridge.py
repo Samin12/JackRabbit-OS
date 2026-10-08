@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
-"""SamRabbit Mac bridge: the R1 writes to the Heptabase journal through this Mac.
+"""SamRabbit Mac bridge: the R1 writes to the Heptabase journal and controls this Mac.
 
 The Heptabase desktop app ships a local CLI (``heptabase``) that talks to the
 running app. This small HTTP server lets the R1 on the same network use two of
-its commands, nothing else:
+its commands:
 
 * ``POST /v1/heptabase/journal/append`` runs ``heptabase journal append``.
 * ``GET  /v1/heptabase/journal/read?date=YYYY-MM-DD`` runs ``heptabase journal read``
   and returns the day as plain text lines.
-* ``GET  /health`` reports the CLI version and whether the app answers.
+* ``GET  /health`` reports the CLI version and whether the app answers, plus the
+  Mac-control capabilities.
+
+and, for the R1's voice orchestrator, Mac control through the ``cua-driver`` CLI
+and LaunchServices (``samrabbit_mac.py``): ``GET /v1/mac/state``, ``POST /v1/mac/open``,
+``GET /v1/mac/read``, ``POST /v1/mac/act`` and ``GET /v1/mac/screenshot``.
 
 Every route needs ``Authorization: Bearer <token>`` (the token lives in
 ``~/.config/samrabbit/bridge-token``, mode 0600). Journal text and the token are
@@ -38,7 +43,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlsplit
 
-VERSION = "1.0.0"
+# ``python3 -I`` (as the LaunchAgent runs us) leaves the script's folder off sys.path; the sibling
+# module lives there. Appended, so it can never shadow the standard library.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.append(_HERE)
+
+import samrabbit_mac as mac  # noqa: E402
+
+VERSION = "1.1.0"
 SERVICE = "samrabbit-bridge"
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 3780
@@ -370,9 +383,11 @@ class BridgeServer(ThreadingHTTPServer):
     allow_reuse_address = True
 
     def __init__(self, address: Tuple[str, int], *, token: TokenFile, cli: HeptabaseCli,
-                 cli_timeout: float = CLI_TIMEOUT_SECONDS, allow_any_client: bool = False) -> None:
+                 cli_timeout: float = CLI_TIMEOUT_SECONDS, allow_any_client: bool = False,
+                 mac_control: Optional[mac.MacControl] = None) -> None:
         self.token = token
         self.cli = cli
+        self.mac = mac_control or mac.MacControl(mac.CuaDriver())
         self.cli_timeout = cli_timeout
         self.allow_any_client = allow_any_client
         self.append_lock = threading.Lock()
@@ -385,6 +400,7 @@ class BridgeServer(ThreadingHTTPServer):
     def server_close(self) -> None:
         super().server_close()
         shutil.rmtree(self.scratch, ignore_errors=True)
+        self.mac.close()
 
     def health(self) -> Dict[str, Any]:
         with self._health_lock:
@@ -402,10 +418,16 @@ class BridgeServer(ThreadingHTTPServer):
                     reachable = True
                 except BridgeError as error:
                     detail = error.code
+            try:
+                capabilities: Dict[str, Any] = self.mac.capabilities()
+            except Exception:  # Mac control must never break the journal's health check
+                _LOG.warning("mac capabilities failed")
+                capabilities = {"driver": {"available": False}, "features": {}}
             value: Dict[str, Any] = {
                 "ok": True, "service": SERVICE, "version": VERSION,
                 "cli": {"available": version is not None, "version": version},
                 "app": {"reachable": reachable, "detail": detail},
+                "mac": capabilities,
                 "checkedAt": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
             }
             self._health = (time.monotonic(), value)
@@ -477,12 +499,16 @@ class BridgeHandler(BaseHTTPRequestHandler):
         route = urlsplit(self.path).path
         status = 500
         try:
-            if not self.server.allow_any_client and not client_allowed(self.client_address[0]):
+            if not client_allowed(self.client_address[0]) and \
+                    (not self.server.allow_any_client or route.startswith(_MAC_PREFIX)):
+                # Mac control never leaves the local network, even with --allow-any-client.
                 raise BridgeError(403, "forbidden", "Only devices on the local network may use this bridge.")
             if not self._authorized():
                 raise BridgeError(401, "unauthorized", "A valid bridge token is required.")
             status, payload = self._route(method, route)
         except BridgeError as error:
+            status, payload = error.status, error.payload()
+        except mac.MacError as error:
             status, payload = error.status, error.payload()
         except Exception:  # never leak details (or journal text) to the caller or the log
             _LOG.exception("unexpected failure on %s %s", method, route)
@@ -519,7 +545,33 @@ class BridgeHandler(BaseHTTPRequestHandler):
             query = parse_qs(urlsplit(self.path).query, max_num_fields=4)
             values = query.get("date") or [""]
             return 200, self.server.read(_valid_date(values[0]))
+        if route.startswith(_MAC_PREFIX):
+            return self._mac_route(method, route)
         raise BridgeError(404, "not_found", "Not found.")
+
+    def _mac_route(self, method: str, route: str) -> Tuple[int, Dict[str, Any]]:
+        control = self.server.mac
+        if route == "/v1/mac/state":
+            self._require(method, "GET")
+            return 200, control.state()
+        if route == "/v1/mac/open":
+            self._require(method, "POST")
+            return 200, control.open(self._json_body())
+        if route == "/v1/mac/read":
+            self._require(method, "GET")
+            query = self._query()
+            return 200, control.read(_one(query, "app"), _number(query, "max"))
+        if route == "/v1/mac/act":
+            self._require(method, "POST")
+            return 200, control.act(self._json_body())
+        if route == "/v1/mac/screenshot":
+            self._require(method, "GET")
+            query = self._query()
+            return 200, control.screenshot(_one(query, "app"), _number(query, "max"))
+        raise BridgeError(404, "not_found", "Not found.")
+
+    def _query(self) -> Dict[str, List[str]]:
+        return parse_qs(urlsplit(self.path).query, max_num_fields=8)
 
     @staticmethod
     def _require(method: str, expected: str) -> None:
@@ -560,14 +612,35 @@ class BridgeHandler(BaseHTTPRequestHandler):
             pass  # the client went away
 
 
-_ROUTES = frozenset({"/health", "/v1/heptabase/journal/append", "/v1/heptabase/journal/read"})
+_MAC_PREFIX = "/v1/mac/"
+_ROUTES = frozenset({"/health", "/v1/heptabase/journal/append", "/v1/heptabase/journal/read", "/v1/mac/state",
+                     "/v1/mac/open", "/v1/mac/read", "/v1/mac/act", "/v1/mac/screenshot"})
+
+
+def _one(query: Dict[str, List[str]], key: str) -> Optional[str]:
+    values = query.get(key) or []
+    value = values[0].strip() if values else ""
+    if len(value) > 200:
+        raise BridgeError(400, "invalid_query", f"{key} is too long.")
+    return value or None
+
+
+def _number(query: Dict[str, List[str]], key: str) -> Optional[int]:
+    value = _one(query, key)
+    if value is None:
+        return None
+    if not value.isdigit() or len(value) > 6:
+        raise BridgeError(400, "invalid_query", f"{key} must be a whole number.")
+    return int(value)
 
 
 def make_server(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, *, token_file: str = DEFAULT_TOKEN_FILE,
                 cli: Optional[str] = None, cli_timeout: float = CLI_TIMEOUT_SECONDS,
-                allow_any_client: bool = False) -> BridgeServer:
+                allow_any_client: bool = False, driver: Optional[str] = None,
+                mac_control: Optional[mac.MacControl] = None) -> BridgeServer:
     return BridgeServer((host, port), token=TokenFile(token_file), cli=HeptabaseCli(cli),
-                        cli_timeout=cli_timeout, allow_any_client=allow_any_client)
+                        cli_timeout=cli_timeout, allow_any_client=allow_any_client,
+                        mac_control=mac_control or mac.MacControl(mac.CuaDriver(driver)))
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -578,13 +651,16 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--cli", default=os.environ.get("SAMRABBIT_HEPTABASE_CLI") or None,
                         help="path to the heptabase CLI (default: found on PATH)")
     parser.add_argument("--cli-timeout", type=float, default=CLI_TIMEOUT_SECONDS)
+    parser.add_argument("--cua-driver", default=os.environ.get("SAMRABBIT_CUA_DRIVER") or None,
+                        help="path to the cua-driver CLI (default: found on PATH or in the usual install folders)")
     parser.add_argument("--allow-any-client", action="store_true",
                         help="accept peers outside loopback/private networks (not recommended)")
     options = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stderr)
     try:
         server = make_server(options.host, options.port, token_file=options.token_file, cli=options.cli,
-                             cli_timeout=options.cli_timeout, allow_any_client=options.allow_any_client)
+                             cli_timeout=options.cli_timeout, allow_any_client=options.allow_any_client,
+                             driver=options.cua_driver)
     except (OSError, ValueError) as error:
         _LOG.error("cannot start: %s", error)
         return 2
@@ -596,8 +672,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     cli_path = server.cli.executable()
-    _LOG.info("%s %s listening on %s:%d (cli %s)", SERVICE, VERSION, options.host, server.server_address[1],
-              cli_path or "missing")
+    _LOG.info("%s %s listening on %s:%d (cli %s, cua-driver %s)", SERVICE, VERSION, options.host,
+              server.server_address[1], cli_path or "missing", "found" if server.mac.driver.executable() else "missing")
     server.serve_forever(poll_interval=0.5)
     _LOG.info("stopped")
     return 0

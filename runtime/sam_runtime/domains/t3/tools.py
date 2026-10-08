@@ -18,6 +18,7 @@ from sam_runtime.tools import ToolCatalog, ToolDefinition, ToolInvocationResult
 
 from .client import T3Error, T3Unavailable
 from .matching import match_item
+from .placement import ProjectPlacement
 from .service import (
     T3DispatchFailed,
     T3InvalidRequest,
@@ -76,8 +77,10 @@ T3_TOOL_SPECS: tuple[tuple[str, str, str, dict[str, object]], ...] = (
         "right away when the user asks for new coding work in T3 (for example 'have T3 fix the login bug' or "
         "'start a T3 thread to add dark mode'). prompt is "
         "the user's request in their own words (fix only obvious transcription slips). title is optional, 3 to "
-        "6 words. project is optional: pass it only when the user names a project; otherwise the most recently "
-        "active project is used. Then confirm in one short sentence that names the project.",
+        "6 words. project is optional: pass it only when the user names a project; otherwise the project is picked "
+        "from the request (a project it mentions; general computer or life tasks go to the orchestration project; "
+        "coding work to the most recently active project). Then confirm in one short sentence that names the "
+        "project.",
         "external_write",
         {
             "type": "object",
@@ -142,8 +145,8 @@ T3_TOOL_SPECS: tuple[tuple[str, str, str, dict[str, object]], ...] = (
 )
 
 
-def register_t3_tools(catalog: ToolCatalog, service: T3Service) -> None:
-    handlers = T3ToolHandlers(service)
+def register_t3_tools(catalog: ToolCatalog, service: T3Service, placement: ProjectPlacement | None = None) -> None:
+    handlers = T3ToolHandlers(service, placement=placement)
     for name, description, effect, schema in T3_TOOL_SPECS:
         catalog.register(ToolDefinition(
             tool_id=f"builtin.t3.{name.removeprefix('t3_').replace('_', '-')}.v1",
@@ -175,9 +178,11 @@ def ago(value: object, now: datetime | None = None) -> str:
 
 
 class T3ToolHandlers:
-    def __init__(self, service: T3Service, *, now: Callable[[], datetime] = lambda: datetime.now(UTC)) -> None:
+    def __init__(self, service: T3Service, *, now: Callable[[], datetime] = lambda: datetime.now(UTC),
+                 placement: ProjectPlacement | None = None) -> None:
         self._service = service
         self._now = now
+        self._placement = placement
 
     def invoke(self, name: str, arguments: dict[str, object]) -> ToolInvocationResult:
         try:
@@ -325,12 +330,20 @@ class T3ToolHandlers:
         return result
 
     def _new(self, arguments: dict[str, object]) -> dict[str, object]:
+        prompt = str(arguments.get("prompt") or "")
+        project = _text(arguments.get("project"))
+        placed = None
+        if self._placement is not None and project is None and prompt.strip():
+            if not self._service.connected():
+                raise T3NotConnected("T3 Code is not connected.")
+            placed = self._placement.choose(prompt)
         created = self._service.create_thread(
-            str(arguments.get("prompt") or ""),
+            prompt,
             title=_text(arguments.get("title")),
-            project=_text(arguments.get("project")),
+            project=project if placed is None else None,
+            project_id=placed.project_id if placed is not None else None,
         )
-        return {
+        result: dict[str, object] = {
             "ok": True,
             "threadId": created["threadId"],
             "title": created["title"],
@@ -338,6 +351,9 @@ class T3ToolHandlers:
             "model": created.get("model"),
             "status": "started",
         }
+        if placed is not None:
+            result["placement"] = placed.reason
+        return result
 
     def _send(self, arguments: dict[str, object]) -> dict[str, object]:
         item = self._resolve(arguments.get("thread"))

@@ -1311,9 +1311,16 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
             }
             runtimeClient.callTool(activity, sessionId, callId, lastUserUtterance, userUtteranceId, name, toolArguments, new RuntimeVoiceClient.ToolCallback() {
                 @Override public void onResult(String output, JSONObject sessionUpdate) {
-                    logTool("output " + name + " " + shownTool(name, output, 400));
+                    // A tool picture (mac_look's screenshot) is shown to the model as an image,
+                    // never read as base64 text.
+                    RealtimeToolImage image = sessionUpdate == null ? RealtimeToolImage.from(output) : null;
+                    logTool("output " + name + " " + shownTool(name, image == null ? output : image.output, 400)
+                            + (image == null ? "" : " + image (" + image.base64.length() + " chars)"));
                     if (sessionUpdate != null) {
                         beginModeUpdate(callId, output, sessionUpdate, completion::complete);
+                    } else if (image != null) {
+                        sendToolOutputWithImage(callId, image);
+                        completion.complete();
                     } else {
                         sendToolOutput(callId, output, true);
                         completion.complete();
@@ -1463,6 +1470,36 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
             } else {
                 sessionState.toolOutputSentWithoutFollowUp();
             }
+            invalidate();
+        } catch (Exception ignored) {
+            fail("event-invalid");
+        }
+    }
+
+    /**
+     * A tool result that carries a picture: the result text first (no reply yet, so the function
+     * call is answered right after it was made), then the picture as a user image item, then one
+     * response. Each message is checked against the data-channel limit; a picture too large to
+     * send is replaced by a note in the result.
+     */
+    private void sendToolOutputWithImage(String callId, RealtimeToolImage image) {
+        if (peer == null) return;
+        try {
+            JSONObject picture = image.inputImageEvent();
+            if (picture == null) {
+                logTool("image too large for the data channel; sent without it");
+                sendToolOutput(callId, image.outputWithoutPicture(), true);
+                return;
+            }
+            if (!peer.sendRealtimeEvent(RealtimeToolOutput.event(callId, image.output))) {
+                fail("event-invalid");
+                return;
+            }
+            if (!peer.sendRealtimeEvent(picture)) {
+                Log.w(LOG_TAG, "tool image could not be sent; answering without it");
+            }
+            responseCoordinator.requestDefault();
+            sessionState.toolOutputSent();
             invalidate();
         } catch (Exception ignored) {
             fail("event-invalid");

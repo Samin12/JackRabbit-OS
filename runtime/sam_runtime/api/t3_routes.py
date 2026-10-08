@@ -13,6 +13,7 @@ from urllib.parse import parse_qs, unquote
 
 from ..core.logging import runtime_logger
 from ..domains.t3.client import T3EndpointError, T3Error, T3RequestError, T3Unauthorized, T3Unavailable
+from ..domains.t3.placement import ProjectPlacement
 from ..domains.t3.service import (
     T3DispatchFailed,
     T3InvalidRequest,
@@ -35,8 +36,19 @@ _LOG = runtime_logger()
 
 
 class T3Routes:
-    def __init__(self, service: T3Service) -> None:
+    def __init__(self, service: T3Service, placement: ProjectPlacement | None = None) -> None:
         self._service = service
+        self._placement = placement
+
+    def _management_view(self) -> dict[str, object]:
+        view = self._service.management_view()
+        if self._placement is not None:
+            try:
+                view["orchestration"] = self._placement.management_view() if view.get("connected") else None
+            except Exception:
+                _LOG.exception("t3.orchestration.view_failed")
+                view["orchestration"] = None
+        return view
 
     # ---------------------------------------------------------------- GET
     def handle_get(self, request: "RouteRequest", pairing: PairingAuthority | None = None) -> bool:
@@ -44,7 +56,7 @@ class T3Routes:
         if path == _MANAGEMENT:
             if not _session(request, pairing, mutation=False):
                 return True
-            request.respond_json(200, self._service.management_view())
+            request.respond_json(200, self._management_view())
             return True
         if path == "/v1/t3/status":
             request.respond_json(200, self._service.status_view())
@@ -82,6 +94,25 @@ class T3Routes:
             if not _session(request, pairing, mutation=True):
                 return True
             self._run(request, lambda: (200, self._service.disconnect()))
+            return True
+        if path == _MANAGEMENT + "/settings" and self._placement is not None:
+            if not _session(request, pairing, mutation=True):
+                return True
+            payload = request.request_json(max_bytes=4096)
+            if payload is None:
+                return True
+            if "orchestrationProjectId" not in payload:
+                _error(request, 400, "invalid_request", "orchestrationProjectId is required (a project id or null).")
+                return True
+            placement = self._placement
+
+            def save() -> tuple[int, dict[str, object]]:
+                if not self._service.connected():
+                    raise T3NotConnected("T3 Code is not connected.")
+                placement.set_orchestration(payload.get("orchestrationProjectId"))
+                return 200, self._management_view()
+
+            self._run(request, save)
             return True
         if path == _THREADS:
             payload = request.request_json(max_bytes=65_536)

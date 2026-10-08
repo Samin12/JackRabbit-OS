@@ -659,6 +659,28 @@ class T3Service:
         with self._lock:
             return [dict(item) for item in self._project_views]
 
+    def project_records(self) -> list[dict[str, object]]:
+        """Projects most recently active first, with the fields placement needs (no secrets).
+
+        ``scratch`` marks T3's "No project" scratch space."""
+        with self._lock:
+            by_id = {str(item["id"]): item for item in self._projects}
+            order = [str(item["id"]) for item in self._project_views]
+        records = []
+        for project_id in order:
+            item = by_id.get(project_id)
+            if item is None:
+                continue
+            identity = item.get("repositoryIdentity")
+            records.append({
+                "id": project_id,
+                "title": str(item.get("title") or "Project"),
+                "workspaceRoot": str(item.get("workspaceRoot") or ""),
+                "repository": identity if isinstance(identity, dict) else None,
+                "scratch": _is_scratch(item),
+            })
+        return records
+
     def summary(self, thread_id: str) -> dict[str, object] | None:
         with self._lock:
             for item in self._summaries:

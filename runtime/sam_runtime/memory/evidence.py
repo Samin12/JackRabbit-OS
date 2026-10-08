@@ -41,7 +41,9 @@ _SECRET_KEYS = frozenset({
 def _redact(value: object) -> object:
     if isinstance(value, dict):
         return {
-            str(key): "[REDACTED]" if str(key).lower() in _SECRET_KEYS else _redact(item)
+            str(key): "[REDACTED]" if str(key).lower() in _SECRET_KEYS
+            else f"[{len(item)} chars of image data omitted]" if str(key) == "base64" and isinstance(item, str)
+            else _redact(item)
             for key, item in value.items()
         }
     if isinstance(value, list):

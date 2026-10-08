@@ -1,9 +1,13 @@
-# SamRabbit Mac bridge (Heptabase journal)
+# SamRabbit Mac bridge (Heptabase journal and Mac control)
 
 The R1 writes your words and activity lines into your Heptabase journal. This
 bridge lets it do that through the Heptabase desktop app on your Mac, using the
 app's own CLI (`heptabase journal append` / `journal read`). There is no
 Heptabase sign-in and nothing to click in Heptabase.
+
+The same bridge also lets the R1's voice orchestrator see and control this Mac
+(what is open, reading a window, opening apps and links, simple clicks and
+shortcuts, and screenshots once screen vision is allowed). See "Mac control" below.
 
 ```
 R1 runtime ──HTTP (LAN, bearer token)──▶ samrabbit_bridge.py on the Mac ──▶ heptabase CLI ──▶ Heptabase app
@@ -15,6 +19,9 @@ R1 runtime ──HTTP (LAN, bearer token)──▶ samrabbit_bridge.py on the Ma
   (Heptabase > Settings > AI Features). `heptabase --version` should print `0.7.x`.
 - macOS system Python 3.9+ (`/usr/bin/python3`). The bridge uses only the standard library.
 - The R1 and the Mac are on the same local network.
+- For Mac control: the `cua-driver` CLI with its daemon running and Accessibility granted to CuaDriver.app.
+  The bridge finds it on `PATH`, in `/Applications/CuaDriver.app`, or in `~/.hermes/tools/cua-driver-*`
+  (newest version), or use `--cua-driver <path>` / `SAMRABBIT_CUA_DRIVER`.
 
 ## Install
 
@@ -25,7 +32,7 @@ companion/mac-bridge/install.sh            # options: --port 3780 --host 0.0.0.0
 You can run it again at any time. It:
 
 1. creates `~/.config/samrabbit/bridge-token` (random, mode 0600) if it doesn't exist yet, and never prints it;
-2. copies the bridge to `~/Library/Application Support/SamRabbit/bridge/`;
+2. copies the bridge (`samrabbit_bridge.py` and `samrabbit_mac.py`) to `~/Library/Application Support/SamRabbit/bridge/`;
 3. writes `~/Library/LaunchAgents/com.samrabbit.bridge.plist` (RunAtLoad, KeepAlive, a PATH that includes
    `/opt/homebrew/bin`, and logs to `~/Library/Logs/samrabbit-bridge.log`);
 4. reloads the agent (`launchctl bootout`/`bootstrap`/`kickstart`), waits for `/health`, and prints the bridge URL.
@@ -44,7 +51,7 @@ private-LAN peers are accepted (10/8, 172.16/12, 192.168/16, 169.254/16, fc00::/
 
 | Route | Result |
 |---|---|
-| `GET /health` | `{ok, service, version, cli:{available, version}, app:{reachable, detail}, checkedAt}` (cached 10 s) |
+| `GET /health` | `{ok, service, version, cli:{available, version}, app:{reachable, detail}, mac:{…capabilities}, checkedAt}` (cached 10 s) |
 | `POST /v1/heptabase/journal/append` `{date:"YYYY-MM-DD", content:"<markdown>"}` | the CLI's `{date, title, contentMd5}` |
 | `GET /v1/heptabase/journal/read?date=YYYY-MM-DD` | `{date, title, text, contentMd5}`: the day as plain text lines (paragraphs, headings, `- ` bullets, `1. ` numbers, `[ ]`/`[x]` todos, `+ ` toggles, `> ` quotes; marks removed; nested items indented) |
 
@@ -68,10 +75,34 @@ private-LAN peers are accepted (10/8, 172.16/12, 192.168/16, 169.254/16, fc00::/
 | 503 | `heptabase_cli_missing`, `heptabase_busy`, `heptabase_app_error`, `bridge_busy` | retry later |
 | 504 | `heptabase_cli_timeout` | the CLI didn't answer in 30 s (`written: "unknown"`) |
 
+## Mac control
+
+All `/v1/mac/*` routes need the token **and** a loopback or private-LAN peer, even when the bridge runs with
+`--allow-any-client`. They drive the Mac only through the `cua-driver` CLI (one call at a time, JSON on stdin, 15 s
+per call) and LaunchServices `/usr/bin/open`. There is no AppleScript (no Automation prompts), no shell and no
+`kill_app`.
+
+| Route | Result |
+|---|---|
+| `GET /v1/mac/state` | `{computer, front:{app, window}, visible:[{app, windows}], running:[names], chrome:[{window, activeTab, activeUrl, tabs}], screenVision}`: titles trimmed, URLs without query or fragment |
+| `POST /v1/mac/open` `{app}` \| `{url}` \| `{path}` | app: matched against installed apps (`list_apps`), started with `launch_app`, then `bring_to_front` (LaunchServices `open -b` as a fallback) so it really comes forward. url: http(s) only, `open -a "Google Chrome" <url>`. path: inside the home folder only; hidden folders, `~/Library`, apps, scripts, executables, Finder aliases and location files (`.webloc`, `.vncloc`, …) are refused |
+| `GET /v1/mac/read?app=&max=` | `{app, window, text, controls, truncated?}`: the front (or named) app's front window as readable text (≤ 6000 chars) plus its button labels, from the accessibility tree (`get_window_state` without a screenshot) |
+| `POST /v1/mac/act` `{action, …}` | one allowlisted step in the front (or `app`) window (background delivery first; when cua-driver refuses it, e.g. keys for an app with several windows, it is retried once in the foreground and the answer says `delivery: "foreground"`): `bring_to_front`; `hotkey` `{keys:"cmd+w"\|[…]}` (one key alone = a key press; log out, force quit, lock and delete-file chords are refused); `type_text` `{text ≤ 2000, label?}`; `click` `{label, role?, index?}` (an accessibility element from a fresh snapshot; several matches answer 409 `ambiguous` with `options`); `invoke_menu` `{path:["File","New Window"]}` (no Apple menu, shut down, log out, empty trash, move to trash); `scroll` `{direction, amount?, by?}`. In terminal apps (Terminal, iTerm2, Warp, Ghostty, …) and Script Editor, `type_text` and plain keys (return, arrows, ctrl+c, paste) answer 403 `terminal_blocked`: terminal work goes to a T3 agent (`mac_task`) |
+| `GET /v1/mac/screenshot?max=1024&app=` | `{mime:"image/jpeg", base64, width, height, bytes}`: the screen (or the app's window), downscaled with `sips` to at most `max` px and 150 KB. Without Screen Recording it answers **409** `{"code":"screen_recording_required","fix":"Run on the Mac: <path>/cua-driver permissions grant", "error":{…}}` and does not try to capture |
+
+Errors look like `{"error":{"code","message","retryable"[,"fix"][,"suggestions"|"options"]}}`, for example 404
+`app_not_found` / `app_not_running` / `element_not_found`, 409 `accessibility_required` / `window_gone` / `ambiguous`,
+503 `driver_missing` / `driver_unavailable` / `mac_busy`, 504 `driver_timeout`.
+
+Screen vision needs one manual step on the Mac (it shows macOS consent dialogs, so only you can do it):
+`~/.hermes/tools/cua-driver-0.21.0-darwin-arm64/CuaDriver.app/Contents/MacOS/cua-driver permissions grant`,
+then allow CuaDriver under Screen & System Audio Recording. `/health` shows the exact command as
+`mac.screenRecordingFix` while it is missing.
+
 ## Privacy
 
 - The log has one line per request: method, route, status, duration, and an error code if there is one. It never
-  contains journal text, query strings, CLI output or the token.
+  contains journal text, window text, typed text, links, file names, query strings, CLI output or the token.
 - Error replies never repeat the CLI's own messages, because they could quote journal content.
 - The token file is re-read when it changes. To rotate it, delete the file, run `install.sh`, and connect the R1
   again.
@@ -82,8 +113,9 @@ private-LAN peers are accepted (10/8, 172.16/12, 192.168/16, 169.254/16, fc00::/
 python3 -m unittest discover -s companion/mac-bridge/tests
 ```
 
-The tests put a fake `heptabase` executable first on `PATH` (`tests/fake_heptabase.py`) and run the installer
-against a throwaway home with `SAMRABBIT_SKIP_LAUNCHCTL=1`.
+The tests put a fake `heptabase` executable first on `PATH` (`tests/fake_heptabase.py`), drive Mac control through a
+fake `cua-driver` / `open` / `lsappinfo` (`tests/fake_cua_driver.py`), and run the installer against a throwaway home
+with `SAMRABBIT_SKIP_LAUNCHCTL=1`.
 
 ## Troubleshooting
 

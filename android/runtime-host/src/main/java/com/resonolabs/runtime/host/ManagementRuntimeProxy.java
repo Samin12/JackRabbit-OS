@@ -56,6 +56,8 @@ final class ManagementRuntimeProxy {
             "/v1/management/t3",
             "/v1/management/t3/connect",
             "/v1/management/t3/disconnect",
+            "/v1/management/t3/settings",
+            "/v1/management/mac",
             "/v1/management/heptabase",
             "/v1/management/heptabase/connect/start",
             "/v1/management/heptabase/settings",
@@ -163,6 +165,9 @@ final class ManagementRuntimeProxy {
         if (path.equals("/v1/management/memory/reindex")) return 35_000;
         if (path.equals("/v1/management/t3/connect")) return 20_000;
         if (path.equals("/v1/management/t3") || path.equals("/v1/management/t3/disconnect")) return 8_000;
+        if (path.equals("/v1/management/t3/settings")) return 15_000;
+        // Mac card: the R1 probes the Mac bridge's /health (up to 15 s).
+        if (path.equals("/v1/management/mac")) return 25_000;
         if (path.startsWith("/v1/management/mail/accounts")) return 610_000;
         if (path.startsWith("/v1/management/calendar/accounts")) return 65_000;
         if (path.equals("/v1/management/openai/subscription/start")

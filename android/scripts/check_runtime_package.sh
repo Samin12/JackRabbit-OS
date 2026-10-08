@@ -25,6 +25,7 @@ for required in \
     'assets/management/background-agent.js' \
     'assets/management/t3.js' \
     'assets/management/heptabase.js' \
+    'assets/management/mac.js' \
     'assets/management/management.css' \
     'assets/design/tokens.css' \
     'assets/design/base.css'; do
