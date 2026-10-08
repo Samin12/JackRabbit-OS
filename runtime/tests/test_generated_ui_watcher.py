@@ -81,9 +81,12 @@ class ArtifactWatcherTest(unittest.TestCase):
         self.assertEqual(2, self.advance(5))
         items = {item.payload["artifactId"]: item for item in self.announcements.after(0)}
         self.assertEqual("ui.failed", items[failed].kind)
-        self.assertEqual("claude_busy", items[failed].payload["error"])
+        self.assertEqual({"code": "claude_busy", "message": "Making the visual took too long."},
+                         items[failed].payload["error"], "the app shows error.message")
+        self.assertEqual("Making the visual took too long.", items[failed].payload["message"])
         self.assertTrue(items[failed].text.startswith("I couldn't make that visual."))
-        self.assertEqual("artifact_not_found", items[lost].payload["error"])
+        self.assertEqual("artifact_not_found", items[lost].payload["error"]["code"])
+        self.assertEqual("No such visual.", items[lost].payload["error"]["message"])
 
     def test_unreachable_mac_keeps_trying_then_gives_up(self) -> None:
         artifact_id = self.start_artifact()
@@ -92,7 +95,7 @@ class ArtifactWatcherTest(unittest.TestCase):
         self.assertEqual([artifact_id], self.watcher.pending())
         self.assertEqual(1, self.advance(watcher_module.GIVE_UP_SECONDS + 5))
         (item,) = self.announcements.after(0)
-        self.assertEqual(("ui.failed", "timeout"), (item.kind, item.payload["error"]))
+        self.assertEqual(("ui.failed", "timeout"), (item.kind, item.payload["error"]["code"]))
 
     def test_pending_watches_survive_a_runtime_restart(self) -> None:
         artifact_id = self.start_artifact()

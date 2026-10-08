@@ -1221,7 +1221,9 @@ class GenUiService:
                                      retryable=error.retryable, failedAt=_now_iso())
         except (OSError, ValueError):
             return
-        self.sync.record(meta.get("conversationId"), self._event(meta, "ui.failed", error=error.code))
+        # {code, message}: the desktop and the R1 app show error.message (or a plain string) to the user.
+        self.sync.record(meta.get("conversationId"), self._event(meta, "ui.failed",
+                                                                 error={"code": error.code, "message": error.message}))
         _LOG.info("genui %s failed %s", artifact_id, error.code)
 
     def _event(self, meta: Dict[str, Any], kind: str, **extra: Any) -> Dict[str, Any]:

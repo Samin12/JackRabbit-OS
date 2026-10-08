@@ -6,7 +6,7 @@ artifact is ready (or failed), publishes one announcement through the existing o
 * ``ui.generated`` ``{artifactId, title, summary, conversationId, voiceSessionId, imageBlobId, width, height,
   mime, imagePath}``: the app fetches ``imagePath`` (device route, proxied JPEG), shows it in the transcript
   and, during a live session, hands it to the voice model as ``[Generated UI] <title>: <summary>``.
-* ``ui.failed`` ``{artifactId, conversationId, voiceSessionId, error, message}``.
+* ``ui.failed`` ``{artifactId, conversationId, voiceSessionId, error: {code, message}, message}``.
 
 The watch list survives a runtime restart: it is kept in ``provider_settings`` (no migration).
 """
@@ -179,7 +179,9 @@ class ArtifactWatcher:
         else:
             title = "Visual not made"
             message = " ".join(str(value.get("message") or "").split())[:200] or "The Mac could not make it."
-            payload = {**base, "error": str(value.get("error") or "failed")[:64], "message": message}
+            # {code, message}: the R1 app (and the desktop) show error.message, or a plain string, to the user.
+            payload = {**base, "error": {"code": str(value.get("error") or "failed")[:64], "message": message},
+                       "message": message}
             text = "I couldn't make that visual. " + message
         try:
             self._announcements.publish(kind, title, text, payload)

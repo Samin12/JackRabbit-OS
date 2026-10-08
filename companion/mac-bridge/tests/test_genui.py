@@ -310,7 +310,8 @@ class GenerateTest(GenUiTestBase):
         self.assertEqual(2, len(self.calls()))
         kinds = [event["type"] for _, event in self.sync.events]
         self.assertEqual(["ui.generating", "ui.failed"], kinds)
-        self.assertEqual("invalid_widget", self.sync.events[-1][1]["error"])
+        self.assertEqual({"code": "invalid_widget", "message": "Claude's visual came back broken twice."},
+                         self.sync.events[-1][1]["error"], "the desktop shows error.message")
 
     def test_script_errors_get_one_repair(self) -> None:
         self.modes("throws,ok")
