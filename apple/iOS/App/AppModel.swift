@@ -155,7 +155,7 @@ final class AppModel {
             await refresh()
             startRefreshing()
             await notifications.requestAuthorization()
-            await WatchLink.shared.provision()
+            await WatchLink.shared.provision(reissue: true)
             return true
         } catch let error as BridgeError {
             Haptics.error()

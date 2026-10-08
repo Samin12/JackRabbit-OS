@@ -7,6 +7,10 @@ import Synchronization
 /// bearer token. A request that cannot connect moves on to the next address; the address that
 /// answers becomes the first one for later requests (`onPreferredHostChange` lets the owner save it).
 /// HTTP errors are never retried on another address: they come from the bridge itself.
+///
+/// With a `relay` (the Apple Watch relays through the iPhone), a request that reached no address at
+/// all goes through the relay instead; one that may have reached the bridge (a POST that timed
+/// out) is never sent a second time.
 public final class BridgeClient: Sendable {
     public let hosts: [BridgeHost]
     private let token: String?
@@ -14,15 +18,18 @@ public final class BridgeClient: Sendable {
     private let streamSession: URLSession
     private let preferred: Mutex<Int>
     private let onPreferredHostChange: (@Sendable (BridgeHost) -> Void)?
+    private let relay: (any BridgeRelay)?
 
     /// - Parameters:
     ///   - hosts: the bridge addresses, best first.
     ///   - token: the mobile token (`nil` only for `pair` and `health`).
     ///   - timeout: the default per-request timeout in seconds.
-    public init(hosts: [BridgeHost], token: String?, timeout: TimeInterval = 12,
+    ///   - relay: another route to the bridge for when no address answers.
+    public init(hosts: [BridgeHost], token: String?, timeout: TimeInterval = 12, relay: (any BridgeRelay)? = nil,
                 onPreferredHostChange: (@Sendable (BridgeHost) -> Void)? = nil) {
         self.hosts = hosts
         self.token = token
+        self.relay = relay
         self.onPreferredHostChange = onPreferredHostChange
         preferred = Mutex(0)
         let configuration = URLSessionConfiguration.ephemeral
@@ -307,11 +314,54 @@ public final class BridgeClient: Sendable {
 
     /// Sends a request and returns the raw body of a 2xx answer.
     public func data(_ request: BridgeRequest) async throws -> Data {
-        let (body, response) = try await perform(request)
-        guard (200..<300).contains(response.statusCode) else {
-            throw BridgeError.from(status: response.statusCode, data: body)
+        let (status, body) = try await exchange(request)
+        guard (200..<300).contains(status) else {
+            throw BridgeError.from(status: status, data: body)
         }
         return body
+    }
+
+    /// The bridge's status and body for a request: directly, or through the relay when no address
+    /// could be reached (or the relay is preferred right now).
+    private func exchange(_ request: BridgeRequest) async throws -> (status: Int, body: Data) {
+        guard let relay, WatchRelay.Request(request).allowed else {
+            do {
+                let (body, response) = try await perform(request)
+                return (response.statusCode, body)
+            } catch let failure as NoRoute {
+                throw BridgeError.unreachable(failure.reason)
+            }
+        }
+        var relayDown = false
+        if relay.prefersRelay {
+            var answer: (status: Int, body: Data)?
+            do {
+                answer = try await relay.relay(request)
+            } catch BridgeError.unreachable {
+                relayDown = true // nothing was sent that way: try the bridge directly
+            }
+            if let answer { return try Self.relayed(answer) }
+        }
+        do {
+            let (body, response) = try await perform(request)
+            relay.noteDirectRoute(worked: true)
+            return (response.statusCode, body)
+        } catch let failure as NoRoute {
+            relay.noteDirectRoute(worked: false)
+            if relayDown { throw BridgeError.unreachable(failure.reason) }
+            return try Self.relayed(try await relay.relay(request))
+        } catch let error as BridgeError {
+            // It may have reached the bridge (a POST that timed out): never sent twice.
+            if case .unreachable = error { relay.noteDirectRoute(worked: false) }
+            throw error
+        }
+    }
+
+    /// A relayed answer; status 0 means the relay could not reach the bridge either (and is not
+    /// tried another way: the request may have got through).
+    private static func relayed(_ answer: (status: Int, body: Data)) throws -> (status: Int, body: Data) {
+        guard answer.status != 0 else { throw BridgeError.unreachable("relay") }
+        return answer
     }
 
     private func perform(_ request: BridgeRequest) async throws -> (Data, HTTPURLResponse) {
@@ -323,14 +373,24 @@ public final class BridgeClient: Sendable {
     }
 
     private func openStream(_ request: BridgeRequest) async throws -> (URLSession.AsyncBytes, HTTPURLResponse) {
-        try await withHosts(request) { urlRequest in
-            let (bytes, response) = try await self.streamSession.bytes(for: urlRequest)
-            guard let http = response as? HTTPURLResponse else { throw BridgeError.invalidResponse("not HTTP") }
-            return (bytes, http)
+        do {
+            return try await withHosts(request) { urlRequest in
+                let (bytes, response) = try await self.streamSession.bytes(for: urlRequest)
+                guard let http = response as? HTTPURLResponse else { throw BridgeError.invalidResponse("not HTTP") }
+                return (bytes, http)
+            }
+        } catch let failure as NoRoute {
+            throw BridgeError.unreachable(failure.reason)
         }
     }
 
-    /// Runs `body` against each address in turn until one connects.
+    /// No address could be connected to, so nothing reached the bridge (safe to send another way).
+    private struct NoRoute: Error {
+        var reason: String
+    }
+
+    /// Runs `body` against each address in turn until one connects. Throws `NoRoute` when none
+    /// did, and `BridgeError.unreachable` when the request may have reached the bridge.
     private func withHosts<T>(_ request: BridgeRequest,
                               _ body: (URLRequest) async throws -> T) async throws -> T {
         guard !hosts.isEmpty else { throw BridgeError.notPaired }
@@ -358,7 +418,7 @@ public final class BridgeClient: Sendable {
                 throw BridgeError.cancelled
             }
         }
-        throw BridgeError.unreachable(lastError)
+        throw NoRoute(reason: lastError)
     }
 
     private func makeRequest(_ request: BridgeRequest, host: BridgeHost) -> URLRequest? {

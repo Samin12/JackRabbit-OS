@@ -7,12 +7,16 @@ public final class BridgeAccount: Sendable {
 
     public let container: SharedContainer
     private let secrets: SecretStore
+    /// Another route to the bridge for this account's clients (the Apple Watch: through the iPhone).
+    public let relay: (any BridgeRelay)?
     private static let pairingFile = "pairing.json"
     private static let tokenAccount = "mobileToken"
 
-    public init(container: SharedContainer = .shared, secrets: SecretStore = KeychainStore.shared) {
+    public init(container: SharedContainer = .shared, secrets: SecretStore = KeychainStore.shared,
+                relay: (any BridgeRelay)? = nil) {
         self.container = container
         self.secrets = secrets
+        self.relay = relay
     }
 
     public var pairing: BridgePairing? { container.load(BridgePairing.self, from: Self.pairingFile) }
@@ -25,7 +29,7 @@ public final class BridgeAccount: Sendable {
     /// A client for the paired bridge, or `nil` when not paired.
     public func client(timeout: TimeInterval = 12) -> BridgeClient? {
         guard let pairing, let token, !pairing.hosts.isEmpty else { return nil }
-        return BridgeClient(hosts: pairing.hosts, token: token, timeout: timeout) { [weak self] host in
+        return BridgeClient(hosts: pairing.hosts, token: token, timeout: timeout, relay: relay) { [weak self] host in
             self?.promote(host)
         }
     }

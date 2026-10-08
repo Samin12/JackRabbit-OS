@@ -22,6 +22,12 @@ public struct WatchContext: Codable, Sendable, Equatable {
     public static let key = "samrabbit.watchContext"
     /// Sent instead when the phone unpaired (the watch should forget its token).
     public static let unpairedKey = "samrabbit.unpaired"
+    /// A `sendMessage` from the watch asking for its context now (on launch without a pairing).
+    /// The phone replies with `applicationContext` (or `unpairedKey`). With the value
+    /// `reissueValue` the phone first issues a new child token (the old one was rejected and the
+    /// person asked to reconnect).
+    public static let requestKey = "samrabbit.contextRequest"
+    public static let reissueValue = "reissue"
 
     public var applicationContext: [String: Any] {
         guard let data = try? BridgeJSON.encoder().encode(self) else { return [:] }
@@ -126,4 +132,18 @@ extension BridgeClient {
             }
         }
     }
+}
+
+/// Another route to the bridge, used by `BridgeClient` when no address can be connected to. The
+/// Apple Watch implements it with `WCSession.sendMessage` (the iPhone performs the request with
+/// its own token and answers with `WatchRelay.Response`).
+public protocol BridgeRelay: Sendable {
+    /// True when requests should go through the relay first (the direct route failed a moment ago).
+    var prefersRelay: Bool { get }
+    /// Called after each direct attempt: `true` when the bridge answered, `false` when it could not be reached.
+    func noteDirectRoute(worked: Bool)
+    /// Performs the request through the relay and returns the bridge's status and body (status 0:
+    /// the relay could not reach the bridge either). Throws `BridgeError.unreachable` only when the
+    /// relay itself is down and nothing was sent.
+    func relay(_ request: BridgeRequest) async throws -> (status: Int, body: Data)
 }

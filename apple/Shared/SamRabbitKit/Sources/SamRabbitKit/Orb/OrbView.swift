@@ -66,16 +66,20 @@ public struct OrbView: View {
     public var halo: Bool
     /// A fixed moment for still frames (the app icon uses 2.0).
     public var phase: Double
+    /// Frames per second while animated (the watch uses fewer).
+    public var frameRate: Double
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.displayScale) private var displayScale
     @State private var start = Date()
 
-    public init(mood: OrbMood = .idle, animated: Bool = true, halo: Bool = true, phase: Double = 7.3) {
+    public init(mood: OrbMood = .idle, animated: Bool = true, halo: Bool = true, phase: Double = 7.3,
+                frameRate: Double = 30) {
         self.mood = mood
         self.animated = animated
         self.halo = halo
         self.phase = phase
+        self.frameRate = frameRate
     }
 
     public var body: some View {
@@ -84,7 +88,7 @@ public struct OrbView: View {
             ZStack {
                 if halo { OrbHalo(mood: mood, radius: diameter / 2) }
                 if animated, !reduceMotion {
-                    TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
+                    TimelineView(.animation(minimumInterval: 1.0 / max(1, frameRate))) { context in
                         let t = phase + context.date.timeIntervalSince(start) * mood.speed
                         OrbDisc(mood: mood, time: t, diameter: diameter, scale: displayScale)
                     }
