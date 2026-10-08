@@ -307,22 +307,35 @@ class ConversationSyncRepository:
             _LOG.warning("conversation_sync.blobs_dropped", extra={"count": dropped})
         return dropped
 
-    def purge(self) -> None:
+    def purge(self) -> tuple[int, int]:
+        """Delete delivered/refused rows after ``RETENTION_SECONDS`` and still-unsent ones after
+        ``STALE_PENDING_SECONDS`` (the Mac was away for a month). Returns the unsent
+        ``(events, images)`` dropped; they are logged, never dropped silently."""
         now = self._clock()
         with self._database.connect() as connection:
             connection.execute(
                 "DELETE FROM conversation_sync_outbox WHERE (state = 'sent' AND sent_at < ?) "
-                "OR (state = 'failed' AND created_at < ?) OR (state = 'pending' AND created_at < ?)",
-                (now - RETENTION_SECONDS, now - RETENTION_SECONDS, now - STALE_PENDING_SECONDS),
+                "OR (state = 'failed' AND created_at < ?)",
+                (now - RETENTION_SECONDS, now - RETENTION_SECONDS),
             )
+            stale_events = connection.execute(
+                "DELETE FROM conversation_sync_outbox WHERE state = 'pending' AND created_at < ?",
+                (now - STALE_PENDING_SECONDS,),
+            ).rowcount
             connection.execute(
-                "DELETE FROM conversation_sync_blobs WHERE (state IN ('sent', 'failed') AND created_at < ?) "
-                "OR (state = 'pending' AND created_at < ?)",
-                (now - RETENTION_SECONDS, now - STALE_PENDING_SECONDS),
+                "DELETE FROM conversation_sync_blobs WHERE state IN ('sent', 'failed') AND created_at < ?",
+                (now - RETENTION_SECONDS,),
             )
+            stale_blobs = connection.execute(
+                "DELETE FROM conversation_sync_blobs WHERE state = 'pending' AND created_at < ?",
+                (now - STALE_PENDING_SECONDS,),
+            ).rowcount
             connection.execute("DELETE FROM conversation_sync_sessions WHERE created_at < ?",
                                (now - SESSION_RETENTION_SECONDS,))
             connection.commit()
+        if stale_events or stale_blobs:
+            _LOG.warning("conversation_sync.stale_dropped", extra={"count": stale_events, "images": stale_blobs})
+        return stale_events, stale_blobs
 
     def counts(self) -> dict[str, int]:
         with self._database.connect() as connection:

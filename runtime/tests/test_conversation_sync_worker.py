@@ -9,7 +9,8 @@ from conversation_sync_fakes import TINY_JPEG, SyncHarness
 
 from sam_runtime.domains.conversation_sync import BACKOFF_SECONDS
 from sam_runtime.domains.conversation_sync.events import blob_id_for
-from sam_runtime.domains.conversation_sync.outbox import RETENTION_SECONDS
+from sam_runtime.domains.conversation_sync import outbox as outbox_module
+from sam_runtime.domains.conversation_sync.outbox import RETENTION_SECONDS, STALE_PENDING_SECONDS
 
 CONV = "c_0123456789abcdef0123"
 SESSION = "ab" * 12
@@ -216,6 +217,17 @@ class ConversationSyncWorkerTest(unittest.TestCase):
         self.assertEqual(("failed", b""), (blob["state"], bytes(blob["data"])))
         self.service.ingest_blob(TINY_JPEG, "image/jpeg", CONV)
         self.assertEqual("pending", self.h.blob_rows()[0]["state"], "a dropped image is taken again when re-sent")
+
+    def test_events_still_unsent_after_a_month_are_dropped_with_a_warning(self) -> None:
+        self.service.ingest_blob(TINY_JPEG, "image/jpeg", CONV)
+        self.ingest(ev(1), ev(2))
+        self.h.clock.advance(STALE_PENDING_SECONDS - 60)
+        self.assertEqual((0, 0), self.service.repository.purge(), "a Mac away for weeks loses nothing")
+        self.h.clock.advance(120)
+        with self.assertLogs(outbox_module._LOG, "WARNING") as logs:  # noqa: SLF001
+            self.assertEqual((2, 1), self.service.repository.purge())
+        self.assertIn("conversation_sync.stale_dropped", logs.output[0])
+        self.assertEqual(([], []), (self.h.rows(), self.h.blob_rows()))
 
     def test_the_real_thread_delivers_without_inline_draining(self) -> None:
         self.service.start()
