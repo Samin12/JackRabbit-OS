@@ -43,6 +43,9 @@ if ! command -v cua-driver >/dev/null 2>&1 && [ ! -x /Applications/CuaDriver.app
     && ! ls "$HOME"/.hermes/tools/cua-driver-*/CuaDriver.app/Contents/MacOS/cua-driver >/dev/null 2>&1; then
   echo "install.sh: warning: cua-driver was not found; Mac control from the R1 stays off until it is installed." >&2
 fi
+if ! command -v claude >/dev/null 2>&1 && [ ! -x "$HOME/.local/bin/claude" ]; then
+  echo "install.sh: warning: the Claude Code CLI was not found; generated UIs stay off until it is installed." >&2
+fi
 
 # 1. Token (0600, never printed).
 umask 077
@@ -70,6 +73,9 @@ mkdir -p "$APP_DIR" "$(dirname "$LOG_FILE")" "$(dirname "$PLIST")"
 install -m 0644 "$SOURCE_DIR/samrabbit_bridge.py" "$APP_DIR/samrabbit_bridge.py"
 install -m 0644 "$SOURCE_DIR/samrabbit_mac.py" "$APP_DIR/samrabbit_mac.py"
 install -m 0644 "$SOURCE_DIR/samrabbit_sync.py" "$APP_DIR/samrabbit_sync.py"
+install -m 0644 "$SOURCE_DIR/samrabbit_genui.py" "$APP_DIR/samrabbit_genui.py"
+rm -rf "$APP_DIR/genui"; mkdir -p "$APP_DIR/genui"
+for asset in "$SOURCE_DIR"/genui/*; do install -m 0644 "$asset" "$APP_DIR/genui/"; done
 touch "$LOG_FILE"; chmod 600 "$LOG_FILE"
 if [ "$(stat -f %z "$LOG_FILE" 2>/dev/null || echo 0)" -gt 5242880 ]; then : > "$LOG_FILE"; fi
 
@@ -145,6 +151,9 @@ if mac.get("screenRecordingFix"):
 sync = health.get("sync") or {}
 print(f"conversation sync: {'on' if sync.get('available') else 'OFF'}"
       f"{'' if sync.get('desktopToken', True) else ' (desktop token missing)'}")
+ui = health.get("genui") or {}
+print(f"generated UIs: {'on' if ui.get('available') else 'OFF'} (Claude Code {'found' if ui.get('claude') else 'missing'}, "
+      f"renderer {'found' if ui.get('renderer') else 'missing'}, model {ui.get('model')})")
 EOF
 IP=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || echo "<this Mac's IP>")
 echo "Bridge URL: http://$IP:$PORT"

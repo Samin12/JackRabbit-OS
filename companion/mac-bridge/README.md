@@ -167,6 +167,49 @@ python3 -I companion/mac-bridge/samrabbit_bridge.py --port 3794 --token-file /tm
   --sync-dir /tmp/t/sync --desktop-token-file /tmp/t/desktop-token
 curl -s -H "X-SamRabbit-Desktop: $(cat /tmp/t/desktop-token)" http://127.0.0.1:3794/v1/sync/conversations
 ```
+## Generated UIs
+
+When you ask the R1's voice for a chart, a diagram, a dashboard or an explainer, it calls the `ui_generate` voice
+tool and the bridge makes the widget on this Mac (`samrabbit_genui.py`, assets in `genui/`):
+
+1. `claude -p` (the headless Claude Code CLI with your own login; default model `claude-sonnet-5-5`) writes one JSON
+   object `{title, summary, initialHeight, css, html, jsFunctions, jsExpressions}` following `genui/skill.md`, a
+   condensed version of OpenGenerativeUI's skills (MIT, see `genui/NOTICE.md`). The CLI runs with every tool
+   off (`--tools ""`), no MCP servers, no skills, plugins or hooks (`--safe-mode`), no session files, in an empty
+   temporary folder; the prompt goes in on stdin. Invalid answers (and JavaScript errors at render time) get one
+   repair round. The whole Claude phase is limited to 120 s.
+2. The widget is assembled like OpenGenerativeUI's `buildFinalFrameContent` (CSP with the four CDN origins for
+   scripts and connect, importmap, the design-system CSS mapped to the R1's dark palette, the widget css and html)
+   plus a small bridge script (`widget-resize`, `send-prompt`, `open-link`, `widget-ready` postMessages to the
+   host page, and a Chart.js helper). Its `sendPrompt` / `openLink` helpers post only during a real user gesture,
+   but generated code can post any message itself: the host must check the gesture and treat them as untrusted.
+3. agent-browser renders it in a sandboxed iframe at 480 px wide (2x), and `sips` makes the R1 preview JPEG
+   (at most 960 px wide and 150 KB).
+
+One request runs at a time (up to 8 wait in a queue); requests still running when the bridge stops are picked up
+again on start (if under 30 minutes old). Artifacts stay in `~/Library/Application Support/SamRabbit/artifacts/<id>/`
+(`meta.json`, `request.json`, `args.json`, `document.html`, `preview.png`, `preview.jpg`; private to you; kept by
+`uninstall.sh`). With the conversation-sync module installed, `ui.generating` / `ui.generated` / `ui.failed` events
+and the preview image land in the conversation's timeline.
+
+| Route | Result |
+|---|---|
+| `POST /v1/ui/generate` `{requestId, prompt ≤ 4000, data? ≤ 24000 chars (string or JSON), conversationId?, size?: "r1"\|"desktop"}` | `202 {artifactId, status:"generating"}` at once. Idempotent per `requestId` (same artifact; `200` with the current state once finished). 503 `genui_busy` when 8 are queued |
+| `GET /v1/ui/artifacts/<id>` | `{artifactId, status:"generating"\|"ready"\|"failed", title, summary, error?, errorMessage?, imageBlobId?, width?, height?, conversationId?, createdAt, readyAt?, generationMs?, renderMs?, totalMs?}` |
+| `GET /v1/ui/artifacts/<id>/image` | the preview JPEG (`image/jpeg`), 409 `image_not_ready` before it is ready |
+| `GET /v1/ui/artifacts/<id>/document` | the assembled HTML document for a sandboxed iframe (`sandbox="allow-scripts"`), served with a `sandbox` CSP; desktop app only |
+
+The R1 uses the bridge token from the local network for the first three routes. The desktop app reads the three GET
+routes from loopback with its own token (`~/.config/samrabbit/desktop-token`, mode 0600) in the `X-SamRabbit-Desktop`
+header or the `sr_desktop` cookie (and a loopback `Host`, no foreign `Origin`, like the sync module's desktop API);
+`/document` answers only the desktop app (403 `desktop_only` for the bearer token). Failures use stable codes: `generation_timeout`, `claude_busy`, `claude_signed_out`,
+`claude_missing`, `invalid_widget`, `renderer_missing`, `render_timeout`, `image_too_large`, `interrupted`.
+
+Settings: `--claude`, `--agent-browser`, `--artifacts-dir`, `--genui-model` (or `SAMRABBIT_CLAUDE`,
+`SAMRABBIT_AGENT_BROWSER`, `SAMRABBIT_ARTIFACTS_DIR`, `SAMRABBIT_GENUI_MODEL`). To switch the model without
+reinstalling, write `{"model": "claude-opus-5-5"}` to `~/.config/samrabbit/genui.json` (read on every
+generation). The CLI is found on `PATH`, then `~/.local/bin/claude`; agent-browser on `PATH`, then the newest
+`~/.hermes/tools/agent-browser-*`. `/health` reports `genui: {available, claude, renderer, model, queued, sync}`.
 
 ## Privacy
 
@@ -174,6 +217,8 @@ curl -s -H "X-SamRabbit-Desktop: $(cat /tmp/t/desktop-token)" http://127.0.0.1:3
   contains journal text, window text, typed text, links, file names, query strings, CLI output or the token. Sync
   routes are logged as templates (`/v1/sync/conversations/{id}/events`), so not even conversation ids or image hashes
   are written; conversation text and image bytes never are.
+  contains journal text, window text, typed text, links, file names, query strings, CLI output or the token.
+  Generated UIs log only the artifact id, the outcome and timings: never the prompt, the data or the widget.
 - Error replies never repeat the CLI's own messages, because they could quote journal content.
 - The token file is re-read when it changes. To rotate it, delete the file, run `install.sh`, and connect the R1
   again.
@@ -188,6 +233,9 @@ The tests put a fake `heptabase` executable first on `PATH` (`tests/fake_heptaba
 fake `cua-driver` / `open` / `lsappinfo` (`tests/fake_cua_driver.py`), and run the installer against a throwaway home
 with `SAMRABBIT_SKIP_LAUNCHCTL=1`. `tests/test_sync.py` covers the conversation store, dedupe, drafts, blobs, the auth
 matrix (R1 token vs desktop token, loopback vs a real LAN peer through this Mac's own address), SSE and screenshots.
+fake `cua-driver` / `open` / `lsappinfo` (`tests/fake_cua_driver.py`), generate UIs with a fake `claude`
+(`tests/fake_claude.py`) and a fake renderer (one test renders for real when agent-browser is installed), and run the
+installer against a throwaway home with `SAMRABBIT_SKIP_LAUNCHCTL=1`.
 
 ## Troubleshooting
 

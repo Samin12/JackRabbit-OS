@@ -34,6 +34,7 @@ from .announcement_routes import AnnouncementRoutes
 from .heptabase_routes import HeptabaseRoutes
 from .mac_routes import MacRoutes
 from .conversation_sync_routes import ConversationSyncRoutes
+from .generated_ui_routes import GeneratedUiRoutes
 
 
 HealthReader = Callable[[], dict[str, object]]
@@ -81,6 +82,7 @@ class RuntimeHttpServer:
         heptabase: HeptabaseRoutes | None = None,
         mac: MacRoutes | None = None,
         conversation_sync: ConversationSyncRoutes | None = None,
+        generated_ui: GeneratedUiRoutes | None = None,
     ) -> None:
         if host != "127.0.0.1":
             raise ValueError("private runtime API must bind to loopback")
@@ -112,6 +114,7 @@ class RuntimeHttpServer:
             heptabase=heptabase,
             mac=mac,
             conversation_sync=conversation_sync,
+            generated_ui=generated_ui,
         )
         handler = _handler(token=token, events=events, routes=routes)
         self._server = ThreadingHTTPServer((host, port), handler)

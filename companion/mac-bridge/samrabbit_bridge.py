@@ -13,7 +13,9 @@ its commands:
 
 and, for the R1's voice orchestrator, Mac control through the ``cua-driver`` CLI
 and LaunchServices (``samrabbit_mac.py``): ``GET /v1/mac/state``, ``POST /v1/mac/open``,
-``GET /v1/mac/read``, ``POST /v1/mac/act`` and ``GET /v1/mac/screenshot``.
+``GET /v1/mac/read``, ``POST /v1/mac/act`` and ``GET /v1/mac/screenshot``; and generated UIs (charts,
+diagrams, dashboards) made with the headless Claude Code CLI (``samrabbit_genui.py``): ``POST /v1/ui/generate``,
+``GET /v1/ui/artifacts/<id>`` (+ ``/image``, ``/document``).
 
 Conversation sync (``samrabbit_sync.py``): the R1 mirrors every conversation to ``/v1/sync/*``
 and the SamRabbit desktop app reads it back over loopback with its own token.
@@ -53,6 +55,7 @@ if _HERE not in sys.path:
     sys.path.append(_HERE)
 
 import samrabbit_mac as mac  # noqa: E402
+import samrabbit_genui as genui  # noqa: E402
 
 try:  # conversation sync must never keep the journal or Mac control from starting
     import samrabbit_sync as sync  # noqa: E402
@@ -393,10 +396,12 @@ class BridgeServer(ThreadingHTTPServer):
     def __init__(self, address: Tuple[str, int], *, token: TokenFile, cli: HeptabaseCli,
                  cli_timeout: float = CLI_TIMEOUT_SECONDS, allow_any_client: bool = False,
                  mac_control: Optional[mac.MacControl] = None, sync_dir: Optional[str] = None,
-                 desktop_token_file: Optional[str] = None) -> None:
+                 desktop_token_file: Optional[str] = None,
+                 genui_service: Optional[genui.GenUiService] = None) -> None:
         self.token = token
         self.cli = cli
         self.mac = mac_control or mac.MacControl(mac.CuaDriver())
+        self.genui = genui_service or genui.GenUiService.create()  # its worker starts in main() (or tests)
         self.cli_timeout = cli_timeout
         self.allow_any_client = allow_any_client
         self.append_lock = threading.Lock()
@@ -419,6 +424,7 @@ class BridgeServer(ThreadingHTTPServer):
         self.mac.close()
         if self.sync is not None:
             self.sync.close()
+        self.genui.stop()
 
     def health(self) -> Dict[str, Any]:
         with self._health_lock:
@@ -441,12 +447,18 @@ class BridgeServer(ThreadingHTTPServer):
             except Exception:  # Mac control must never break the journal's health check
                 _LOG.warning("mac capabilities failed")
                 capabilities = {"driver": {"available": False}, "features": {}}
+            try:
+                generated_ui: Dict[str, Any] = self.genui.capabilities()
+            except Exception:  # generative UI must never break the journal's health check
+                _LOG.warning("genui capabilities failed")
+                generated_ui = {"available": False}
             value: Dict[str, Any] = {
                 "ok": True, "service": SERVICE, "version": VERSION,
                 "cli": {"available": version is not None, "version": version},
                 "app": {"reachable": reachable, "detail": detail},
                 "mac": capabilities,
                 "sync": self.sync.health() if self.sync is not None else {"available": False},
+                "genui": generated_ui,
                 "checkedAt": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
             }
             self._health = (time.monotonic(), value)
@@ -525,10 +537,10 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return
         try:
             if not client_allowed(self.client_address[0]) and \
-                    (not self.server.allow_any_client or route.startswith(_MAC_PREFIX)):
+                    (not self.server.allow_any_client or route.startswith((_MAC_PREFIX, genui.ROUTE_PREFIX))):
                 # Mac control never leaves the local network, even with --allow-any-client.
                 raise BridgeError(403, "forbidden", "Only devices on the local network may use this bridge.")
-            if not self._authorized():
+            if not self._authorized() and not self.server.genui.desktop_authorized(self, method, route):
                 raise BridgeError(401, "unauthorized", "A valid bridge token is required.")
             status, payload = self._route(method, route)
         except BridgeError as error:
@@ -572,6 +584,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
             return 200, self.server.read(_valid_date(values[0]))
         if route.startswith(_MAC_PREFIX):
             return self._mac_route(method, route)
+        if route.startswith(genui.ROUTE_PREFIX):
+            return self.server.genui.route(self, method, route)
         raise BridgeError(404, "not_found", "Not found.")
 
     def _mac_route(self, method: str, route: str) -> Tuple[int, Dict[str, Any]]:
@@ -625,6 +639,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
         return value
 
     def _send(self, status: int, payload: Dict[str, Any]) -> None:
+        if isinstance(payload, genui.Raw):  # an image or an HTML document
+            payload.write(self, status)
+            return
         body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
         try:
             self.send_response(status)
@@ -642,7 +659,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
 _MAC_PREFIX = "/v1/mac/"
 _ROUTES = frozenset({"/health", "/v1/heptabase/journal/append", "/v1/heptabase/journal/read", "/v1/mac/state",
-                     "/v1/mac/open", "/v1/mac/read", "/v1/mac/act", "/v1/mac/screenshot"})
+                     "/v1/mac/open", "/v1/mac/read", "/v1/mac/act", "/v1/mac/screenshot",
+                     genui.GENERATE_ROUTE})
 
 
 def _one(query: Dict[str, List[str]], key: str) -> Optional[str]:
@@ -666,12 +684,18 @@ def make_server(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, *, token_fil
                 cli: Optional[str] = None, cli_timeout: float = CLI_TIMEOUT_SECONDS,
                 allow_any_client: bool = False, driver: Optional[str] = None,
                 mac_control: Optional[mac.MacControl] = None, sync_dir: Optional[str] = None,
-                desktop_token_file: Optional[str] = None) -> BridgeServer:
+                desktop_token_file: Optional[str] = None,
+                genui_service: Optional[genui.GenUiService] = None, artifacts_dir: Optional[str] = None,
+                claude: Optional[str] = None, agent_browser: Optional[str] = None,
+                genui_model: Optional[str] = None) -> BridgeServer:
     """Conversation sync runs only with a ``sync_dir`` (the command line passes the default one)."""
     return BridgeServer((host, port), token=TokenFile(token_file), cli=HeptabaseCli(cli),
                         cli_timeout=cli_timeout, allow_any_client=allow_any_client,
                         mac_control=mac_control or mac.MacControl(mac.CuaDriver(driver)),
-                        sync_dir=sync_dir, desktop_token_file=desktop_token_file)
+                        sync_dir=sync_dir, desktop_token_file=desktop_token_file,
+                        genui_service=genui_service or genui.GenUiService.create(
+                            artifacts_dir or genui.DEFAULT_ARTIFACTS_DIR, claude=claude,
+                            agent_browser=agent_browser, model=genui_model))
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -684,6 +708,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--cli-timeout", type=float, default=CLI_TIMEOUT_SECONDS)
     parser.add_argument("--cua-driver", default=os.environ.get("SAMRABBIT_CUA_DRIVER") or None,
                         help="path to the cua-driver CLI (default: found on PATH or in the usual install folders)")
+    parser.add_argument("--artifacts-dir", default=os.environ.get("SAMRABBIT_ARTIFACTS_DIR") or None,
+                        help="where generated UIs are kept (default: ~/Library/Application Support/SamRabbit/artifacts)")
+    parser.add_argument("--claude", default=os.environ.get("SAMRABBIT_CLAUDE") or None,
+                        help="path to the Claude Code CLI (default: found on PATH or in ~/.local/bin)")
+    parser.add_argument("--agent-browser", default=os.environ.get("SAMRABBIT_AGENT_BROWSER") or None,
+                        help="path to agent-browser for rendering generated UIs")
+    parser.add_argument("--genui-model", default=os.environ.get("SAMRABBIT_GENUI_MODEL") or None,
+                        help="model for generated UIs (default claude-sonnet-5-5; or set it in ~/.config/samrabbit/genui.json)")
     parser.add_argument("--allow-any-client", action="store_true",
                         help="accept peers outside loopback/private networks (not recommended)")
     parser.add_argument("--sync-dir", default=os.environ.get("SAMRABBIT_SYNC_DIR") or
@@ -697,7 +729,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         server = make_server(options.host, options.port, token_file=options.token_file, cli=options.cli,
                              cli_timeout=options.cli_timeout, allow_any_client=options.allow_any_client,
                              driver=options.cua_driver, sync_dir=options.sync_dir or None,
-                             desktop_token_file=options.desktop_token_file)
+                             desktop_token_file=options.desktop_token_file,
+                             artifacts_dir=options.artifacts_dir, claude=options.claude,
+                             agent_browser=options.agent_browser, genui_model=options.genui_model)
     except (OSError, ValueError) as error:
         _LOG.error("cannot start: %s", error)
         return 2
@@ -708,6 +742,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
+    server.genui.start()
     cli_path = server.cli.executable()
     _LOG.info("%s %s listening on %s:%d (cli %s, cua-driver %s, sync %s)", SERVICE, VERSION, options.host,
               server.server_address[1], cli_path or "missing", "found" if server.mac.driver.executable() else "missing",

@@ -1,0 +1,76 @@
+/* SamRabbit layer on top of the OpenGenerativeUI design system (ogui-*.css, MIT).
+   Generated widgets are always dark: the OGUI tokens are remapped to the R1's SamTheme palette
+   (background 9,11,16; ink 245,248,255; muted 140,152,172; orb blue 92,162,255; violet 124,108,255). */
+:root {
+  color-scheme: dark;
+  --color-background-primary: #121620;
+  --color-background-secondary: #181d2a;
+  --color-background-tertiary: #0d111a;
+  --color-background-info: rgba(92, 162, 255, 0.16);
+  --color-background-danger: rgba(255, 99, 99, 0.16);
+  --color-background-success: rgba(79, 209, 165, 0.16);
+  --color-background-warning: rgba(255, 196, 92, 0.16);
+
+  --color-text-primary: #f5f8ff;
+  --color-text-secondary: #9aa6bb;
+  --color-text-tertiary: #667289;
+  --color-text-info: #a0c7ff;
+  --color-text-danger: #ff8f8f;
+  --color-text-success: #6fe3b8;
+  --color-text-warning: #ffc45c;
+
+  --color-border-primary: rgba(190, 210, 255, 0.40);
+  --color-border-secondary: rgba(190, 210, 255, 0.24);
+  --color-border-tertiary: rgba(190, 210, 255, 0.13);
+  --color-border-info: #5ca2ff;
+  --color-border-danger: #ff6363;
+  --color-border-success: #4fd1a5;
+  --color-border-warning: #ffc45c;
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", system-ui, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "SF Mono", ui-monospace, Menlo, monospace;
+
+  --sr-page: #090b10;
+  --sr-blue: #5ca2ff;
+  --sr-violet: #7c6cff;
+  --sr-pink: #ff5ca8;
+  --sr-amber: #ffc45c;
+  --sr-mint: #4fd1a5;
+  --sr-coral: #ff8a5c;
+  --sr-red: #ff6363;
+  --sr-sky: #a0c7ff;
+  --sr-gray: #8c98ac;
+}
+
+html { background: transparent; }
+body {
+  font-size: 15px;
+  line-height: 1.5;
+  padding: 16px;
+  font-variant-numeric: tabular-nums;
+}
+#content { max-width: 1120px; margin: 0 auto; }
+@media (min-width: 720px) {
+  body { padding: 22px 28px; }
+}
+h1, h2, h3 { font-weight: 600; letter-spacing: -0.01em; line-height: 1.25; }
+h1 { font-size: 22px; }
+h2 { font-size: 19px; }
+h3 { font-size: 16px; }
+svg text { font-family: var(--font-sans); }
+/* SVG ramps on the R1 palette: cool ink text, and gray as a quiet glass container. */
+svg text.t, svg text.th { fill: var(--color-text-primary); }
+svg text.ts { fill: var(--color-text-secondary); }
+svg .c-gray > rect, svg .c-gray > circle, svg .c-gray > ellipse,
+svg rect.c-gray, svg circle.c-gray, svg ellipse.c-gray { fill: rgba(190, 210, 255, 0.05); stroke: rgba(190, 210, 255, 0.28); }
+svg .c-gray text.th, svg .c-gray text.t { fill: #dfe6f3; }
+svg .c-gray text.ts { fill: #9aa6bb; }
+svg .arr { stroke: #8c98ac; }
+.sr-diagram { display: block; width: 100%; max-width: 560px; height: auto; margin: 0 auto; }
+canvas { display: block; }
+
+/* Static render (the R1 preview image): no motion, so the screenshot shows the finished state. */
+.sr-static *, .sr-static *::before, .sr-static *::after {
+  animation: none !important;
+  transition: none !important;
+}

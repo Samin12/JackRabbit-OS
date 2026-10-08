@@ -55,6 +55,11 @@ class InstallTest(unittest.TestCase):
         self.assertNotIn(desktop_token, output)
         sync_dir = Path(self.home, "Library/Application Support/SamRabbit/sync")
         self.assertEqual(0o700, stat.S_IMODE(sync_dir.stat().st_mode))
+        self.assertTrue((script.parent / "samrabbit_genui.py").is_file(), "the generative-UI module is installed too")
+        for asset in ("skill.md", "bridge.js", "samrabbit.css", "ogui-theme.css", "ogui-svg-classes.css",
+                      "ogui-form-styles.css", "ogui-importmap.html", "LICENSE-OpenGenerativeUI"):
+            self.assertTrue((script.parent / "genui" / asset).is_file(), asset)
+
         self.assertEqual(["--host", "0.0.0.0", "--port", "3780", "--token-file", str(token_file),
                           "--sync-dir", str(sync_dir), "--desktop-token-file", str(desktop_token_file)],
                          plist["ProgramArguments"][3:])
