@@ -112,6 +112,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, WKNaviga
     private var loaded = false
     private var loading = false
     private var pendingConversation: String?
+    private var lastBlockedLog = Date.distantPast
     var onPageStatus: (([String: Any]) -> Void)?
 
     init() {
@@ -339,14 +340,22 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, WKNaviga
         if ["about", "data", "blob"].contains(scheme) || sameOrigin {
             return decisionHandler(.allow)
         }
-        if navigationAction.targetFrame?.isMainFrame == true || navigationAction.navigationType == .linkActivated {
+        if navigationAction.targetFrame?.isMainFrame == true {
+            // Only our own page runs in the main frame (generated UIs are sandboxed without
+            // allow-top-navigation): a link the user clicked or dropped there opens in the browser.
             openExternal(url)
             return decisionHandler(.cancel)
         }
-        // A generated UI navigating its own (sandboxed) frame elsewhere: send it to the browser instead.
-        if navigationAction.targetFrame != nil, scheme == "http" || scheme == "https" {
-            openExternal(url)
-            return decisionHandler(.cancel)
+        // A generated UI (model-written code in a sandboxed iframe) navigating its frame elsewhere or
+        // asking for a new window. Script can do that without any click (location = …, a.click()), so it
+        // never opens anything by itself: the page asks the user first, like its open-link messages.
+        if scheme == "http" || scheme == "https" {
+            webView.evaluateJavaScript("window.SamRabbitApp && window.SamRabbitApp.confirmOpen(\(jsString(url.absoluteString)))")
+        }
+        let now = Date()
+        if now.timeIntervalSince(lastBlockedLog) > 60 {
+            lastBlockedLog = now
+            Log.write("blocked a navigation inside a generated UI (the page asks before opening links)")
         }
         decisionHandler(.cancel)
     }
@@ -402,7 +411,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, WKNaviga
 
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
                  for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-        if let url = navigationAction.request.url { openExternal(url) }
+        // Only reached for navigations the policy above allowed (same origin, about:, data:, blob:):
+        // nothing to open outside, and no second web view.
         return nil
     }
 

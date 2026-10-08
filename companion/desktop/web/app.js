@@ -757,6 +757,23 @@ document.addEventListener('error', (event) => {
 // ---------------------------------------------------------------------------- generated UI messages
 
 let lastLinkOpen = 0;
+const lastAsked = { href: '', at: 0 };
+
+/** A generated UI wants a link opened without a click we can vouch for: the user decides. */
+function askToOpen(url) {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return;
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return;
+  const now = Date.now();
+  if (lastAsked.href === parsed.href && now - lastAsked.at < 6000) return; // a widget retrying in a loop
+  lastAsked.href = parsed.href;
+  lastAsked.at = now;
+  toast(`This UI wants to open ${parsed.host}`, { action: { label: 'Open', run: () => openExternal(parsed.href) }, timeout: 6000 });
+}
 
 window.addEventListener('message', (event) => {
   const data = event.data;
@@ -783,19 +800,14 @@ window.addEventListener('message', (event) => {
     if (wasNear) stickToBottom();
   } else if (data.type === 'open-link' && typeof data.url === 'string') {
     // Only a click inside the generated UI (it then has focus) opens a link directly, at most once a
-    // second; anything else (e.g. a script on load) has to be confirmed.
+    // second, and only while this window still has the focus: once a link opened, the browser has it,
+    // so a widget cannot keep opening tabs on a timer. Anything else has to be confirmed.
     const now = Date.now();
-    if (document.activeElement === frameEl && now - lastLinkOpen > 1000) {
+    if (document.hasFocus() && document.activeElement === frameEl && now - lastLinkOpen > 1000) {
       lastLinkOpen = now;
       openExternal(data.url);
     } else {
-      let host = '';
-      try {
-        host = new URL(data.url).host;
-      } catch {
-        return;
-      }
-      toast(`This UI wants to open ${host}`, { action: { label: 'Open', run: () => openExternal(data.url) }, timeout: 6000 });
+      askToOpen(data.url);
     }
   } else if (data.type === 'send-prompt' && typeof data.text === 'string') {
     toast(`Ask your R1: “${clip(data.text, 90)}”`, { timeout: 5000 });
@@ -910,6 +922,10 @@ window.SamRabbitApp = {
   },
   summary() {
     return { conversations: store.byId.size, selected: Boolean(state.selectedId), stream: state.streamState, list: state.listStatus };
+  },
+  /** The native shell blocked a generated UI's own navigation to `url`; offer it instead. */
+  confirmOpen(url) {
+    if (typeof url === 'string') askToOpen(url);
   },
 };
 
