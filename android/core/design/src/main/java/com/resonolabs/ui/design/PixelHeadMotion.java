@@ -34,6 +34,13 @@ final class PixelHeadMotion {
     static final long MOUTH_PAUSE_SPREAD_MS = 200L;
     static final int PHRASE_MIN_SYLLABLES = 5;
     static final int PHRASE_SYLLABLE_SPREAD = 7;
+    /** Float: one gentle bob every 3.2 s when calm, every 2.6 s while listening or speaking. */
+    static final float BOB_IDLE_PERIOD_S = 3.2f;
+    static final float BOB_ACTIVE_PERIOD_S = 2.6f;
+    /** Share of the caller's bob amplitude the head uses: 5 px on the Voice page = 3.5 px calm, 4 px lit. */
+    static final float BOB_IDLE_SCALE = 0.7f;
+    static final float BOB_ACTIVE_SCALE = 0.8f;
+    private static final float TWO_PI = (float) (2.0 * Math.PI);
 
     private PixelHeadMotion() {}
 
@@ -111,6 +118,24 @@ final class PixelHeadMotion {
     /** True while a blink that starts at {@code blinkAt} is showing at {@code now}. */
     static boolean blinking(long now, long blinkAt) {
         return now >= blinkAt && now < blinkAt + BLINK_MS;
+    }
+
+    /** Bob phase (radians, kept in [0, 2 pi)) after {@code elapsedMs}; {@code lit} 0..1 speeds it up. */
+    static float advanceBob(float phase, long elapsedMs, float lit) {
+        long step = Math.max(0L, Math.min(MAX_STEP_MS, elapsedMs));
+        float l = Math.max(0f, Math.min(1f, lit));
+        float period = BOB_IDLE_PERIOD_S + (BOB_ACTIVE_PERIOD_S - BOB_IDLE_PERIOD_S) * l;
+        float next = (phase + step / 1000f * TWO_PI / period) % TWO_PI;
+        return next < 0f ? next + TWO_PI : next;
+    }
+
+    /**
+     * Vertical float offset for a caller's bob {@code amplitude} (the FluidOrb bob it replaces):
+     * a sine, so it eases in and out at both ends, a little larger while lit.
+     */
+    static float bobOffset(float phase, float amplitude, float lit) {
+        float l = Math.max(0f, Math.min(1f, lit));
+        return (float) Math.sin(phase) * amplitude * (BOB_IDLE_SCALE + (BOB_ACTIVE_SCALE - BOB_IDLE_SCALE) * l);
     }
 
     /**

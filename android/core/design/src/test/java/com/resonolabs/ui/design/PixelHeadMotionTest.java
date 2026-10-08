@@ -143,6 +143,32 @@ public final class PixelHeadMotionTest {
         assertFalse(PixelHeadMotion.blinking(1000L + PixelHeadMotion.BLINK_MS, 1000L));
     }
 
+    @Test public void bobIsASlowEasedFloatThatQuickensWhenLit() {
+        // idle: one full bob in 3.2 s; lit: 2.6 s
+        float phase = 0f;
+        for (int i = 0; i < 100; i++) phase = PixelHeadMotion.advanceBob(phase, 16L, 0f);
+        assertEquals(2.0 * Math.PI * 1.6 / 3.2, phase, 1e-3);
+        assertEquals(2.0 * Math.PI * 0.1 / 2.6, PixelHeadMotion.advanceBob(0f, 100L, 1f), 1e-4);
+        // long pauses are capped like the sway, negative steps ignored, phase wraps
+        assertEquals(PixelHeadMotion.advanceBob(0f, PixelHeadMotion.MAX_STEP_MS, 0f),
+                PixelHeadMotion.advanceBob(0f, 60_000L, 0f), 0f);
+        assertEquals(1f, PixelHeadMotion.advanceBob(1f, -50L, 0f), 0f);
+        for (int i = 0; i < 2000; i++) {
+            phase = PixelHeadMotion.advanceBob(phase, 33L, i % 3 == 0 ? 1f : 0f);
+            assertTrue(phase >= 0f && phase < 2.0 * Math.PI);
+        }
+        // a Voice page caller passes 5 px: about +-3.5 px calm, +-4 px lit; 0 at rest
+        assertEquals(0f, PixelHeadMotion.bobOffset(0f, 5f, 0f), 0f);
+        assertEquals(3.5f, PixelHeadMotion.bobOffset((float) (Math.PI / 2), 5f, 0f), 1e-4);
+        assertEquals(-4f, PixelHeadMotion.bobOffset((float) (-Math.PI / 2), 5f, 1f), 1e-4);
+        assertEquals(0f, PixelHeadMotion.bobOffset(1f, 0f, 1f), 0f);
+        // eased: the step per frame is largest through the middle and tiny at the ends
+        float middle = Math.abs(PixelHeadMotion.bobOffset(0.05f, 5f, 0f) - PixelHeadMotion.bobOffset(0f, 5f, 0f));
+        float end = Math.abs(PixelHeadMotion.bobOffset((float) (Math.PI / 2), 5f, 0f)
+                - PixelHeadMotion.bobOffset((float) (Math.PI / 2) - 0.05f, 5f, 0f));
+        assertTrue(end < middle / 10f);
+    }
+
     @Test public void mouthStaysShutUnlessSpeaking() {
         PixelHeadMotion.Mouth mouth = new PixelHeadMotion.Mouth();
         for (long t = 1000L; t < 5000L; t += 16L) assertFalse(mouth.update(false, t));

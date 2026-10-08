@@ -189,8 +189,13 @@ public final class FluidOrb {
         }
     }
 
-    /** Gentle vertical bob so the orb reads as floating. */
+    /**
+     * Gentle vertical bob so the orb reads as floating. A Pixel head hero floats on its own
+     * curve instead (about 0.7 x {@code amplitude}, one eased bob every 3.2 s; see
+     * {@link PixelHead#bob}); callers add this to the centre they draw at, so nothing bobs twice.
+     */
     public float bob(float amplitude) {
+        if (head != null && OrbStyleSetting.current() == OrbStyle.PIXEL_HEAD) return head.bob(amplitude);
         return (float) Math.sin(phase * 0.9f) * amplitude;
     }
 

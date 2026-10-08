@@ -12,8 +12,8 @@ import android.graphics.Shader;
 
 /**
  * The voxel "Pixel head" orb style: a monochrome voxel bust with headphones, held in a 3/4 view
- * that sways a little (yaw -44 to -20 degrees, see {@link PixelHeadMotion}). Drawn from
- * pre-rendered poses (see {@link PixelHeadAtlas}); while listening or speaking its eyes and
+ * that sways a little (yaw -44 to -20 degrees, see {@link PixelHeadMotion}) and floats. Drawn
+ * from pre-rendered poses (see {@link PixelHeadAtlas}); while listening or speaking its eyes and
  * earcups light up and a faint white ring glows behind it, while speaking ({@link #setSpeaking})
  * its mouth moves, and when idle it blinks every 4-7 s. One instance per orb (it keeps the
  * animation clock); main thread only. Drawing allocates nothing.
@@ -30,6 +30,7 @@ public final class PixelHead {
     private final Paint ringPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final PixelHeadMotion.Mouth mouth = new PixelHeadMotion.Mouth();
     private boolean speaking;
+    private float bobPhase;
     private float loop;
     private float lit;
     private long last;
@@ -60,16 +61,26 @@ public final class PixelHead {
     }
 
     /**
+     * The head's float offset for a caller's bob {@code amplitude} (what FluidOrb.bob would
+     * add): about 0.7 x amplitude, one slow eased bob every 3.2 s, a little larger and quicker
+     * while lit. Advanced by {@link #draw}, so it rests at 0 until the head animates.
+     */
+    public float bob(float amplitude) {
+        return PixelHeadMotion.bobOffset(bobPhase, amplitude, lit);
+    }
+
+    /**
      * Draws the animated head centred on ({@code cx}, {@code cy}), about 2.2 x {@code radius}
      * tall. {@code energy} 0..1 lights the eyes and earcups (from about 0.4) and {@code speed}
-     * sets the sway rate, as for FluidOrb. Returns false (nothing drawn) when the art is
-     * unavailable.
+     * sets the sway rate, as for FluidOrb. The caller adds the float ({@link #bob}). Returns
+     * false (nothing drawn) when the art is unavailable.
      */
     public boolean draw(Canvas canvas, float cx, float cy, float radius, float energy, float speed, long nowMs) {
         long elapsed = last == 0L ? 0L : nowMs - last;
         last = nowMs;
         loop = PixelHeadMotion.advance(loop, elapsed, PixelHeadMotion.framesPerSecond(speed));
         lit = PixelHeadMotion.ease(lit, PixelHeadMotion.litFor(energy), elapsed);
+        bobPhase = PixelHeadMotion.advanceBob(bobPhase, elapsed, lit);
         boolean mouthOpen = mouth.update(speaking, nowMs);
         boolean blink = false;
         if (blinkAt == 0L) blinkAt = nowMs + PixelHeadMotion.blinkGapMs(blinks);
