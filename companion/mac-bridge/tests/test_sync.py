@@ -28,6 +28,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
 import samrabbit_bridge as bridge  # noqa: E402
+import samrabbit_mac as mac  # noqa: E402
 import samrabbit_sync as sync  # noqa: E402
 
 TOKEN = "test-token-" + "s" * 32
@@ -495,6 +496,19 @@ class SyncHttpTest(unittest.TestCase):
         status, _headers, data = self.request("GET", "/v1/sync/blobs/" + digest, bearer=None, desktop=DESKTOP)
         self.assertEqual((200, JPEG), (status, data))
 
+    def test_a_locked_mac_files_no_screenshot_in_the_conversation(self) -> None:
+        self.post_events([event(1, text="what is on my screen")])
+        self.control.locked = True
+        status, value = self.call("GET", f"/v1/mac/screenshot?max=1024&conversation={CONV}")
+        self.assertEqual((409, "screen_locked"), (status, value["error"]["code"]))
+        self.assertNotIn("blobId", value)
+        self.assertNotIn("imageEventId", value)
+        self.assertEqual(0, self.server.sync.store.counts()["blobs"], "no black picture is kept")
+        status, value = self.desktop_get(f"/v1/sync/conversations/{CONV}/events")
+        self.assertEqual(200, status, value)
+        self.assertEqual(["message.user"], [item["type"] for item in value["events"]],
+                         "and no image event reaches the desktop app")
+
     # ------------------------------------------------------------------ privacy
 
     def test_logs_never_contain_conversation_text_ids_or_tokens(self) -> None:
@@ -557,7 +571,9 @@ def _lan_address() -> Optional[str]:
 
 
 class FakeControl:
-    """Duck-typed MacControl: a fixed screenshot."""
+    """Duck-typed MacControl: a fixed screenshot (or the locked-screen refusal while ``locked``)."""
+
+    locked = False
 
     class _Driver:
         @staticmethod
@@ -570,6 +586,9 @@ class FakeControl:
         return {"driver": {"available": False}, "features": {"screenshot": True}}
 
     def screenshot(self, app: Optional[str], max_side: Optional[int]) -> Dict[str, Any]:
+        if self.locked:
+            raise mac.MacError(409, "screen_locked", mac.SCREEN_LOCKED_MESSAGE, retryable=True,
+                               details={"screenLocked": True})
         return {"mime": "image/jpeg", "base64": base64.b64encode(JPEG).decode(), "width": 1024, "height": 640,
                 "bytes": len(JPEG)}
 

@@ -15,6 +15,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest import mock
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -27,6 +28,22 @@ import samrabbit_mac as mac  # noqa: E402
 TOKEN = "test-token-" + "m" * 32
 SECRET_TEXT = "my private window sentence 9182"
 CHROME, HEPTA, FINDER = 101, 202, 303
+UID = 501
+
+
+def _console_user(uid: int = UID, *, locked: object = None, on_console: bool = True) -> dict:
+    """One ``IOConsoleUsers`` entry as macOS writes it (``CGSSessionScreenIsLocked`` only while locked)."""
+    entry = {"kCGSSessionUserIDKey": uid, "kCGSSessionUserNameKey": f"user{uid}", "kCGSSessionOnConsoleKey": on_console,
+             "kCGSessionLoginDoneKey": True, "kCGSSessionIDKey": 257, "CGSSessionUniqueSessionUUID": "80B3D5FF"}
+    if locked is not None:
+        entry["CGSSessionScreenIsLocked"] = locked
+        entry["CGSSessionScreenLockedTime"] = 1791434582
+    return entry
+
+
+def _ioreg_root(*users: dict, console_locked: bool = False) -> dict:
+    return {"IOConsoleLocked": console_locked, "IOConsoleUsers": list(users), "IOObjectClass": "IORegistryEntry",
+            "IORegistryEntryName": "Root", "IOKitDiagnostics": {"Classes": {"IOService": 1}}}
 
 
 def _window(window_id: int, pid: int, app: str, title: str, z: int, **extra: object) -> dict:
@@ -97,6 +114,7 @@ def base_state() -> dict:
             "com.apple.calculator": {"pid": 505, "windows": []},
             "com.google.Chrome": {"pid": CHROME, "windows": [_window(11, CHROME, "Google Chrome", "Example Domain", 20)]},
         },
+        "ioreg": _ioreg_root(_console_user()),
     }
 
 
@@ -122,6 +140,7 @@ class MacControlTest(unittest.TestCase):
         self.driver = self._wrapper("cua-driver", "driver")
         opener = self._wrapper("open", "open")
         lsappinfo = self._wrapper("lsappinfo", "lsappinfo")
+        self.ioreg = self._wrapper("ioreg", "ioreg")
         self.write_state(base_state())
         self.old_env = os.environ.get("FAKE_CUA_DIR")
         os.environ["FAKE_CUA_DIR"] = str(self.state_dir)
@@ -135,8 +154,8 @@ class MacControlTest(unittest.TestCase):
         bridge._LOG.setLevel(logging.INFO)  # noqa: SLF001
         self.addCleanup(bridge._LOG.removeHandler, handler)  # noqa: SLF001
         self.control = mac.MacControl(mac.CuaDriver(str(self.driver), timeout=5.0), open_command=str(opener),
-                                      lsappinfo=str(lsappinfo), home=str(self.home),
-                                      computer_name=lambda: "Test Mac Studio")
+                                      lsappinfo=str(lsappinfo), ioreg=str(self.ioreg), uid=UID,
+                                      home=str(self.home), computer_name=lambda: "Test Mac Studio")
         self.server = bridge.make_server("127.0.0.1", 0, token_file=str(token_file), cli_timeout=2.0,
                                          cli=str(self.bin / "no-heptabase"), mac_control=self.control)
         self.thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
@@ -255,6 +274,7 @@ class MacControlTest(unittest.TestCase):
         self.assertEqual(["Example Domain", "Inbox (3)"], chrome["tabs"], "tab-strip suffixes are trimmed")
         self.assertEqual("example.com/path?…", chrome["activeUrl"], "queries and fragments are not repeated")
         self.assertFalse(state["screenVision"])
+        self.assertIs(False, state["screenLocked"])
         self.assertEqual("Test Mac Studio", state["computer"])
 
     def test_front_app_falls_back_to_the_top_window_when_an_agent_app_is_in_front(self) -> None:
@@ -498,6 +518,64 @@ class MacControlTest(unittest.TestCase):
         self.assertEqual(value["fix"], value["error"]["fix"])
         self.assertNotIn("get_desktop_state", self.tools(), "no capture is attempted (it could raise a prompt)")
 
+    def test_screenshot_of_a_locked_mac_is_a_clean_409_without_a_capture(self) -> None:
+        self.update_state(permissions={"accessibility": True, "screen_recording": True},
+                          ioreg=_ioreg_root(_console_user(locked=True), console_locked=True))
+        for path in ("/v1/mac/screenshot?max=1024", "/v1/mac/screenshot?app=Heptabase"):
+            with self.subTest(path=path):
+                status, value = self.call("GET", path)
+                self.assertEqual(409, status, value)
+                self.assertEqual("screen_locked", value["error"]["code"])
+                self.assertEqual(mac.SCREEN_LOCKED_MESSAGE, value["error"]["message"])
+                self.assertIs(True, value["error"]["screenLocked"])
+                self.assertTrue(value["error"]["retryable"])
+                self.assertNotIn("base64", json.dumps(value))
+        self.assertEqual([], self.tools(), "nothing is captured (or even asked of cua-driver) while locked")
+        self.assertEqual([["-n", "Root", "-d1", "-a"]] * 2, [entry["argv"] for entry in self.calls("ioreg")])
+        self.assertEqual([], list(Path(self.control._scratch).iterdir()))  # noqa: SLF001
+        self.assertIn("GET /v1/mac/screenshot 409", self.log.getvalue())
+        self.assertIn("screen_locked", self.log.getvalue())
+        # Another user's desktop in front (fast user switching), or the login window: also no capture.
+        for root in (_ioreg_root(_console_user(UID, on_console=False), _console_user(502)),
+                     _ioreg_root(_console_user(UID, on_console=False))):
+            self.update_state(ioreg=root)
+            self.assertEqual("screen_locked", self.call("GET", "/v1/mac/screenshot")[1]["error"]["code"])
+        self.assertEqual([], self.tools())
+
+    def test_state_and_health_report_the_screen_lock(self) -> None:
+        self.update_state(ioreg=_ioreg_root(_console_user(locked=True), console_locked=True))
+        status, state = self.call("GET", "/v1/mac/state")
+        self.assertEqual(200, status, state)
+        self.assertIs(True, state["screenLocked"])
+        self.assertEqual({"app": "Google Chrome", "window": "Example Domain"}, state["front"],
+                         "the rest of the state still comes from accessibility")
+        status, health = self.call("GET", "/health")
+        self.assertEqual(200, status)
+        self.assertIs(True, health["mac"]["screenLocked"])
+        self.update_state(ioreg_rc=1)
+        self.assertIsNone(self.call("GET", "/v1/mac/state")[1]["screenLocked"], "unknown is reported as null")
+
+    def test_a_failed_lock_check_is_unknown_and_never_blocks_a_screenshot(self) -> None:
+        locked = _ioreg_root(_console_user(locked=True))
+        cases = (("exit status", {"ioreg": locked, "ioreg_rc": 1}),
+                 ("not a plist", {"ioreg_raw": "IOConsoleUsers = locked"}),
+                 ("empty output", {"ioreg_raw": ""}),
+                 ("no console data", {"ioreg": {"IORegistryEntryName": "Root"}}))
+        for name, changes in cases:
+            with self.subTest(name):
+                self.update_state(ioreg=_ioreg_root(_console_user()), ioreg_rc=0, ioreg_raw=None)
+                self.update_state(**changes)
+                self.assertIsNone(self.control.screen_locked())
+                status, value = self.call("GET", "/v1/mac/screenshot")
+                self.assertEqual("screen_recording_required", value["error"]["code"],
+                                 "the screenshot went on to its usual checks")
+        self.update_state(ioreg=locked, ioreg_rc=0, ioreg_raw=None, slow={"ioreg": 2})
+        with mock.patch.object(mac, "LOCK_CHECK_TIMEOUT_SECONDS", 0.3):
+            self.assertIsNone(self.control.screen_locked(), "a hung ioreg is unknown")
+        self.control._ioreg = str(self.bin / "no-ioreg")  # noqa: SLF001
+        self.assertIsNone(self.control.screen_locked(), "a missing ioreg is unknown")
+        self.assertEqual("screen_recording_required", self.call("GET", "/v1/mac/screenshot")[1]["error"]["code"])
+
     @unittest.skipUnless(os.path.exists("/usr/bin/sips"), "needs macOS sips")
     def test_screenshot_is_a_small_downscaled_jpeg(self) -> None:
         self.update_state(permissions={"accessibility": True, "screen_recording": True})
@@ -551,6 +629,40 @@ class MacControlTest(unittest.TestCase):
 
 
 class PureFunctionTest(unittest.TestCase):
+    def test_screen_lock_from_the_ioreg_root(self) -> None:
+        cases = (
+            ("locked", _ioreg_root(_console_user(locked=True), console_locked=True), True),
+            ("unlocked: the key is left out", _ioreg_root(_console_user()), False),
+            ("unlocked: the key is false", _ioreg_root(_console_user(locked=False)), False),
+            ("login window: nobody on the console", _ioreg_root(_console_user(on_console=False)), True),
+            ("no console users, console locked", _ioreg_root(console_locked=True), True),
+            ("no console users at all", _ioreg_root(), None),
+            ("sessions without the on-console key",
+             _ioreg_root({key: value for key, value in _console_user().items() if key != "kCGSSessionOnConsoleKey"}), None),
+            ("another user is on the console", _ioreg_root(_console_user(on_console=False), _console_user(502)), True),
+            ("this user unlocked, another locked in the background",
+             _ioreg_root(_console_user(502, locked=True, on_console=False), _console_user()), False),
+            ("no users list, console locked", {"IOConsoleLocked": True}, True),
+            ("no users list", {"IOConsoleLocked": False}, None),
+            ("an archive list", [_ioreg_root(_console_user(locked=True))], True),
+            ("not a dict", "Root", None),
+            ("nothing", None, None),
+        )
+        for name, root, expected in cases:
+            with self.subTest(name):
+                self.assertIs(expected, mac.screen_locked_from(root, UID))
+        # Without user ids (or a uid) the console session decides.
+        anonymous = {key: value for key, value in _console_user(locked=True).items() if key != "kCGSSessionUserIDKey"}
+        self.assertIs(True, mac.screen_locked_from(_ioreg_root(anonymous), UID))
+        self.assertIs(False, mac.screen_locked_from(_ioreg_root(_console_user(502)), None))
+
+    def test_screen_lock_parses_a_real_ioreg_archive(self) -> None:
+        import plistlib
+        for locked in (True, False):
+            with self.subTest(locked=locked):
+                raw = plistlib.dumps(_ioreg_root(_console_user(locked=True if locked else None), console_locked=locked))
+                self.assertIs(locked, mac.screen_locked_from(plistlib.loads(raw), UID))
+
     def test_key_parsing(self) -> None:
         self.assertEqual(["cmd", "shift", "t"], mac._keys("Shift+Command+T"))  # noqa: SLF001
         self.assertEqual(["return"], mac._keys(["enter"]))  # noqa: SLF001

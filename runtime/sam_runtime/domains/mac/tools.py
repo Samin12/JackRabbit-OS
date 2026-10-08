@@ -4,7 +4,9 @@ screenshots the voice model can look at, and multi-step work handed to a T3 agen
 Visible only while the Mac bridge is configured (``mac_task`` also needs T3 Code). Outputs are
 compact JSON text sized for speech; ``mac_look`` additionally returns the screenshot as
 ``structuredContent.image`` (``{"mime", "base64"}``), which the R1 shows to the Realtime model as
-an image and strips from the text it sends back.
+an image and strips from the text it sends back. While the Mac's screen is locked the bridge takes
+no screenshot (it would be all black): ``mac_look`` then answers ``screen_locked`` as text only, so
+there is no image for the model, the chat or conversation sync.
 """
 
 from __future__ import annotations
@@ -36,6 +38,9 @@ DEFAULT_READ_CHARS = 4000
 SCREENSHOT_SIDE = 1024
 _ACTIONS = ["bring_to_front", "hotkey", "type_text", "click", "invoke_menu", "scroll"]
 _APP = {"type": "string", "description": "App name as the user said it (e.g. Chrome, Heptabase). Omit for the app in front."}
+SCREEN_LOCKED_NOTE = ("The Mac's screen is locked, so no screenshot was taken and there is no image. Tell the user "
+                      "briefly that their Mac's screen is locked, so you can't see it, and to unlock it and ask again. "
+                      "Do not describe the screen.")
 
 MAC_TOOL_SPECS: tuple[tuple[str, str, str, dict[str, object]], ...] = (
     (
@@ -113,7 +118,8 @@ MAC_TOOL_SPECS: tuple[tuple[str, str, str, dict[str, object]], ...] = (
         "mac_look",
         "Look at the Mac's screen (or one app's window): the screenshot is shown to you as an image. Use it when "
         "seeing the layout or a picture matters; for text, mac_read is faster. If screen vision is off on the Mac, "
-        "tell the user once how to turn it on, then use mac_read.",
+        "tell the user once how to turn it on, then use mac_read. If the Mac's screen is locked, there is no "
+        "picture: tell the user to unlock it.",
         "read",
         {"type": "object", "properties": {"app": _APP}, "required": [], "additionalProperties": False},
     ),
@@ -230,6 +236,8 @@ class MacToolHandlers:
             result["moreRunning"] = len(running) - 25
         if state.get("screenVision") is False:
             result["screenVision"] = "off"
+        if state.get("screenLocked") is True:
+            result["screenLocked"] = True
         return result
 
     def _open(self, arguments: dict[str, object]) -> dict[str, object]:
@@ -266,6 +274,10 @@ class MacToolHandlers:
         try:
             shot = self._client.screenshot(_text(arguments.get("app")), SCREENSHOT_SIDE, conversation_id=conversation)
         except MacFailure as failure:
+            if failure.code == "screen_locked":
+                # Text only: no structuredContent, so no image for the model, no chat card, no sync image.
+                return ToolInvocationResult(_dump({"isError": True, "code": "screen_locked", "screenLocked": True,
+                                                   "image": "none", "message": SCREEN_LOCKED_NOTE}), is_error=True)
             if failure.code != "screen_recording_required":
                 raise
             session = (context.voice_session_id if context is not None else None) or ""

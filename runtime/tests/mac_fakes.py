@@ -23,6 +23,9 @@ from t3_fixtures import StubBridge
 # A real (tiny) JPEG: SOI, APP0, a 2x2 SOF0 and EOI are enough for the shape tests.
 TINY_JPEG = bytes.fromhex("ffd8ffe000104a46494600010100000100010000ffc0000b080002000201011100ffd9")
 FIX = "Run on the Mac: /Applications/CuaDriver.app/Contents/MacOS/cua-driver permissions grant"
+# The bridge's answer to /v1/mac/screenshot while the Mac's screen is locked (nothing is captured).
+SCREEN_LOCKED = (409, {"error": {"code": "screen_locked", "retryable": True, "screenLocked": True,
+                                 "message": "Your Mac's screen is locked, so I can't see it. Unlock it and ask again."}})
 
 
 def capabilities(*, screen: bool = False) -> dict[str, object]:

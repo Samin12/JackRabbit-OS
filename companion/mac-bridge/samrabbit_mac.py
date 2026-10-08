@@ -6,6 +6,9 @@ Everything goes through two local tools, nothing else:
   screenshots), one call at a time, and
 * LaunchServices ``/usr/bin/open`` for http(s) links in Google Chrome and files in the home folder.
 
+``/usr/sbin/ioreg`` is read (never written) to tell whether the screen is locked: a capture of a
+locked Mac is all black, so a screenshot is not even attempted then.
+
 No AppleScript (it would raise Automation prompts), no shell, no ``kill_app``. Window text, typed
 text, URLs and file names are never logged; errors carry codes, never the driver's own messages.
 Stdlib only (macOS system Python 3.9+).
@@ -18,6 +21,7 @@ from difflib import SequenceMatcher
 import glob
 import json
 import os
+import plistlib
 import re
 import shutil
 import stat
@@ -45,6 +49,10 @@ DEFAULT_SCREENSHOT_SIDE = 1024
 MIN_SCREENSHOT_SIDE = 320
 MAX_SCREENSHOT_SIDE = 1600
 MAX_DRIVER_OUTPUT_BYTES = 24 * 1024 * 1024
+IOREG = "/usr/sbin/ioreg"
+LOCK_CHECK_TIMEOUT_SECONDS = 2.0
+MAX_IOREG_BYTES = 8 * 1024 * 1024
+SCREEN_LOCKED_MESSAGE = "Your Mac's screen is locked, so I can't see it. Unlock it and ask again."
 CHROME_BUNDLE = "com.google.Chrome"
 CHROME_NAME = "Google Chrome"
 DRIVER_CANDIDATES = (
@@ -310,13 +318,15 @@ class MacControl:
     the click that uses its element token are never interleaved with another request."""
 
     def __init__(self, driver: CuaDriver, *, open_command: str = "/usr/bin/open",
-                 lsappinfo: str = "/usr/bin/lsappinfo", sips: str = "/usr/bin/sips",
-                 home: Optional[str] = None, scratch: Optional[str] = None,
+                 lsappinfo: str = "/usr/bin/lsappinfo", sips: str = "/usr/bin/sips", ioreg: str = IOREG,
+                 uid: Optional[int] = None, home: Optional[str] = None, scratch: Optional[str] = None,
                  computer_name: Optional[Callable[[], Optional[str]]] = None) -> None:
         self.driver = driver
         self._open = open_command
         self._lsappinfo = lsappinfo
         self._sips = sips
+        self._ioreg = ioreg
+        self._uid = os.getuid() if uid is None else uid
         self._home = os.path.realpath(os.path.expanduser(home or "~"))
         self._scratch = scratch or tempfile.mkdtemp(prefix="samrabbit-mac-")
         self._lock = threading.Lock()
@@ -360,6 +370,23 @@ class MacControl:
         self._permissions = (time.monotonic(), result)
         return result
 
+    def screen_locked(self) -> Optional[bool]:
+        """True while the Mac's screen is locked (a capture would be black), False when this user's
+        desktop is on the screen, None when it cannot be told (``ioreg`` failed, timed out or answered
+        oddly): unknown never blocks anything. Read-only, about 25 ms, no driver and no lock."""
+        try:
+            done = subprocess.run([self._ioreg, "-n", "Root", "-d1", "-a"], stdin=subprocess.DEVNULL,
+                                  capture_output=True, timeout=LOCK_CHECK_TIMEOUT_SECONDS, check=False)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if done.returncode != 0 or not done.stdout or len(done.stdout) > MAX_IOREG_BYTES:
+            return None
+        try:
+            root = plistlib.loads(done.stdout)
+        except Exception:  # plistlib raises several types for a malformed archive (expat, ValueError, ...)
+            return None
+        return screen_locked_from(root, self._uid)
+
     def capabilities(self) -> Dict[str, Any]:
         """For ``/health``: whether each feature can work right now, and the one fix if vision is off."""
         executable = self.driver.executable()
@@ -375,6 +402,7 @@ class MacControl:
             "features": {"state": accessibility, "open": True, "read": accessibility, "act": accessibility,
                          "screenshot": accessibility and screen},
             "computer": self.computer(),
+            "screenLocked": self.screen_locked(),
         }
         if executable and permissions.get("screenRecording") is False:
             value["screenRecordingFix"] = self.fix_command()
@@ -523,6 +551,7 @@ class MacControl:
             if chrome:
                 result["chrome"] = chrome
             result["screenVision"] = self.permissions().get("screenRecording") is True
+            result["screenLocked"] = self.screen_locked()
             return result
 
     def _chrome(self, regular: Dict[int, Dict[str, Any]], visible: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -861,6 +890,10 @@ class MacControl:
     def screenshot(self, app: Optional[str], max_side: Optional[int]) -> Dict[str, Any]:
         side = max(MIN_SCREENSHOT_SIDE, min(MAX_SCREENSHOT_SIDE, int(max_side or DEFAULT_SCREENSHOT_SIDE)))
         with self._locked():
+            if self.screen_locked() is True:
+                # A locked Mac captures as an all-black picture: say so instead of sending one.
+                raise MacError(409, "screen_locked", SCREEN_LOCKED_MESSAGE, retryable=True,
+                               details={"screenLocked": True})
             permissions = self.permissions(fresh=True)
             if permissions.get("screenRecording") is not True:
                 raise MacError(409, "screen_recording_required",
@@ -932,6 +965,33 @@ def _computer_name() -> Optional[str]:
     if done.returncode != 0:
         return None
     return done.stdout.decode("utf-8", errors="replace").strip() or None
+
+
+def screen_locked_from(root: Any, uid: Optional[int] = None) -> Optional[bool]:
+    """Whether ``uid``'s desktop is hidden, from the plist of ``ioreg -n Root -d1 -a``.
+
+    True when the console session's ``CGSSessionScreenIsLocked`` is set (the lock screen), when the
+    sessions say none of them is on the console (the login window), or when another user's session is
+    (fast user switching): a capture then comes back black. False when this user's session is on the
+    console and unlocked (macOS leaves the key out then). None when the data does not say."""
+    if isinstance(root, list):  # an archive of several matching entries: the one with the console users
+        root = next((item for item in root if isinstance(item, dict) and "IOConsoleUsers" in item), None)
+    if not isinstance(root, dict):
+        return None
+    users = root.get("IOConsoleUsers")
+    if not isinstance(users, list):
+        return True if root.get("IOConsoleLocked") is True else None
+    on_console = [item for item in users if isinstance(item, dict) and item.get("kCGSSessionOnConsoleKey") is True]
+    if not on_console:
+        if any(isinstance(item, dict) and item.get("kCGSSessionOnConsoleKey") is False for item in users):
+            return True  # sessions exist but none is in front: the login window or another user
+        return True if root.get("IOConsoleLocked") is True else None
+    if uid is not None and any(isinstance(item.get("kCGSSessionUserIDKey"), int) for item in on_console):
+        mine = [item for item in on_console if item.get("kCGSSessionUserIDKey") == uid]
+        if not mine:
+            return True
+        on_console = mine
+    return on_console[0].get("CGSSessionScreenIsLocked") is True
 
 
 def _is_alias(path: str) -> bool:

@@ -14,7 +14,7 @@ from sam_runtime.storage.database import RuntimeDatabase
 from sam_runtime.tools import ToolCatalog
 from sam_runtime.tools.definitions import ToolInvocationContext
 
-from mac_fakes import FIX, TINY_JPEG, FakeMacControlBridge, make_mac
+from mac_fakes import FIX, SCREEN_LOCKED, TINY_JPEG, FakeMacControlBridge, make_mac
 
 MAC_TOOLS = {"mac_status", "mac_open", "mac_read", "mac_act", "mac_look"}
 
@@ -137,6 +137,31 @@ class MacToolsTest(unittest.TestCase):
         self.assertIn("Do not mention it again", again["message"])
         other = json.loads(self.call("mac_look", {}, session="voice-10").text)
         self.assertIn("Tell the user once", other["message"])
+
+    def test_look_on_a_locked_mac_says_so_without_an_image(self) -> None:
+        self.configure()
+        self.fake.screen = True
+        self.fake.responses["/v1/mac/screenshot"] = SCREEN_LOCKED
+        for session in ("voice-9", "voice-9"):  # said every time: unlocking is the user's next step
+            result = self.call("mac_look", {}, session=session)
+            self.assertTrue(result.is_error)
+            self.assertIsNone(result.structured_content, "no image for the model, the chat card or sync")
+            value = json.loads(result.text)
+            self.assertEqual({"isError": True, "code": "screen_locked", "screenLocked": True, "image": "none"},
+                             {key: value[key] for key in ("isError", "code", "screenLocked", "image")})
+            self.assertIn("screen is locked", value["message"])
+            self.assertIn("unlock it", value["message"])
+            self.assertIn("Do not describe the screen", value["message"])
+            mcp = result.mcp_result()
+            self.assertEqual([{"type": "text", "text": result.text}], mcp["content"])
+            self.assertNotIn("structuredContent", mcp)
+            self.assertNotIn("base64", json.dumps(mcp))
+        self.assertIn("screen is locked", json.dumps([item for item in self.catalog.realtime_definitions()
+                                                      if item["name"] == "mac_look"]))
+        self.fake.state = {**self.fake.state, "screenLocked": True}
+        self.assertIs(True, json.loads(self.call("mac_status", {}).text)["screenLocked"])
+        self.fake.state = {**self.fake.state, "screenLocked": False}
+        self.assertNotIn("screenLocked", json.loads(self.call("mac_status", {}).text))
 
     def test_look_returns_the_image_for_the_voice_model(self) -> None:
         self.configure()

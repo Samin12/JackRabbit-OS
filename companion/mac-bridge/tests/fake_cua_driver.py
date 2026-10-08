@@ -1,19 +1,23 @@
-"""Stand-ins for ``cua-driver``, ``/usr/bin/open`` and ``/usr/bin/lsappinfo`` used by the Mac-control tests.
+"""Stand-ins for ``cua-driver``, ``/usr/bin/open``, ``/usr/bin/lsappinfo`` and ``/usr/sbin/ioreg`` used by the
+Mac-control tests.
 
-One script, three personalities (``FAKE_CUA_ROLE`` = driver | open | lsappinfo). State lives in
+One script, four personalities (``FAKE_CUA_ROLE`` = driver | open | lsappinfo | ioreg). State lives in
 ``$FAKE_CUA_DIR/state.json``; every invocation is appended to ``calls.jsonl`` with start/end times
 so the tests can check that driver calls never overlap.
 
 state.json keys: ``permissions`` {accessibility, screen_recording}, ``apps`` (running regular apps for
 get_accessibility_tree), ``installed`` (list_apps), ``windows`` (list_windows records), ``elements``
 ({window_id: [element, ...]}), ``front_pid``, ``launch`` ({bundle_id: {pid, windows}}), ``slow``
-({tool: seconds}), ``open_rc``/``open_stderr``, ``missing_daemon``.
+({tool: seconds}; ``"ioreg"`` delays the fake ioreg), ``open_rc``/``open_stderr``, ``missing_daemon``,
+``ioreg`` (the Root entry ``ioreg -n Root -d1 -a`` archives as a plist), ``ioreg_rc``, ``ioreg_raw`` (bytes
+printed instead of the plist).
 """
 
 from __future__ import annotations
 
 import json
 import os
+import plistlib
 import random
 import struct
 import sys
@@ -178,5 +182,17 @@ def _lsappinfo(argv: list) -> int:
     return 1
 
 
+def _ioreg(argv: list) -> int:
+    state = _state()
+    started = time.time()
+    time.sleep(float((state.get("slow") or {}).get("ioreg", 0)))
+    _record({"role": "ioreg", "argv": argv, "start": started, "end": time.time()})
+    if argv != ["-n", "Root", "-d1", "-a"]:
+        return 2
+    raw = state.get("ioreg_raw")
+    sys.stdout.buffer.write(raw.encode() if isinstance(raw, str) else plistlib.dumps(state.get("ioreg") or {}))
+    return int(state.get("ioreg_rc", 0))
+
+
 if __name__ == "__main__":
-    sys.exit({"driver": _driver, "open": _open, "lsappinfo": _lsappinfo}[ROLE](sys.argv[1:]))
+    sys.exit({"driver": _driver, "open": _open, "lsappinfo": _lsappinfo, "ioreg": _ioreg}[ROLE](sys.argv[1:]))

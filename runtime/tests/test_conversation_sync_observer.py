@@ -18,7 +18,7 @@ from sam_runtime.storage.sessions import SessionTranscriptRepository
 from sam_runtime.tools import ToolCatalog, ToolDefinition, ToolInvocationResult
 from sam_runtime.tools.definitions import ToolInvocationContext
 
-from mac_fakes import FakeMacControlBridge
+from mac_fakes import SCREEN_LOCKED, FakeMacControlBridge
 
 CONV = "c_0123456789abcdef0123"
 SESSION = "cd" * 12
@@ -122,6 +122,27 @@ class ConversationSyncObserverTest(unittest.TestCase):
         self.invoke("mac_look", {}, call="call_9")
         self.assertNotIn("blobId", self.h.payloads()[-1])
         self.assertEqual([], self.h.blob_rows())
+
+    def test_mac_look_on_a_locked_mac_files_the_tool_result_and_no_image(self) -> None:
+        fake = FakeMacControlBridge()
+        self.addCleanup(fake.close)
+        fake.screen = True
+        fake.responses["/v1/mac/screenshot"] = SCREEN_LOCKED
+        self.h.store.save(fake.url, fake.token)
+        catalog = ToolCatalog()
+        handlers = register_mac_tools(catalog, MacControlClient(self.h.store))
+        handlers.set_screenshot_conversation(self.service.screenshot_conversation)
+        catalog.add_invocation_observer(ConversationSyncObserver(self.service))
+        context = ToolInvocationContext(AgentKind.VOICE, voice_session_id=SESSION, tool_call_id="call_3")
+        result = catalog.invoke("mac_look", {}, agent=AgentKind.VOICE, context=context)
+        self.assertTrue(result.is_error)
+        self.assertEqual("screen_locked", json.loads(result.text)["code"])
+        (tool,) = self.h.payloads()
+        self.assertEqual(("tool.completed", "mac_look", True), (tool["type"], tool["tool"], tool["isError"]))
+        self.assertNotIn("blobId", tool)
+        self.assertIn("screen_locked", json.dumps(tool))
+        self.assertEqual([], self.h.blob_rows(), "no picture is stored or sent")
+        self.assertIsNone(self.h.rows()[0]["blob_id"])
 
     def test_observers_are_a_list_and_one_failing_never_stops_the_others_or_the_tool(self) -> None:
         sessions = SessionTranscriptRepository(self.h.database)
