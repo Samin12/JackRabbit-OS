@@ -134,7 +134,10 @@ public final class GenImages {
         String ref = ConversationSyncClient.blobId(bytes);
         sizes.put(ref, new int[]{bounds.outWidth, bounds.outHeight});
         missing.remove(ref);
-        boolean decode = !thumbs.containsKey(ref) && pending.add(ref);
+        // Decode from these bytes even when a disk read of the same ref is still in flight: that
+        // read may find no file yet and would otherwise leave the ref "missing" for good.
+        boolean decode = !thumbs.containsKey(ref);
+        if (decode) pending.add(ref);
         submit(() -> {
             write(ref, bytes);
             if (decode) {
@@ -219,6 +222,7 @@ public final class GenImages {
     private void deliverThumb(String ref, Bitmap thumb) {
         pending.remove(ref);
         if (thumb != null) {
+            missing.remove(ref);
             thumbs.put(ref, thumb);
             if (!sizes.containsKey(ref)) sizes.put(ref, new int[]{thumb.getWidth(), thumb.getHeight()});
         }
