@@ -84,7 +84,9 @@ final class AppModel: ObservableObject {
             lastSeen = max(lastSeen ?? .distantPast, min(at, Date()))
         }
         notifier.consider(event)
-        scheduleRefresh(after: 1.0)
+        // The menu shows titles, order and live state: drafts (every ~300 ms while the R1 speaks) change
+        // none of that, and each refresh is a request and a bridge log line.
+        if (event["type"] as? String) != "message.assistant.delta" { scheduleRefresh(after: 2.0) }
     }
 
     private func scheduleRefresh(after delay: TimeInterval) {
