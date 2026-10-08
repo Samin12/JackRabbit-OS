@@ -112,8 +112,8 @@ tool and the bridge makes the widget on this Mac (`samrabbit_genui.py`, assets i
    repair round. The whole Claude phase is limited to 120 s.
 2. The widget is assembled like OpenGenerativeUI's `buildFinalFrameContent` (CSP with the four CDN origins for
    scripts and connect, importmap, the design-system CSS mapped to the R1's dark palette, the widget css and html)
-   plus a small bridge script (`widget-resize`, `send-prompt`, `open-link`, `widget-ready` postMessages and a
-   Chart.js helper).
+   plus a small bridge script (`widget-resize`, `send-prompt`, `open-link`, `widget-ready` postMessages to the
+   host page, the last two only on a real user gesture, and a Chart.js helper).
 3. agent-browser renders it in a sandboxed iframe at 480 px wide (2x), and `sips` makes the R1 preview JPEG
    (at most 960 px wide and 150 KB).
 

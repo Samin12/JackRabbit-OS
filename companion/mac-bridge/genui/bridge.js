@@ -7,6 +7,8 @@
  *   {type: "widget-ready", height, errors}  after jsExpressions ran, charts were drawn and fonts loaded
  * Generated code may call SamRabbit.sendPrompt/openLink, window.sendPrompt/openLink, or the
  * OpenGenerativeUI form Websandbox.connection.remote.sendPrompt({text}) / openLink({url}).
+ * send-prompt and open-link need a real user gesture (navigator.userActivation), so a widget, or text
+ * smuggled into its data, cannot speak to the assistant or open links on its own.
  * window.__SR_STATIC__ (set by the assembler for the R1 preview render) turns animations off.
  */
 (function () {
@@ -202,13 +204,17 @@
     return promise;
   }
 
+  function userGesture() {
+    var activation = w.navigator && w.navigator.userActivation;
+    return !activation || activation.isActive;
+  }
   function sendPrompt(text) {
     text = String(text == null ? "" : text).trim().slice(0, 4000);
-    if (text) post({ type: "send-prompt", text: text });
+    if (text && userGesture()) post({ type: "send-prompt", text: text });
   }
   function openLink(url) {
     url = String(url == null ? "" : url);
-    if (/^https:\/\//i.test(url)) post({ type: "open-link", url: url });
+    if (/^https:\/\//i.test(url) && userGesture()) post({ type: "open-link", url: url });
   }
 
   function timeout(ms) { return new Promise(function (resolve) { setTimeout(resolve, ms); }); }
