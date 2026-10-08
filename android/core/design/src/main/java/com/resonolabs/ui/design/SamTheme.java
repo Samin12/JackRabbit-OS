@@ -31,6 +31,16 @@ public final class SamTheme {
 
     private static final Typeface REGULAR = Typeface.create("sans-serif", Typeface.NORMAL);
     private static final Typeface MEDIUM = Typeface.create("sans-serif-medium", Typeface.NORMAL);
+    private static LinearGradient backdropShader;
+    private static float backdropHeight;
+    /**
+     * Glow shaders by colour. Several pages can animate at once with different glow colours (the
+     * Control Center over the Voice page's Pixel head grey or error red), so one slot would thrash.
+     */
+    private static final int GLOW_SLOTS = 4;
+    private static final RadialGradient[] glowShaders = new RadialGradient[GLOW_SLOTS];
+    private static final int[] glowColors = new int[GLOW_SLOTS];
+    private static int glowNext;
 
     private SamTheme() {}
 
@@ -45,20 +55,46 @@ public final class SamTheme {
         canvas.drawText(value == null ? "" : value, x, baseline, paint);
     }
 
-    /** Full-bleed background with a soft blue glow behind where an orb floats. */
+    /**
+     * Full-bleed background with a soft blue glow behind where an orb floats. Animated pages call
+     * this every frame, so the shaders are cached (main thread) and the glow is a unit-radius
+     * gradient placed with the canvas matrix.
+     */
     public static void background(Canvas canvas, Paint paint, float width, float height,
                                   float glowX, float glowY, float glowRadius, int glowColor) {
         paint.setStyle(Paint.Style.FILL);
         paint.setColor(Color.BLACK);
-        paint.setShader(new LinearGradient(0f, 0f, 0f, height, BACKGROUND_TOP, BACKGROUND,
-                Shader.TileMode.CLAMP));
+        LinearGradient backdrop = backdropShader;
+        if (backdrop == null || backdropHeight != height) {
+            backdrop = new LinearGradient(0f, 0f, 0f, height, BACKGROUND_TOP, BACKGROUND,
+                    Shader.TileMode.CLAMP);
+            backdropShader = backdrop;
+            backdropHeight = height;
+        }
+        paint.setShader(backdrop);
         canvas.drawRect(0f, 0f, width, height, paint);
         if (glowRadius > 0f) {
-            paint.setShader(new RadialGradient(glowX, glowY, glowRadius,
-                    withAlpha(glowColor, 70), withAlpha(glowColor, 0), Shader.TileMode.CLAMP));
-            canvas.drawCircle(glowX, glowY, glowRadius, paint);
+            paint.setShader(glowShader(glowColor));
+            canvas.save();
+            canvas.translate(glowX, glowY);
+            canvas.scale(glowRadius, glowRadius);
+            canvas.drawCircle(0f, 0f, 1f, paint);
+            canvas.restore();
         }
         paint.setShader(null);
+    }
+
+    /** Cached unit-radius glow for {@code color} (main thread). */
+    private static RadialGradient glowShader(int color) {
+        for (int i = 0; i < GLOW_SLOTS; i++) {
+            if (glowShaders[i] != null && glowColors[i] == color) return glowShaders[i];
+        }
+        RadialGradient glow = new RadialGradient(0f, 0f, 1f, withAlpha(color, 70), withAlpha(color, 0),
+                Shader.TileMode.CLAMP);
+        glowShaders[glowNext] = glow;
+        glowColors[glowNext] = color;
+        glowNext = (glowNext + 1) % GLOW_SLOTS;
+        return glow;
     }
 
     /** Frosted glass panel: faint top-lit fill with a hairline edge. */

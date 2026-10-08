@@ -17,7 +17,7 @@ class ToolCatalog:
         self._source_tool_ids: dict[str, set[str]] = {}
         self._audience_router = audience_router
         self._invocation_authorizer = None
-        self._invocation_observer = None
+        self._invocation_observers: tuple = ()
         self._lock = RLock()
 
     def set_invocation_authorizer(self, authorizer) -> None:
@@ -26,9 +26,14 @@ class ToolCatalog:
             self._invocation_authorizer = authorizer
 
     def set_invocation_observer(self, observer) -> None:
-        """Install one post-dispatch observer for provider-neutral evidence capture."""
+        """Replace every post-dispatch observer with this one (provider-neutral evidence capture)."""
         with self._lock:
-            self._invocation_observer = observer
+            self._invocation_observers = (observer,) if observer is not None else ()
+
+    def add_invocation_observer(self, observer) -> None:
+        """Add one more post-dispatch observer; observers run in the order they were added."""
+        with self._lock:
+            self._invocation_observers = (*self._invocation_observers, observer)
 
     def register(self, definition: ToolDefinition) -> None:
         with self._lock:
@@ -122,13 +127,14 @@ class ToolCatalog:
         else:
             result = definition.handler(arguments)
         with self._lock:
-            observer = self._invocation_observer
-        if observer is not None:
+            observers = self._invocation_observers
+        for observer in observers:
             try:
                 observer(invocation_context, definition.name, arguments, result)
             except Exception:
                 # Evidence capture is observational and must never convert a
-                # successful domain-tool invocation into a failed invocation.
+                # successful domain-tool invocation into a failed invocation,
+                # nor keep the next observer from running.
                 pass
         return result
 

@@ -266,17 +266,28 @@ class CalendarRepository:
             connection.execute("DROP TABLE calendar_seen_events")
             connection.commit()
 
-    def upcoming_events(self, now: str, *, limit: int = 50) -> tuple[CalendarEvent, ...]:
+    def upcoming_events(self, now: str, *, limit: int = 50, all_day_grace_hours: int = 0) -> tuple[CalendarEvent, ...]:
+        """Events not yet over at ``now`` (UTC ISO).
+
+        All-day events are stored as UTC midnight of a floating date (end exclusive), so in a zone
+        behind UTC they would end too early (8 PM in New York). ``all_day_grace_hours`` keeps them
+        that much longer so a device can decide "still today" in its own time zone.
+        """
+        all_day_cutoff = now
+        if all_day_grace_hours > 0:
+            all_day_cutoff = (datetime.fromisoformat(now) - timedelta(hours=all_day_grace_hours)).isoformat()
         with self._database.connect() as connection:
             rows = connection.execute(
                 """
                 """ + _EVENT_SELECT + """
                 WHERE status != 'cancelled'
-                  AND CASE WHEN ends_at IS NULL THEN starts_at >= ? ELSE ends_at >= ? END
+                  AND CASE WHEN ends_at IS NULL THEN starts_at >= ?
+                           WHEN all_day = 1 THEN ends_at >= ?
+                           ELSE ends_at >= ? END
                 ORDER BY starts_at, event_id
                 LIMIT ?
                 """,
-                (now, now, max(1, min(limit, 200))),
+                (now, all_day_cutoff, now, max(1, min(limit, 200))),
             ).fetchall()
         return tuple(_event(row) for row in rows)
 

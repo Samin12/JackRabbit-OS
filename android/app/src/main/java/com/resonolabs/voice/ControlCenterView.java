@@ -45,7 +45,7 @@ final class ControlCenterView extends View {
     private final Runnable openSettings;
     private final Runnable onClosed;
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final FluidOrb orb = new FluidOrb().setEnergy(0.2f).setSpeed(0.6f);
+    private final FluidOrb orb = new FluidOrb().hero(getContext()).setEnergy(0.2f).setSpeed(0.6f);
     private final SimpleDateFormat time = new SimpleDateFormat("h:mm", Locale.getDefault());
     private final SimpleDateFormat date = new SimpleDateFormat("EEEE, MMM d", Locale.getDefault());
     private boolean open;
@@ -269,6 +269,15 @@ final class ControlCenterView extends View {
         }
     }
 
+    /** Index of the notification row drawn at (x, y), or -1 (same geometry as drawNotifications). */
+    private static int notificationRow(float x, float y) {
+        int shown = Math.min(2, NotificationFeed.items().size());
+        for (int row = 0; row < shown; row++) {
+            if (x >= 24f && x <= 456f && y >= 490f + row * 62f && y <= 544f + row * 62f) return row;
+        }
+        return -1;
+    }
+
     private static String ellipsize(String value, int max) {
         String flat = value == null ? "" : value.replace('\n', ' ').trim();
         return flat.length() > max ? flat.substring(0, max - 1) + "…" : flat;
@@ -306,6 +315,10 @@ final class ControlCenterView extends View {
             if (TILES[index].contains(x, y)) { toggleTile(index); return; }
         }
         if (CLEAR.contains(x, y) && !NotificationFeed.items().isEmpty()) NotificationFeed.dismissAll();
+        else if (notificationRow(x, y) >= 0) {
+            // e.g. a "T3 updates" notification opens its thread in the T3 tab.
+            if (NotificationFeed.open(NotificationFeed.items().get(notificationRow(x, y)))) hide();
+        }
         else if (y >= 600f) hide();
     }
 

@@ -52,7 +52,26 @@ final class ManagementRuntimeProxy {
             "/v1/management/memory",
             "/v1/management/memory/search",
             "/v1/management/memory/reindex",
-            "/v1/management/memory/sessions");
+            "/v1/management/memory/sessions",
+            "/v1/management/t3",
+            "/v1/management/t3/connect",
+            "/v1/management/t3/disconnect",
+            "/v1/management/t3/settings",
+            "/v1/management/mac",
+            "/v1/management/heptabase",
+            "/v1/management/heptabase/connect/start",
+            "/v1/management/heptabase/settings",
+            "/v1/management/heptabase/disconnect",
+            "/v1/management/heptabase/retry",
+            "/v1/management/heptabase/oauth/import",
+            "/v1/management/heptabase/bridge",
+            "/v1/management/heptabase/bridge/check",
+            "/v1/management/heptabase/bridge/disconnect",
+            "/v1/management/heptabase/test-entry",
+            // OAuth redirect target: authenticated by its single-use state, not by a session.
+            "/v1/heptabase/oauth/callback");
+    /** Routes that receive the request query string (everything else is forwarded path-only). */
+    private static final Set<String> QUERY_ROUTES = Set.of("/v1/heptabase/oauth/callback");
     private static final Set<String> ROUTE_PREFIXES = Set.of(
             "/v1/management/mail/accounts/",
             "/v1/management/calendar/accounts/",
@@ -78,8 +97,11 @@ final class ManagementRuntimeProxy {
         }
         HttpURLConnection connection = null;
         try {
+            String target = QUERY_ROUTES.contains(request.path()) && !request.query().isEmpty()
+                    ? request.path() + "?" + request.query()
+                    : request.path();
             connection = (HttpURLConnection) new URL(
-                    "http://127.0.0.1:8765" + request.path()).openConnection();
+                    "http://127.0.0.1:8765" + target).openConnection();
             connection.setRequestMethod(request.method());
             connection.setConnectTimeout(1000);
             connection.setReadTimeout(readTimeoutMillis(request.path()));
@@ -118,7 +140,7 @@ final class ManagementRuntimeProxy {
         }
     }
 
-    private static boolean isAllowed(String path) {
+    static boolean isAllowed(String path) {
         if (ROUTES.contains(path)) return true;
         if (path.length() <= "/v1/management/memory/".length()) return false;
         for (String prefix : ROUTE_PREFIXES) {
@@ -127,10 +149,25 @@ final class ManagementRuntimeProxy {
         return false;
     }
 
-    private static int readTimeoutMillis(String path) {
+    static int readTimeoutMillis(String path) {
         if (path.equals("/v1/management/text/turns")) return 65_000;
+        if (path.equals("/v1/heptabase/oauth/callback")) return 45_000;
+        if (path.equals("/v1/management/heptabase/connect/start")
+                || path.equals("/v1/management/heptabase/disconnect")
+                || path.equals("/v1/management/heptabase/oauth/import")) return 30_000;
+        // Mac bridge: /health runs the Heptabase CLI on the Mac (R1 waits up to 15 s); the test
+        // entry waits up to 5 s for delivery.
+        if (path.equals("/v1/management/heptabase/bridge")
+                || path.equals("/v1/management/heptabase/bridge/check")) return 25_000;
+        if (path.equals("/v1/management/heptabase/test-entry")) return 15_000;
+        if (path.equals("/v1/management/heptabase/bridge/disconnect")) return 8_000;
         if (path.endsWith("/finalize")) return 65_000;
         if (path.equals("/v1/management/memory/reindex")) return 35_000;
+        if (path.equals("/v1/management/t3/connect")) return 20_000;
+        if (path.equals("/v1/management/t3") || path.equals("/v1/management/t3/disconnect")) return 8_000;
+        if (path.equals("/v1/management/t3/settings")) return 15_000;
+        // Mac card: the R1 probes the Mac bridge's /health (up to 15 s).
+        if (path.equals("/v1/management/mac")) return 25_000;
         if (path.startsWith("/v1/management/mail/accounts")) return 610_000;
         if (path.startsWith("/v1/management/calendar/accounts")) return 65_000;
         if (path.equals("/v1/management/openai/subscription/start")

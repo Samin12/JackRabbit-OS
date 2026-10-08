@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Debug app id has the .engineering suffix; the alias class name does not. Must match
+         SideButtonGesture.TOGGLE_ALIAS and the activity-alias in app/src/main/AndroidManifest.xml. -->
+    <string name="config_doublePressOnPowerTargetActivity" translatable="false">com.resonolabs.voice.engineering/com.resonolabs.voice.SideButtonToggle</string>
+</resources>

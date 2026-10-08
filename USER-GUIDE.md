@@ -10,8 +10,13 @@ SamRabbit is the R1 HOME surface. Voice is the first page and Cards is the secon
 
 - Use the touch screen for buttons, tabs, lists, and sliders.
 - Use the scroll wheel for supported list navigation.
-- Use the side button for the context-sensitive action exposed by the current page.
-- Use the power button normally. SamRabbit keeps the screen awake while its activity is visible.
+- Use the side button (the R1's only button):
+  - **Double-press** to start talking, from any page and even with the screen off. Double-press again to end the conversation, even while SamRabbit is speaking.
+  - **Press once** to turn the screen off or on. The screen turns off about 0.3 seconds after you let go, because the R1 first waits to see whether a second press follows. Turning the screen off ends a live conversation.
+  - **Hold** for the power menu.
+  - Both presses of a double press must start within 0.3 seconds of each other. A slower double press counts as two single presses.
+  - The double press comes from the SamRabbit power-button overlay (`android/system/power-overlay`, installed to `/oem/overlay`). Without it, a double press does nothing special.
+- SamRabbit keeps the screen awake while its activity is visible.
 
 Open the gear icon at the upper right for Settings. The running-person icon at the top opens the native Background Agent run surface.
 
@@ -204,11 +209,12 @@ Reasoning Logs do not contain hidden chain-of-thought, tool arguments, or tool r
 
 - **Wi-Fi:** Scan and connect to wireless networks.
 - **Bluetooth:** Change the Bluetooth enabled state.
+- **Theme:** Pick how the assistant looks: the blue **Orb** or the voxel **Pixel head**. Both tiles show a live preview; tap one to apply it everywhere at once (Voice, Control Center, About and the other places the orb appears). The row shows the current choice.
 - **Management:** View the local address and pairing code, and refresh management status.
 - **AI:** View or change provider access, models, and reasoning; enter a Platform key.
 - **Creations:** Open native Creation import.
 - **Sound:** Adjust the device media volume.
-- **Display:** Adjust screen brightness. The wheel navigates; use touch to change the slider.
+- **Display:** Adjust screen brightness. The wheel navigates; use touch to change the slider. The Theme line under it opens the Theme page.
 - **About:** View runtime information and request a runtime restart.
 
 ## Troubleshooting

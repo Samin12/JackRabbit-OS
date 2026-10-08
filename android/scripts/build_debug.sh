@@ -33,6 +33,9 @@ cp "$ANDROID_ROOT/../web/management/management.css" "$WEB_ASSETS/management/mana
 cp "$ANDROID_ROOT/../web/management/app.js" "$WEB_ASSETS/management/app.js"
 cp "$ANDROID_ROOT/../web/management/build07.js" "$WEB_ASSETS/management/build07.js"
 cp "$ANDROID_ROOT/../web/management/background-agent.js" "$WEB_ASSETS/management/background-agent.js"
+cp "$ANDROID_ROOT/../web/management/t3.js" "$WEB_ASSETS/management/t3.js"
+cp "$ANDROID_ROOT/../web/management/heptabase.js" "$WEB_ASSETS/management/heptabase.js"
+cp "$ANDROID_ROOT/../web/management/mac.js" "$WEB_ASSETS/management/mac.js"
 cd "$ANDROID_ROOT"
 
 /tmp/gradle-9.5.0/bin/gradle --no-daemon --no-configuration-cache testDebugUnitTest :app:assembleDebug

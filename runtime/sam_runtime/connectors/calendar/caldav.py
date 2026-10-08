@@ -114,7 +114,7 @@ class CaldavCalendarProviderClient:
         )
         events: list[IcsCalendarEvent] = []
         for body in calendar_bodies:
-            events.extend(list(self._ics._parse_ics(body)))
+            events.extend(list(self._ics._parse_ics(body, expand_from=starts_at_from, expand_to=starts_at_to)))
         if starts_at_from is not None:
             events = [event for event in events if event.starts_at >= starts_at_from]
         if starts_at_to is not None:

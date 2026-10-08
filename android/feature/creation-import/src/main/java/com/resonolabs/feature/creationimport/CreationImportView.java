@@ -116,7 +116,7 @@ public final class CreationImportView extends FrameLayout implements UiInputTarg
 
     private final class Overlay extends View {
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final FluidOrb orb = new FluidOrb();
+        private final FluidOrb orb = new FluidOrb().hero(getContext());
         Overlay(Activity context) { super(context); }
         @Override protected void onDraw(Canvas canvas) {
             canvas.save(); canvas.scale(getWidth()/480f, getHeight()/640f);

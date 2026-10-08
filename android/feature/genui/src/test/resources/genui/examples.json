@@ -1,0 +1,185 @@
+{
+  "show_card": [
+    {
+      "id": "groceries",
+      "eyebrow": "Shopping",
+      "icon": "cart",
+      "accent": "violet",
+      "title": "Grocery list",
+      "subtitle": "6 items",
+      "body": [
+        {
+          "type": "checklist",
+          "id": "items",
+          "items": [
+            {
+              "text": "Oat milk",
+              "checked": true
+            },
+            {
+              "text": "Eggs"
+            },
+            {
+              "text": "Spinach"
+            },
+            {
+              "text": "Sourdough"
+            },
+            {
+              "text": "Greek yogurt"
+            },
+            {
+              "text": "Coffee beans"
+            }
+          ]
+        }
+      ],
+      "actions": [
+        {
+          "label": "Add item",
+          "say": "Add something to the grocery list"
+        },
+        {
+          "label": "Done",
+          "style": "primary",
+          "dismiss": true
+        }
+      ]
+    },
+    {
+      "id": "timer-pasta",
+      "eyebrow": "Timer",
+      "icon": "timer",
+      "accent": "amber",
+      "title": "Pasta",
+      "size": "compact",
+      "live": {
+        "type": "timer",
+        "durationSec": 540
+      },
+      "actions": [
+        {
+          "label": "+1 min",
+          "timer": "add1m"
+        },
+        {
+          "label": "Cancel",
+          "style": "danger",
+          "dismiss": true
+        }
+      ]
+    },
+    {
+      "id": "t3-login-fix",
+      "eyebrow": "T3 Code",
+      "icon": "code",
+      "accent": "cyan",
+      "title": "Fix login redirect",
+      "live": {
+        "type": "t3-thread",
+        "threadId": "thr_8f2a"
+      },
+      "actions": [
+        {
+          "label": "Status",
+          "say": "How is the login redirect thread going?"
+        }
+      ]
+    },
+    {
+      "id": "spend",
+      "eyebrow": "Spending",
+      "accent": "pink",
+      "title": "This week",
+      "body": [
+        {
+          "type": "stat",
+          "value": "$412.80",
+          "label": "Week to date",
+          "delta": "18% vs last",
+          "trend": "up"
+        },
+        {
+          "type": "bars",
+          "values": [
+            32,
+            58,
+            12,
+            140,
+            44,
+            96,
+            30
+          ],
+          "labels": [
+            "M",
+            "T",
+            "W",
+            "T",
+            "F",
+            "S",
+            "S"
+          ],
+          "highlight": 3
+        }
+      ]
+    },
+    {
+      "id": "weather-sf",
+      "eyebrow": "Weather",
+      "title": "San Francisco",
+      "body": [
+        {
+          "type": "weather",
+          "temp": "64°",
+          "condition": "rain",
+          "hi": "66°",
+          "lo": "55°",
+          "hours": [
+            {
+              "t": "3p",
+              "temp": "64°",
+              "condition": "rain"
+            },
+            {
+              "t": "5p",
+              "temp": "62°",
+              "condition": "cloudy"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "update_card": [
+    {
+      "id": "groceries",
+      "patch": [
+        {
+          "id": "items",
+          "items": [
+            {
+              "text": "Oat milk",
+              "checked": true
+            },
+            {
+              "text": "Eggs",
+              "checked": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "spend",
+      "subtitle": "Updated just now"
+    }
+  ],
+  "dismiss_card": [
+    {
+      "id": "groceries"
+    },
+    {
+      "all": true
+    }
+  ]
+}

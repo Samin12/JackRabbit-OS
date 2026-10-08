@@ -3,10 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from collections.abc import Callable
 from typing import TYPE_CHECKING
+import secrets
 import threading
 from sam_runtime.core.logging import runtime_logger
 
 from .openai import OpenAIPlatform, OpenAIProviderError, OpenAISubscription, ProviderModels
+from .openai.platform import DICTATION_VARIANTS
 from ..realtime.modes import PRIMARY_VOICE_INSTRUCTION
 from ..api.events import RuntimeEventStream
 from ..security.credentials import ProviderCredentials
@@ -25,6 +27,14 @@ class RealtimeCall:
     sdp: str
     connect_greeting_event: dict[str, object] | None
     session_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class DictationCall:
+    sdp: str
+    session_id: str
+    variant: str
+    transcription_model: str
 
 
 class ProviderController:
@@ -50,6 +60,7 @@ class ProviderController:
         goal_intake_tools: Callable[[], tuple[dict[str, object], ...]] | None = None,
         voice_skill_instructions: Callable[[], str] | None = None,
         voice_modes: "VoiceModeService | None" = None,
+        t3_voice_context: Callable[[], str] | None = None,
     ) -> None:
         self._credentials = credentials
         self._settings = settings
@@ -65,10 +76,13 @@ class ProviderController:
         self._goal_intake_tools = goal_intake_tools
         self._voice_skill_instructions = voice_skill_instructions
         self._voice_modes = voice_modes
+        self._t3_voice_context = t3_voice_context
         self._models = ProviderModels((), ())
         self._log = runtime_logger()
         self._active_sessions: set[str] = set()
         self._active_sessions_lock = threading.Lock()
+        # Index into DICTATION_VARIANTS of the first session shape OpenAI accepted.
+        self._dictation_variant = 0
 
     def status(self, *, refresh: bool = False) -> dict[str, object]:
         selection = self._settings.selection()
@@ -337,6 +351,17 @@ class ProviderController:
                 instructions_extra = "\n\n".join(
                     value for value in (instructions_extra, skill_instructions) if value
                 )
+        if self._t3_voice_context is not None:
+            # T3 Code guidance plus a live thread snapshot; part of the primary
+            # instructions so it also survives voice_mode_switch back to primary.
+            try:
+                t3_context = self._t3_voice_context()
+            except Exception:
+                t3_context = ""
+            if t3_context:
+                instructions_extra = "\n\n".join(
+                    value for value in (instructions_extra, t3_context) if value
+                )
         tool_definitions: tuple[dict[str, object], ...] | None = None
         extra_tools: tuple[dict[str, object], ...] = ()
         if self._voice_tools is not None:
@@ -415,6 +440,62 @@ class ProviderController:
             self._active_sessions.add(session_id)
         greeting = self._profile.connect_greeting_event() if self._profile else None
         return RealtimeCall(answer, greeting, session_id)
+
+    def create_dictation_call(self, offer_sdp: str) -> DictationCall:
+        """Speech-to-text call for the app's ComposeSheet microphone.
+
+        Uses the same credential as Voice but none of the voice session machinery: no
+        instructions context, no tools, no voice modes, never an active voice session, and
+        OpenAI never answers. Variants are tried in order when OpenAI rejects a session shape
+        (HTTP 400); the accepted one is remembered for the rest of this runtime's life.
+        """
+        self._assert_active_provider()
+        selection = self._settings.selection()
+        if selection.access_path == "subscription":
+            if self._subscription is None:
+                raise OpenAIProviderError("credential_unavailable", "Connect ChatGPT first.", status=409)
+            access_token = self._subscription.access_token()
+        else:
+            if not self._credentials.has_platform_key():
+                raise OpenAIProviderError("credential_unavailable", "Connect OpenAI first.", status=409)
+            access_token = self._credentials.platform_key()
+        model = selection.realtime_model or ""
+        platform = OpenAIPlatform(access_token, safety_source=self._safety_source)
+        start = self._dictation_variant
+        last_error: OpenAIProviderError | None = None
+        for index in range(start, len(DICTATION_VARIANTS)):
+            variant, transcription_model = DICTATION_VARIANTS[index]
+            if variant == "realtime" and not model:
+                last_error = OpenAIProviderError("model_required", "Choose a Realtime model first.", status=409)
+                continue
+            try:
+                answer = platform.create_dictation_call(
+                    offer_sdp=offer_sdp,
+                    variant=variant,
+                    model=model,
+                    transcription_model=transcription_model,
+                )
+            except OpenAIProviderError as error:
+                last_error = error
+                self._log.warning(
+                    "provider.dictation.rejected variant=%s transcription=%s code=%s status=%s details=%s",
+                    variant,
+                    transcription_model,
+                    error.code,
+                    error.status,
+                    error.details or {},
+                )
+                if error.status == 400 and error.code == "provider_rejected":
+                    continue
+                raise
+            self._dictation_variant = index
+            session_id = f"dict_{secrets.token_hex(8)}"
+            self._log.info(
+                "provider.dictation.success",
+                extra={"variant": variant, "transcriptionModel": transcription_model, "sessionId": session_id},
+            )
+            return DictationCall(answer, session_id, variant, transcription_model)
+        raise last_error or OpenAIProviderError("provider_rejected", "OpenAI could not start dictation.", status=502)
 
     def is_active_realtime_session(self, session_id: str) -> bool:
         with self._active_sessions_lock: return bool(session_id) and session_id in self._active_sessions

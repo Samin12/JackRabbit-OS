@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Must match SideButtonGesture.TOGGLE_ALIAS and the activity-alias in the app manifest. -->
+    <string name="config_doublePressOnPowerTargetActivity" translatable="false">com.resonolabs.voice/com.resonolabs.voice.SideButtonToggle</string>
+</resources>

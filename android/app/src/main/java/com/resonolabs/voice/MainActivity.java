@@ -4,9 +4,15 @@ import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.Manifest;
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.os.Bundle;
 import android.os.PowerManager;
+import android.os.SystemClock;
+import android.util.Log;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
@@ -22,11 +28,33 @@ import com.resonolabs.runtime.host.RuntimeBackgroundRunClient;
 import com.resonolabs.runtime.host.RuntimeCreationImportClient;
 
 public final class MainActivity extends Activity {
+    /** The live HOME instance, for debug-only entry points (VoiceDebugReceiver). */
+    private static java.lang.ref.WeakReference<MainActivity> current = new java.lang.ref.WeakReference<>(null);
     private ProductRootView root;
     private RuntimeHealthClient runtimeHealth;
     private RuntimeManagementClient runtimeManagement;
     private RuntimeBackgroundRunClient backgroundRuns;
     private RuntimeCreationImportClient creationImports;
+    private final SideButtonGesture sideButton = new SideButtonGesture();
+    /** Cold start through the side-button alias: start Voice once the runtime answers. */
+    private boolean sideButtonStartPending;
+    private boolean screenOffRegistered;
+    private final BroadcastReceiver screenOff = new BroadcastReceiver() {
+        @Override public void onReceive(Context context, Intent intent) {
+            if (root == null) return;
+            // SCREEN_OFF reaches HOME ~1 s after the panel goes off. If a press already woke the
+            // screen again (e.g. a quick double press that just started a new session) the mic
+            // is usable again: ending the session now would kill the one the user asked for.
+            PowerManager power = getSystemService(PowerManager.class);
+            if (power != null && power.isInteractive()) {
+                Log.i(SideButtonGesture.LOG_TAG, "screen off (stale: screen is on again) -> ignored");
+                return;
+            }
+            if (root.stopVoiceForScreenOff()) {
+                Log.i(SideButtonGesture.LOG_TAG, "screen off -> voice stopped");
+            }
+        }
+    };
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
@@ -36,8 +64,15 @@ public final class MainActivity extends Activity {
         runtimeManagement = new RuntimeManagementClient();
         backgroundRuns = new RuntimeBackgroundRunClient();
         creationImports = new RuntimeCreationImportClient();
-        runtimeHealth.checkUntilReady(this, health ->
-                android.util.Log.i("SamRuntime", "HOME boundary status=" + health.status()));
+        runtimeHealth.checkUntilReady(this, health -> {
+            android.util.Log.i("SamRuntime", "HOME boundary status=" + health.status());
+            if (sideButtonStartPending && root != null) {
+                sideButtonStartPending = false;
+                boolean started = root.startVoiceFromSideButton();
+                Log.i(SideButtonGesture.LOG_TAG, "double press (cold start) -> "
+                        + (started ? "voice started" : "already in session"));
+            }
+        });
         setShowWhenLocked(true);
         setTurnScreenOn(true);
         root = new ProductRootView(
@@ -57,9 +92,25 @@ public final class MainActivity extends Activity {
                 backgroundRuns,
                 creationImports);
         setContentView(root);
+        current = new java.lang.ref.WeakReference<>(this);
+        openT3ThreadFrom(getIntent(), state == null);
+        openGeneratedUiFrom(getIntent(), state == null);
+        // A fresh launch whose intent is the alias = double press while HOME was not running.
+        // (A recreated activity keeps the old intent; it must not toggle again.)
+        if (state == null && SideButtonGesture.isToggle(getIntent())) sideButtonStartPending = true;
+        SideButtonGesture.checkFrameworkPolicy(this);
+        registerReceiver(screenOff, new IntentFilter(Intent.ACTION_SCREEN_OFF),
+                Context.RECEIVER_NOT_EXPORTED);
+        screenOffRegistered = true;
+        java.util.ArrayList<String> missing = new java.util.ArrayList<>();
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, 41);
+            missing.add(Manifest.permission.RECORD_AUDIO);
         }
+        // "T3 updates" notifications (announcements that arrive while Voice is not live).
+        if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            missing.add(Manifest.permission.POST_NOTIFICATIONS);
+        }
+        if (!missing.isEmpty()) requestPermissions(missing.toArray(new String[0]), 41);
         // Android 16 routes Back through OnBackInvokedDispatcher; without this the HOME
         // activity is finished and recreated, dropping the user back on Voice.
         getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
@@ -72,7 +123,64 @@ public final class MainActivity extends Activity {
         enterProductFullscreen();
     }
 
+    @Override protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        if (SideButtonGesture.isToggle(intent)) onSideButtonDoublePress();
+        else {
+            openT3ThreadFrom(intent, true);
+            openGeneratedUiFrom(intent, true);
+        }
+    }
+
+    /** A tapped "Generated UIs" notification: Voice with that picture full screen. */
+    private void openGeneratedUiFrom(Intent intent, boolean fresh) {
+        if (!fresh || intent == null || root == null) return;
+        String artifactId = intent.getStringExtra(GeneratedUiNotifier.EXTRA_ARTIFACT);
+        if (artifactId == null) return;
+        intent.removeExtra(GeneratedUiNotifier.EXTRA_ARTIFACT); // a recreated activity must not reopen it
+        root.post(() -> root.openGeneratedUi(artifactId));
+    }
+
+    /** A tapped "T3 updates" notification: open that thread in the T3 tab. */
+    private void openT3ThreadFrom(Intent intent, boolean fresh) {
+        if (!fresh || intent == null || root == null) return;
+        String threadId = intent.getStringExtra(T3UpdateNotifier.EXTRA_THREAD);
+        if (threadId == null || threadId.isBlank()) return;
+        intent.removeExtra(T3UpdateNotifier.EXTRA_THREAD); // a recreated activity must not reopen it
+        Log.i("SamAnnounce", "notification tap -> open T3 thread");
+        root.post(() -> root.openT3ThreadById(threadId));
+    }
+
+    /** Debug entry points only (src/debug); null when HOME is not running. */
+    static ProductRootView activeRoot() {
+        MainActivity activity = current.get();
+        return activity == null || activity.isDestroyed() ? null : activity.root;
+    }
+
+    private void onSideButtonDoublePress() {
+        if (root == null) return;
+        if (!sideButton.accept(SystemClock.elapsedRealtime())) {
+            Log.i(SideButtonGesture.LOG_TAG, "double press ignored (duplicate delivery)");
+            return;
+        }
+        // A newer gesture supersedes a cold-start "start" still waiting for the runtime health
+        // check; otherwise start+stop presses in that window would be followed by a late start.
+        sideButtonStartPending = false;
+        // Posted so it runs after the resume that accompanies this intent: the microphone is
+        // then opened from a TOP process (the press may have just woken the screen).
+        root.post(() -> {
+            boolean started = root.toggleVoiceFromSideButton();
+            Log.i(SideButtonGesture.LOG_TAG, "double press -> " + (started ? "voice started" : "voice stopped"));
+        });
+    }
+
     @Override protected void onDestroy() {
+        if (current.get() == this) current = new java.lang.ref.WeakReference<>(null);
+        if (screenOffRegistered) {
+            unregisterReceiver(screenOff);
+            screenOffRegistered = false;
+        }
         if (root != null) root.close();
         if (runtimeHealth != null) runtimeHealth.close();
         if (runtimeManagement != null) runtimeManagement.close();
