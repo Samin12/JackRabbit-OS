@@ -138,7 +138,9 @@ def _tool(tool: str, args: dict, state: dict):
             return {"code": "window_target_not_found", "effect": "refused", "pid": args.get("pid")}
         state["front_pid"] = args["pid"]
         _save(state)
-        return {"effect": "confirmed", "pid": args["pid"], "window_id": args.get("window_id")}
+        # The real driver's success shape: a code but no "effect".
+        return {"activated": True, "code": "bring_to_front_exact_window_verified", "status": "activated",
+                "pid": args["pid"], "window_id": args.get("window_id"), "request_accepted": True}
     if tool in ("click", "hotkey", "press_key", "type_text", "invoke_menu", "scroll"):
         if "pid" not in args:
             return "Missing required integer field: pid"

@@ -63,6 +63,10 @@ _TAB_SUFFIX = re.compile(
     re.IGNORECASE)
 _VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)")
 _PID = re.compile(r"\bpid\s*=\s*(\d+)")
+# cua-driver answers some successes with a code too (e.g. bring_to_front_exact_window_verified), and
+# some failures without an "effect" (e.g. window_id_not_found): an error is refused or error-shaped.
+_ERROR_CODE = re.compile(r"(not_found|missing|mismatch|denied|invalid|unavailable|ambiguous|ambiguity|stale|"
+                         r"required|refused|failed|failure|error|timeout|not_granted|unsupported|not_running)")
 _ASN = re.compile(r"(ASN:[0-9a-fx-]+:?)", re.IGNORECASE)
 
 _SKIPPED_ROLES = frozenset({
@@ -256,10 +260,12 @@ class CuaDriver:
             return value
         error = value.get("error")
         code = value.get("code")
-        if isinstance(error, str) or (isinstance(code, str) and value.get("effect") in (None, "refused")):
+        effect = value.get("effect")
+        if isinstance(error, str) or effect == "refused" or \
+                (isinstance(code, str) and effect is None and _ERROR_CODE.search(code.lower())):
             failure = _driver_error(str(error if isinstance(error, str) else code))
             failure.driver_code = str(error if isinstance(error, str) else code)
-            failure.refused = value.get("effect") == "refused"
+            failure.refused = effect == "refused"
             raise failure
         if expect:
             raise MacError(502, "driver_bad_output", "cua-driver answered with something unexpected.")
@@ -639,9 +645,11 @@ class MacControl:
         verified = False
         try:
             raised = self._call("bring_to_front", front_arguments, timeout=10.0)
-            verified = raised.get("effect") in ("confirmed", None) and not raised.get("partial")
+            exact = raised.get("exact_window_effect") if isinstance(raised.get("exact_window_effect"), dict) else {}
+            verified = raised.get("activated") is True or raised.get("status") == "activated" or \
+                exact.get("verified") is True
         except MacError:
-            raised = None
+            pass
         frontmost = self._lsappinfo_front() == pid
         if not frontmost and match.get("bundle_id"):
             # LaunchServices activation (no TCC): also reopens a window for apps whose windows are closed.

@@ -442,6 +442,7 @@ class MacControlTest(unittest.TestCase):
         status, value = self.call("POST", "/v1/mac/act", {"action": "bring_to_front", "app": "Heptabase"})
         self.assertEqual(200, status, value)
         self.assertTrue(value["frontmost"])
+        self.assertNotIn("effect", value, "a success that carries a driver code is still a success")
 
     # ------------------------------------------------------------------ screenshot
 
