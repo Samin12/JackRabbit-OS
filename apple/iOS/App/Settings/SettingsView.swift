@@ -269,7 +269,7 @@ struct PairConfirmSheet: View {
 
     var body: some View {
         VStack(spacing: 22) {
-            OrbView(mood: pairing ? .working : .idle).frame(width: 86, height: 86).padding(.top, 34).padding(.bottom, 8)
+            OrbView(mood: pairing ? .working : .idle).frame(width: 76, height: 76).padding(.top, 30).padding(.bottom, 6)
             VStack(spacing: 6) {
                 Text("Pair with \(link.name ?? "this Mac")?").font(.system(size: 22, weight: .bold)).multilineTextAlignment(.center)
                 Text(link.hosts.map(\.description).joined(separator: " · "))
@@ -280,6 +280,7 @@ struct PairConfirmSheet: View {
             }
             Text("SamRabbit on this iPhone will be able to see and start your T3 tasks, read your calendar, add journal notes and control the Mac.")
                 .font(.system(size: 13.5)).foregroundStyle(SamTheme.ink2).multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
                 .padding(.horizontal, 8)
             Spacer(minLength: 0)
             VStack(spacing: 10) {
@@ -306,7 +307,7 @@ struct PairConfirmSheet: View {
         .padding(.horizontal, 24)
         .padding(.bottom, 16)
         .samScreen()
-        .presentationDetents([.medium, .large])
+        .presentationDetents([.fraction(0.62), .large])
     }
 }
 

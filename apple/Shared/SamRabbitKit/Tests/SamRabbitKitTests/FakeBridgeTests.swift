@@ -251,6 +251,9 @@ struct FakeBridgeTests {
         let shot = try await client.screenshot()
         #expect(shot.starts(with: [0xFF, 0xD8]))
 
+        let (status, body) = try await client.raw(.get("/v1/mobile/t3/threads/t_missing"))
+        #expect(status == 404)
+        #expect(String(decoding: body, as: UTF8.self).contains("thread_not_found"))
         let child = try await client.childDevice(name: "Apple Watch")
         let watch = BridgeClient(hosts: [bridge.host], token: child.token)
         #expect(try await watch.summary().t3.available)

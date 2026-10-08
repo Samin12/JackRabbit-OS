@@ -153,3 +153,28 @@ struct AlertPlannerTests {
         #expect(tracker.tasks.isEmpty)
     }
 }
+
+@Suite("Watch link formats")
+struct WatchLinkFormatTests {
+    @Test func contextRoundTripsThroughApplicationContext() throws {
+        let context = WatchContext(hosts: [BridgeHost(host: "192.168.1.183", port: 3780)], token: "srm_child",
+                                   deviceId: "dev_1", bridgeName: "Mac", issuedAt: Date(timeIntervalSince1970: 1_800_000_000))
+        let decoded = try #require(WatchContext(applicationContext: context.applicationContext))
+        #expect(decoded == context)
+        #expect(WatchContext(applicationContext: [WatchContext.unpairedKey: true]) == nil)
+    }
+
+    @Test func relayRequestsKeepTheirShapeAndStayInsideTheMobileAPI() throws {
+        let original = BridgeRequest.post("/v1/mobile/t3/threads/t_1/respond", body: ["decision": "approve"])
+        let request = try #require(WatchRelay.Request(message: WatchRelay.Request(original).message))
+        #expect(request.allowed)
+        #expect(request.bridgeRequest.method == "POST")
+        #expect(request.bridgeRequest.body == original.body)
+        let query = WatchRelay.Request(.get("/v1/mobile/t3/threads", query: [URLQueryItem(name: "filter", value: "needs_you")]))
+        #expect(query.bridgeRequest.query == [URLQueryItem(name: "filter", value: "needs_you")])
+        #expect(!WatchRelay.Request(.post("/v1/mobile/pair", body: [:])).allowed)
+        #expect(!WatchRelay.Request(.get("/health")).allowed)
+        let response = try #require(WatchRelay.Response(message: WatchRelay.Response(status: 409, body: Data("x".utf8)).message))
+        #expect(response.status == 409)
+    }
+}

@@ -155,6 +155,7 @@ final class AppModel {
             await refresh()
             startRefreshing()
             await notifications.requestAuthorization()
+            await WatchLink.shared.provision()
             return true
         } catch let error as BridgeError {
             Haptics.error()
@@ -171,6 +172,7 @@ final class AppModel {
     }
 
     func unpair() {
+        WatchLink.shared.reset()
         account.unpair()
         SummaryCache.shared.clear()
         pairing = nil

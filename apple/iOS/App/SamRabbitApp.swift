@@ -9,6 +9,7 @@ struct SamRabbitApp: App {
 
     init() {
         UNUserNotificationCenter.current().delegate = NotificationDelegate.shared
+        WatchLink.shared.start()
     }
 
     var body: some Scene {
