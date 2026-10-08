@@ -62,6 +62,18 @@ final class AnnouncementRouting {
                 + "\n--- END UI STATUS ---";
     }
 
+    /**
+     * The human reason of a {@code ui.failed} announcement. The runtime sends {@code error} as a
+     * short code ("timeout", "failed") and the readable sentence as {@code message}; an
+     * {@code error} object may carry its own {@code message}. The bare code is the last resort.
+     */
+    static String uiFailureReason(String message, String errorMessage, String errorCode) {
+        String reason = flat(message, 200);
+        if (reason.isEmpty()) reason = flat(errorMessage, 200);
+        if (reason.isEmpty()) reason = flat(errorCode, 200);
+        return reason;
+    }
+
     /** Notification title for a generated-UI outcome. */
     static String uiNotificationTitle(String kind, String title) {
         String name = flat(title, 80);

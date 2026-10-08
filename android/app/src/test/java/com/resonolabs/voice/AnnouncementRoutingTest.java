@@ -122,4 +122,18 @@ public final class AnnouncementRoutingTest {
         assertTrue(envelope.contains("\u201cSales chart\u201d"));
         assertFalse(AnnouncementRouting.uiFailedEnvelope("", "").contains("Reason:"));
     }
+
+    @Test public void generatedUiFailureReasonPrefersTheReadableMessage() {
+        // The runtime's ui.failed payload: {artifactId, error: <code>, message: <sentence>} (no title).
+        assertEquals("The Mac did not finish the visual.",
+                AnnouncementRouting.uiFailureReason("The Mac did not finish the visual.", "", "timeout"));
+        assertEquals("Claude is not signed in",
+                AnnouncementRouting.uiFailureReason(" ", "Claude is not signed in", ""));
+        assertEquals("timeout", AnnouncementRouting.uiFailureReason(null, null, "timeout"));
+        assertEquals("", AnnouncementRouting.uiFailureReason(null, null, null));
+        // No payload title: a generic notification title, never "Couldn't make “Visual not made”".
+        assertEquals("Couldn't make that UI", AnnouncementRouting.uiNotificationTitle("ui.failed", ""));
+        assertEquals("The Mac did not finish the visual.", AnnouncementRouting.uiNotificationText("ui.failed", "",
+                AnnouncementRouting.uiFailureReason("The Mac did not finish the visual.", "", "timeout")));
+    }
 }

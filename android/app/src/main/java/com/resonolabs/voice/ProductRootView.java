@@ -523,11 +523,13 @@ final class ProductRootView extends FrameLayout {
     private void presentUiFailure(JSONObject item) {
         JSONObject payload = item.optJSONObject("payload");
         String artifactId = text(payload, "artifactId");
+        // Only the payload names the UI: the announcement's own title is the runtime's headline
+        // ("Visual not made"), not the artifact's name.
         String title = text(payload, "title");
-        if (title.isEmpty()) title = text(item, "title");
         Object rawError = payload == null ? null : payload.opt("error");
-        String error = rawError instanceof JSONObject object ? object.optString("message", "")
-                : rawError instanceof String string ? string : "";
+        String error = AnnouncementRouting.uiFailureReason(text(payload, "message"),
+                rawError instanceof JSONObject object ? text(object, "message") : "",
+                rawError instanceof String string ? string : "");
         long id = item.optLong("id", 0L);
         String kind = AnnouncementRouting.UI_FAILED;
         if (voice.deliverHostUpdate(AnnouncementRouting.uiFailedEnvelope(title, error), id, kind)) {
