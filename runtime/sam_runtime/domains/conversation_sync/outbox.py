@@ -47,6 +47,7 @@ class QueuedBlob:
     mime: str
     data: bytes
     attempts: int
+    conversation_id: str | None = None
 
 
 class ConversationSyncRepository:
@@ -204,13 +205,14 @@ class ConversationSyncRepository:
     def next_blob(self, now: float) -> QueuedBlob | None:
         with self._database.connect() as connection:
             row = connection.execute(
-                "SELECT blob_id, mime, data, attempts FROM conversation_sync_blobs "
+                "SELECT blob_id, mime, data, attempts, conversation_id FROM conversation_sync_blobs "
                 "WHERE state = 'pending' AND next_attempt_at <= ? ORDER BY created_at, rowid LIMIT 1",
                 (now,),
             ).fetchone()
         if row is None:
             return None
-        return QueuedBlob(str(row["blob_id"]), str(row["mime"]), bytes(row["data"]), int(row["attempts"]))
+        return QueuedBlob(str(row["blob_id"]), str(row["mime"]), bytes(row["data"]), int(row["attempts"]),
+                          row["conversation_id"])
 
     def mark_blob_sending(self, blob_id: str) -> None:
         self._update_blob(blob_id, "state = 'sending', attempts = attempts + 1")

@@ -150,14 +150,18 @@ class ConversationSyncObserverTest(unittest.TestCase):
                    {"role": "tool", "text": "ignored"}, "junk"]
         self.service.session_finalized(SESSION, entries, SimpleNamespace(summary="User shared a code.", memory_count=1))
         (event,) = self.h.payloads()
-        self.assertEqual({"id": f"rt:{SESSION}:finalized", "type": "session.finalized", "conversationId": CONV,
+        self.assertEqual({"id": f"rt:{SESSION}:finalized.reviewed", "type": "session.finalized", "conversationId": CONV,
                           "reviewed": True, "entryCount": 2, "memoryCount": 1, "summary": "User shared a code."},
                          {key: event[key] for key in ("id", "type", "conversationId", "reviewed", "entryCount",
                                                       "memoryCount", "summary")})
         self.assertEqual(1_760_000_000_001, event["entries"][0]["at"])
         self.assertEqual("remember my code is [redacted]", event["entries"][0]["text"])
+        self.service.session_finalized(SESSION, entries, SimpleNamespace(summary="again", memory_count=1))
+        self.assertEqual(1, len(self.h.rows()), "one finalized event per session and outcome")
         self.service.session_finalized(SESSION, entries, None)
-        self.assertEqual(1, len(self.h.rows()), "one finalized event per session")
+        self.service.session_finalized(SESSION, entries, None)
+        self.assertEqual([f"rt:{SESSION}:finalized.reviewed", f"rt:{SESSION}:finalized"],
+                         [item["id"] for item in self.h.payloads()], "a failed and a reviewed finalize are both kept")
         self.service.save_settings({"includeAssistant": False})
         self.service.session_finalized("12" * 12, entries, None)
         last = self.h.payloads()[-1]

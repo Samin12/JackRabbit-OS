@@ -40,6 +40,7 @@ class FakeSyncBridge:
         self.failures: deque[str] = deque()
         self.reject_marker: str | None = None
         self.authorization: list[str] = []
+        self.blob_conversations: dict[str, str | None] = {}
         self.lock = threading.Lock()
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), _handler(self))
         self._server.daemon_threads = True
@@ -141,6 +142,7 @@ def _handler(fake: FakeSyncBridge) -> type[BaseHTTPRequestHandler]:
             with fake.lock:
                 created = "sha256:" + digest not in fake.blobs
                 fake.blobs["sha256:" + digest] = (self.headers.get("Content-Type", ""), raw)
+                fake.blob_conversations["sha256:" + digest] = self.headers.get("X-SAM-Conversation")
                 fake.log.append(("blob", "sha256:" + digest))
             self._json(200, {"blobId": "sha256:" + digest, "bytes": len(raw), "created": created})
 

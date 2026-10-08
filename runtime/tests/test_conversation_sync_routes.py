@@ -162,6 +162,12 @@ class ConversationSyncRoutesTest(unittest.TestCase):
                          (last["id"], last["reviewed"], last["conversationId"]),
                          "the session is mirrored even when memory review fails")
 
+    def test_a_session_with_nothing_to_review_still_ends_on_the_mac(self) -> None:
+        status, value = self.call("POST", "/v1/voice/sessions/finalize", {"sessionId": SESSION, "entries": []})
+        self.assertEqual((409, "nothing_to_review"), (status, value["error"]["code"]))
+        (event,) = self.h.payloads()
+        self.assertEqual(("session.finalized", 0, False), (event["type"], event["entryCount"], event["reviewed"]))
+
     def test_calls_without_or_with_a_bad_conversation_id_still_work(self) -> None:
         for body in ({"sdp": "offer"}, {"sdp": "offer", "conversationId": "../../x"}, {"sdp": "offer", "conversationId": 5}):
             with self.subTest(body=body):

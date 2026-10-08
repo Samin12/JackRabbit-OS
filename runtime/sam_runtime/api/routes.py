@@ -397,6 +397,8 @@ class RuntimeRoutes:
             if self._heptabase is not None:
                 self._heptabase.voice_session_finalized(session_id, raw_entries)
             if appended == 0:
+                if self._conversation_sync is not None:  # the session still ended on the Mac's timeline
+                    self._conversation_sync.session_finalized(session_id, raw_entries, None)
                 req.respond_json(409, {"error": {"code": "nothing_to_review", "message": "No transcript entries were captured."}})
                 return
             finalized = None

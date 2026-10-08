@@ -39,7 +39,7 @@ import stat
 import threading
 import time
 import uuid
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, unquote, urlsplit
 
 SERVICE = "samrabbit-bridge"
@@ -165,13 +165,17 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
+_MAX_SAFE_INTEGER = 2 ** 53 - 1
+
+
 def _int(value: Any) -> Optional[int]:
+    """A JSON whole number within +-2^53 (anything else is treated as absent)."""
     if isinstance(value, bool):
         return None
-    if isinstance(value, int):
-        return value
     if isinstance(value, float) and value.is_integer():
-        return int(value)
+        value = int(value)
+    if isinstance(value, int) and -_MAX_SAFE_INTEGER <= value <= _MAX_SAFE_INTEGER:
+        return value
     return None
 
 
@@ -371,7 +375,18 @@ class SyncStore:
                     except ValueError:
                         rejected += 1
                         continue
-                    if self._insert(event, device, received):
+                    # One event can never fail the batch (or stall the R1's outbox behind it).
+                    self._db.execute("SAVEPOINT one_event")
+                    try:
+                        inserted = self._insert(event, device, received)
+                    except (sqlite3.IntegrityError, sqlite3.InterfaceError, OverflowError, TypeError, ValueError):
+                        self._db.execute("ROLLBACK TO SAVEPOINT one_event")
+                        self._db.execute("RELEASE SAVEPOINT one_event")
+                        _LOG.warning("sync: one event refused")
+                        rejected += 1
+                        continue
+                    self._db.execute("RELEASE SAVEPOINT one_event")
+                    if inserted:
                         accepted += 1
                     else:
                         duplicates += 1
@@ -520,7 +535,8 @@ class SyncStore:
             set_preview(event["text"], at)
         elif kind == "session.finalized" and live_messages == 0:
             # Only the end-of-session transcript arrived (older R1 app or lost live batch).
-            entries = [item for item in event.get("entries") or [] if isinstance(item, dict)]
+            raw_entries = event.get("entries")
+            entries = [item for item in raw_entries if isinstance(item, dict)] if isinstance(raw_entries, list) else []
             for item in entries:
                 text = item.get("text")
                 if not isinstance(text, str) or not text.strip():
@@ -660,6 +676,8 @@ def _normalize(raw: Any, now_ms: int) -> Dict[str, Any]:
     event = dict(raw)
     at = _int(raw.get("at"))
     event["at"] = at if at is not None and at > 0 else now_ms
+    if "seq" in event and (_int(event["seq"]) is None or _int(event["seq"]) < 0):
+        event.pop("seq")
     if not session:
         event.pop("sessionId", None)
     if len(json.dumps(event, separators=(",", ":"), ensure_ascii=False).encode("utf-8")) > MAX_EVENT_BYTES:
@@ -689,10 +707,14 @@ def _conversation_view(row: sqlite3.Row, now: int) -> Dict[str, Any]:
 class SyncService:
     """The bridge's sync surface: ``handles(route)`` / ``serve(handler, method, route)``."""
 
-    def __init__(self, sync_dir: str, desktop_token_file: str) -> None:
+    def __init__(self, sync_dir: str, desktop_token_file: str,
+                 peer_allowed: Optional[Callable[[str], bool]] = None) -> None:
+        """``peer_allowed`` is the bridge's own LAN rule (``client_allowed``), so ``/v1/sync/*`` and
+        ``/v1/mac/*`` always accept the same peers; ``private_peer`` is the stand-alone default."""
         global _DEFAULT
         self.store = SyncStore(sync_dir)
         self.desktop = DesktopToken(desktop_token_file)
+        self._peer_allowed = peer_allowed or private_peer
         self._streams = threading.BoundedSemaphore(MAX_STREAMS)
         with _DEFAULT_LOCK:
             _DEFAULT = self
@@ -730,9 +752,8 @@ class SyncService:
         use ``desktop_request_denied(handler)``, which applies the same rule."""
         return _desktop_denied(handler, self.desktop)
 
-    @staticmethod
-    def device_denied(handler: Any) -> Optional[SyncError]:
-        if not private_peer(str(handler.client_address[0])):
+    def device_denied(self, handler: Any) -> Optional[SyncError]:
+        if not self._peer_allowed(str(handler.client_address[0])):
             return SyncError(403, "forbidden", "Only devices on the local network may use this bridge.")
         header = handler.headers.get("Authorization", "")
         scheme, _, value = header.partition(" ")
@@ -867,8 +888,11 @@ class SyncService:
     # ------------------------------------------------------------------ Mac screenshots
 
     def screenshot_taken(self, result: Dict[str, Any], conversation_id: Optional[str]) -> Dict[str, Any]:
-        """``/v1/mac/screenshot``: keep the JPEG as a sync blob (``blobId``) and, when the R1 says
-        which conversation it belongs to, file an ``image`` event there (``imageEventId``)."""
+        """``/v1/mac/screenshot?conversation=<id>``: keep the JPEG as a sync blob (``blobId``) and file
+        an ``image`` event in that conversation (``imageEventId``). Without a conversation (the R1
+        only passes one while it syncs images) nothing is kept."""
+        if not isinstance(conversation_id, str) or not _CONVERSATION.match(conversation_id):
+            return result
         try:
             data = base64.b64decode(str(result.get("base64") or ""), validate=True)
             mime = str(result.get("mime") or "image/jpeg")
@@ -877,17 +901,16 @@ class SyncService:
             blob_id, _created = self.store.put_blob(data, mime, conversation_id, limit=MAX_BLOB_BODY_BYTES)
             value = dict(result)
             value["blobId"] = blob_id
-            if isinstance(conversation_id, str) and _CONVERSATION.match(conversation_id):
-                event: Dict[str, Any] = {"type": "image", "source": "mac_screenshot", "blobId": blob_id, "mime": mime,
-                                         "bytes": len(data), "origin": "mac"}
-                for key in ("width", "height"):
-                    if _int(result.get(key)) is not None:
-                        event[key] = int(result[key])
-                if result.get("app"):
-                    event["app"] = str(result["app"])[:80]
-                event_id = self.store.record_local(conversation_id, event)
-                if event_id:
-                    value["imageEventId"] = event_id
+            event: Dict[str, Any] = {"type": "image", "source": "mac_screenshot", "blobId": blob_id, "mime": mime,
+                                     "bytes": len(data), "origin": "mac"}
+            for key in ("width", "height"):
+                if _int(result.get(key)) is not None:
+                    event[key] = int(result[key])
+            if result.get("app"):
+                event["app"] = str(result["app"])[:80]
+            event_id = self.store.record_local(conversation_id, event)
+            if event_id:
+                value["imageEventId"] = event_id
             return value
         except (SyncError, binascii.Error, ValueError, OSError, sqlite3.Error):
             _LOG.warning("sync: screenshot not stored")

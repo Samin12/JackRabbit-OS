@@ -58,6 +58,18 @@ class ConversationSyncIngestTest(unittest.TestCase):
         self.assertEqual(int(self.h.clock.now * 1000), payload["at"])
         self.assertNotIn("sessionId", payload)
 
+    def test_out_of_range_numbers_never_fail_the_batch(self) -> None:
+        result = self.ingest([ev(1, at=1e30, text="huge at"), {**ev(2, text="huge seq"), "seq": 2 ** 70},
+                              {**ev(3, at=-5, text="negative"), "seq": -4}, ev(4, text="fine")])
+        self.assertEqual((4, 0), (result["accepted"], result["rejected"]))
+        now = int(self.h.clock.now * 1000)
+        huge_at, huge_seq, negative, fine = sorted(self.h.rows(), key=lambda row: row["event_id"])
+        self.assertEqual(now, huge_at["event_at"])
+        self.assertIsNone(huge_seq["seq"])
+        self.assertNotIn("seq", json.loads(huge_seq["payload_json"]))
+        self.assertEqual((None, now), (negative["seq"], negative["event_at"]))
+        self.assertEqual(4, fine["seq"])
+
     def test_assistant_drafts_are_coalesced(self) -> None:
         self.ingest([ev(seq, "message.assistant.delta", messageId="a_1", text="draft " * seq) for seq in (1, 2, 3)])
         self.assertEqual([3], [item["seq"] for item in self.h.payloads()])
@@ -120,7 +132,7 @@ class ConversationSyncIngestTest(unittest.TestCase):
         self.assertEqual(result["blobId"], self.h.rows()[-1]["blob_id"], "the event waits for its local blob")
         unknown = ev(8, "image", blobId="sha256:" + "0" * 64, mime="image/jpeg", source="camera")
         self.ingest([unknown])
-        self.assertIsNone(self.h.rows()[-1]["blob_id"], "a blob this runtime never had is not waited on")
+        self.assertEqual("sha256:" + "0" * 64, self.h.rows()[-1]["blob_id"], "it may still be on its way: grace wait")
 
     def test_link_call_is_authoritative_and_unlinked_sessions_get_their_own_conversation(self) -> None:
         self.assertEqual("s_" + SESSION, self.service.conversation_for(SESSION))

@@ -121,6 +121,25 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(["message.assistant.done"], [row["type"] for row in rows])
         self.assertEqual(1, self.store.conversation(CONV)["messageCount"])
 
+    def test_one_bad_event_never_fails_the_batch(self) -> None:
+        original = self.store._touch  # noqa: SLF001
+
+        def touch(event: Dict[str, Any], cursor: int, device: str) -> None:
+            if event.get("text") == "explode":
+                raise TypeError("simulated")
+            original(event, cursor, device)
+
+        self.store._touch = touch  # type: ignore[method-assign]  # noqa: SLF001
+        result = self.store.insert_events([event(1, text="before"), event(2, text="explode"), event(3, text="after"),
+                                           event(4, "session.finalized", entries=5),
+                                           {**event(5, text="huge numbers", at=10 ** 30), "seq": 2 ** 70}], "r1")
+        self.assertEqual((4, 1), (result["accepted"], result["rejected"]))
+        stored = {json.loads(payload)["id"]: json.loads(payload) for _, payload in self.store.events_after(0, 10)}
+        self.assertEqual({f"{CONV}:{n}" for n in (1, 3, 4, 5)}, set(stored), "the explosion rolled back alone")
+        self.assertNotIn("seq", stored[f"{CONV}:5"])
+        self.assertLess(stored[f"{CONV}:5"]["at"], 10 ** 15)
+        self.assertEqual(3, self.store.conversation(CONV)["messageCount"])
+
     def test_search_matches_titles_and_message_text(self) -> None:
         other = "c_ffffffffffffffffffff"
         self.store.insert_events([event(1, text="plan the trip to Lisbon"),
@@ -337,6 +356,7 @@ class SyncHttpTest(unittest.TestCase):
                           "the module-level rule (for other bridge modules) is the same")
         self.assertEqual(403, sync.desktop_request_denied(fake("192.168.1.183", **{sync.DESKTOP_HEADER: DESKTOP})).status)
         self.assertIsNone(service.device_denied(fake("192.168.1.186", Authorization="Bearer " + TOKEN)))
+        self.assertIs(bridge.client_allowed, service._peer_allowed, "one LAN rule for /v1/mac/* and /v1/sync/*")  # noqa: SLF001
         for address in ("8.8.8.8", "100.64.0.1", "2001:4860::8888"):
             denied = service.device_denied(fake(address, Authorization="Bearer " + TOKEN))
             self.assertEqual((403, "forbidden"), (denied.status, denied.code), address)
@@ -436,8 +456,9 @@ class SyncHttpTest(unittest.TestCase):
                          (image["type"], image["source"], image["blobId"], image["origin"], image["width"],
                           image["height"]))
         status, value = self.call("GET", "/v1/mac/screenshot")
-        self.assertEqual("sha256:" + digest, value["blobId"])
-        self.assertNotIn("imageEventId", value, "no conversation, no event")
+        self.assertNotIn("blobId", value, "no conversation (image sync off on the R1): nothing is kept")
+        self.assertNotIn("imageEventId", value)
+        self.assertEqual(1, self.server.sync.store.counts()["blobs"])
         status, _headers, data = self.request("GET", "/v1/sync/blobs/" + digest, bearer=None, desktop=DESKTOP)
         self.assertEqual((200, JPEG), (status, data))
 

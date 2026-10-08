@@ -41,8 +41,11 @@ class SyncSettings:
         return {name: getattr(self, field) for name, (_key, field) in _FIELDS.items()}
 
 
-def _iso(seconds: float) -> str:
+def iso_utc(seconds: float) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(seconds))
+
+
+_iso = iso_utc
 
 
 class SyncSettingsStore:

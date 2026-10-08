@@ -408,7 +408,8 @@ class BridgeServer(ThreadingHTTPServer):
         super().__init__(address, BridgeHandler)
         if sync is not None and sync_dir:
             try:
-                self.sync = sync.SyncService(sync_dir, desktop_token_file or sync.DEFAULT_DESKTOP_TOKEN_FILE)
+                self.sync = sync.SyncService(sync_dir, desktop_token_file or sync.DEFAULT_DESKTOP_TOKEN_FILE,
+                                             peer_allowed=client_allowed)
             except Exception:  # noqa: BLE001
                 _LOG.exception("conversation sync unavailable")
 

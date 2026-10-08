@@ -9,7 +9,6 @@ Shared identifiers (CONTRACTS-WAVE3): ``conversationId`` is ``c_`` + 20 hex from
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass
 import hashlib
 import json
@@ -31,6 +30,7 @@ MAX_EVENT_BYTES = 64 * 1024
 MAX_TOOL_RESULT_BYTES = 4096
 MAX_TOOL_ARGUMENT_BYTES = 8192
 MAX_FINALIZED_ENTRY_BYTES = 48 * 1024
+MAX_SAFE_INTEGER = 2 ** 53 - 1  # epoch ms and sequence numbers stay well inside SQLite's INTEGER
 DELTA = "message.assistant.delta"
 DRAFT_ENDS = frozenset({"message.assistant.done", "message.assistant.interrupted"})
 
@@ -121,17 +121,18 @@ def clip_utf8(text: str, limit: int) -> tuple[str, bool]:
 
 
 def _int(value: object) -> int | None:
+    """A JSON whole number within +-2^53 (anything else is treated as absent)."""
     if isinstance(value, bool):
         return None
-    if isinstance(value, int):
-        return value
     if isinstance(value, float) and value.is_integer():
-        return int(value)
+        value = int(value)
+    if isinstance(value, int) and -MAX_SAFE_INTEGER <= value <= MAX_SAFE_INTEGER:
+        return value
     return None
 
 
 def device_event(raw: object, *, conversation_id: str, session_id: str | None, now_ms: int,
-                 scrub: bool, local_blob: Callable[[str], bool] = lambda _blob_id: False) -> OutgoingEvent:
+                 scrub: bool) -> OutgoingEvent:
     """Validate and normalize one event from the R1 (hop 1). Raises ``Rejected``."""
     if not isinstance(raw, dict):
         raise Rejected("not_an_object")
@@ -151,9 +152,13 @@ def device_event(raw: object, *, conversation_id: str, session_id: str | None, n
     if at is None or at <= 0:
         at = now_ms
     seq = _int(raw.get("seq"))
+    if seq is not None and seq < 0:
+        seq = None
     payload = redact(raw, scrub=scrub)
     assert isinstance(payload, dict)
     payload.update({"id": event_id, "type": kind, "conversationId": conversation_id, "at": at})
+    if "seq" in payload and seq is None:
+        payload.pop("seq")
     if event_session:
         payload["sessionId"] = event_session
     else:
@@ -163,7 +168,9 @@ def device_event(raw: object, *, conversation_id: str, session_id: str | None, n
     event = OutgoingEvent(
         event_id=event_id, conversation_id=conversation_id, session_id=event_session or None, seq=seq,
         kind=kind, payload=payload, event_at=at,
-        blob_id=blob_id if blob_id is not None and local_blob(blob_id) else None,
+        # An image waits for its bytes: sent first when this runtime has them, else for a short
+        # grace period (the R1 uploads the blob just before the event).
+        blob_id=blob_id,
         coalesce_key=_coalesce_key(conversation_id, kind, raw.get("messageId")),
     )
     if len(event.payload_json().encode("utf-8")) > MAX_EVENT_BYTES:
@@ -259,8 +266,10 @@ def finalized_event(*, conversation_id: str, session_id: str, entries: list[obje
             break
         kept.append(entry)
         size += cost
+    # One event per outcome: a finalize retried after a failed review still mirrors its summary.
     payload: dict[str, object] = {
-        "id": f"rt:{session_id}:finalized", "type": "session.finalized", "conversationId": conversation_id,
+        "id": f"rt:{session_id}:finalized" + (".reviewed" if reviewed else ""), "type": "session.finalized",
+        "conversationId": conversation_id,
         "sessionId": session_id, "at": at, "origin": "host", "reviewed": reviewed, "entryCount": len(kept),
         "entries": kept,
     }

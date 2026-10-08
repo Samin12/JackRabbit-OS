@@ -41,6 +41,7 @@ class ConversationSyncWorkerTest(unittest.TestCase):
         self.worker.drain()
         self.assertEqual([("blob", blob), ("events", [f"{CONV}:1", f"{CONV}:2", f"{CONV}:3"])], self.h.bridge.requests())
         self.assertEqual(("image/jpeg", TINY_JPEG), self.h.bridge.blobs[blob])
+        self.assertEqual(CONV, self.h.bridge.blob_conversations[blob], "the Mac learns which conversation it is in")
         self.assertEqual(["sent"] * 3, self.states())
         (row,) = self.h.blob_rows()
         self.assertEqual(("sent", b""), (row["state"], bytes(row["data"])))
@@ -60,6 +61,22 @@ class ConversationSyncWorkerTest(unittest.TestCase):
         self.worker.drain()
         self.assertEqual(["blob", "events"], [kind for kind, _ in self.h.bridge.requests()])
         self.assertEqual([f"{CONV}:1", f"{CONV}:2"], self.h.bridge.event_ids())
+
+    def test_an_image_event_whose_blob_is_unknown_waits_a_grace_period(self) -> None:
+        blob = blob_id_for(TINY_JPEG)
+        self.ingest(ev(1, "image", blobId=blob, mime="image/jpeg", source="camera"), ev(2))
+        self.worker.drain()
+        self.assertEqual([f"{CONV}:2"], self.h.bridge.event_ids(), "the image waits for its bytes")
+        self.service.ingest_blob(TINY_JPEG, "image/jpeg", CONV)  # the upload lands a moment later
+        self.worker.drain()
+        self.assertEqual(["events", "blob", "events"], [kind for kind, _ in self.h.bridge.requests()])
+        self.assertEqual([f"{CONV}:2", f"{CONV}:1"], self.h.bridge.event_ids())
+        self.ingest(ev(3, "image", blobId="sha256:" + "f" * 64, mime="image/jpeg", source="camera"))
+        self.worker.drain()
+        self.assertNotIn(f"{CONV}:3", self.h.bridge.event_ids())
+        self.h.clock.advance(21)
+        self.worker.drain()
+        self.assertIn(f"{CONV}:3", self.h.bridge.event_ids(), "a blob that never comes does not hold it forever")
 
     def test_backoff_grows_2_5_15_60_300_and_recovers(self) -> None:
         self.ingest(ev(1))
@@ -116,11 +133,33 @@ class ConversationSyncWorkerTest(unittest.TestCase):
         self.h.bridge.failures.append("404")
         self.worker.drain()
         self.assertEqual(("pending", "bridge_outdated"), (self.h.rows()[0]["state"], self.h.rows()[0]["last_error"]))
+        self.h.store.note_reachable()  # journal / Mac control still work on an old bridge: no hammering
+        self.assertEqual(0, self.worker.drain())
+        self.h.store.save(self.h.bridge.url, self.h.bridge.token)  # reinstalled and reconnected
+        self.worker.drain()
+        self.assertEqual(["sent"], self.states())
 
-    def test_a_refused_event_is_isolated_by_halving_the_batch(self) -> None:
+    def test_mac_answers_end_a_backoff_at_most_every_few_seconds_and_only_real_successes_count(self) -> None:
+        self.ingest(ev(1))
+        self.h.bridge.failures.extend(["503", "503"])
+        self.worker.drain()
+        self.h.store.record_status(reachable=True, lastError="bridge_unauthorized")  # a 401 is no success
+        self.assertEqual(0, self.worker.drain())
+        self.h.store.note_reachable()
+        self.worker.drain()  # expedited: fails again (503)
+        self.h.store.note_reachable()
+        self.assertEqual(0, self.worker.drain(), "a second answer within 5 s does not end the backoff")
+        self.h.clock.advance(6)
+        self.h.store.record_status(reachable=True, appReachable=True, lastError=None)
+        self.worker.drain()
+        self.assertEqual(["sent"], self.states())
+
+    def test_a_refused_event_is_isolated_by_sending_its_batch_one_by_one(self) -> None:
         self.h.bridge.reject_marker = "poison"
         self.ingest(*[ev(seq) for seq in range(1, 8)], ev(8, text="poison pill"), ev(9))
         self.worker.drain(limit=50)
+        batches = [ids for kind, ids in self.h.bridge.requests() if kind == "events"]
+        self.assertEqual([1] * 8, [len(batch) for batch in batches], "one refused batch, then each event alone")
         rows = {row["event_id"]: row for row in self.h.rows()}
         self.assertEqual(("failed", "invalid_events"), (rows[f"{CONV}:8"]["state"], rows[f"{CONV}:8"]["last_error"]))
         self.assertEqual({f"{CONV}:{seq}" for seq in (1, 2, 3, 4, 5, 6, 7, 9)}, set(self.h.bridge.event_ids()))

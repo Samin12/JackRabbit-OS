@@ -43,15 +43,25 @@ class ConversationSyncClient:
         except sqlite3.Error:
             return False
 
+    def config_stamp(self) -> tuple[str, int] | None:
+        """Which bridge pairing is current (URL and save generation), for backoff decisions."""
+        try:
+            config = self._store.config()
+        except sqlite3.Error:
+            return None
+        return (config.url, int(getattr(self._store, "generation", 0))) if config is not None else None
+
     def post_events(self, events_json: list[str]) -> dict[str, object]:
         body = ('{"device":"r1","events":[' + ",".join(events_json) + "]}").encode("utf-8")
         return self._request("POST", "/v1/sync/events", body, "application/json", EVENTS_TIMEOUT_SECONDS)
 
-    def put_blob(self, blob_id: str, mime: str, data: bytes) -> dict[str, object]:
+    def put_blob(self, blob_id: str, mime: str, data: bytes, *, conversation_id: str | None = None) -> dict[str, object]:
         digest = blob_id.split(":", 1)[1]
-        return self._request("PUT", "/v1/sync/blobs/" + digest, data, mime, BLOB_TIMEOUT_SECONDS)
+        extra = {"X-SAM-Conversation": conversation_id} if conversation_id else None
+        return self._request("PUT", "/v1/sync/blobs/" + digest, data, mime, BLOB_TIMEOUT_SECONDS, extra)
 
-    def _request(self, method: str, path: str, body: bytes, content_type: str, timeout: float) -> dict[str, object]:
+    def _request(self, method: str, path: str, body: bytes, content_type: str, timeout: float,
+                 extra_headers: dict[str, str] | None = None) -> dict[str, object]:
         try:
             config = self._store.config()
         except sqlite3.Error:
@@ -63,7 +73,8 @@ class ConversationSyncClient:
             raise SyncFailure("bridge_token_unavailable", bridge_wide=True)
         if not is_private_host(urlsplit(config.url).hostname or ""):
             raise SyncFailure("bridge_url_not_local", bridge_wide=True)
-        headers = {"Authorization": f"Bearer {token}", "Accept": "application/json", "Content-Type": content_type}
+        headers = {"Authorization": f"Bearer {token}", "Accept": "application/json", "Content-Type": content_type,
+                   **(extra_headers or {})}
         try:
             response = self._transport.request(method, config.url + path, body=body, headers=headers, timeout=timeout)
         except TransportError as error:

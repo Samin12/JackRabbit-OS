@@ -35,7 +35,7 @@ from .events import (IMAGE_MIMES, MAX_EVENTS_PER_BATCH, Rejected, blob_id_for, d
                      image_event, tool_event, valid_blob_id, valid_conversation_id, valid_session_id,
                      valid_tool_call_id)
 from .outbox import ConversationSyncRepository
-from .settings import SyncSettings, SyncSettingsStore
+from .settings import SyncSettings, SyncSettingsStore, iso_utc as _iso
 from .worker import BACKOFF_SECONDS, ConversationSyncWorker, backoff_seconds
 
 MAX_BLOB_BYTES = 400 * 1024
@@ -44,12 +44,10 @@ MAX_SEND_BYTES = 192 * 1024
 BLOB_GRACE_SECONDS = 20.0
 WAITING_RECHECK_SECONDS = 2.0
 MAINTENANCE_SECONDS = 600.0
+EXPEDITE_MIN_SECONDS = 5.0
+MAX_SOLO = 1000
 _SESSION_CACHE = 256
 _LOG = runtime_logger()
-
-
-def _iso(seconds: float) -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(seconds))
 
 
 class ConversationSyncService:
@@ -64,7 +62,10 @@ class ConversationSyncService:
         self._sessions: OrderedDict[str, str] = OrderedDict()
         self._blocked_until = 0.0
         self._failures = 0
-        self._batch_limit = MAX_SEND_EVENTS
+        self._failure_code: str | None = None
+        self._failed_config: tuple[str, int] | None = None
+        self._last_expedite = 0.0
+        self._solo: set[str] = set()  # events to send alone (a batch holding them was refused)
         self._last_maintenance = 0.0
         self._since_cap_check = 0
         self.worker = ConversationSyncWorker(self._step, self._next_due, idle_seconds=idle_seconds, clock=clock)
@@ -144,7 +145,7 @@ class ConversationSyncService:
         for raw in events:
             try:
                 event = device_event(raw, conversation_id=conversation_id, session_id=session_id, now_ms=now_ms,
-                                     scrub=settings.redact_secrets, local_blob=self._repo.has_blob)
+                                     scrub=settings.redact_secrets)
             except Rejected:
                 rejected += 1
                 continue
@@ -290,11 +291,22 @@ class ConversationSyncService:
 
     # ------------------------------------------------------------------ hop 2 (runtime -> Mac)
     def expedite(self) -> None:
-        """The Mac answered (or the bridge was reconfigured): stop waiting out a backoff."""
+        """The Mac answered (or the bridge was reconfigured): stop waiting out a backoff.
+
+        A bridge without sync routes (``bridge_outdated``) is retried early only once it is
+        reconfigured, and answers from the Mac end a backoff at most every few seconds."""
+        now = self._clock()
+        config = self._client.config_stamp()
         with self._lock:
-            waiting = self._failures > 0 or self._blocked_until > self._clock()
-            self._failures = 0
-            self._blocked_until = 0.0
+            waiting = self._failures > 0 or self._blocked_until > now
+            if waiting:
+                changed = config != self._failed_config
+                if not changed and (self._failure_code == "bridge_outdated"
+                                    or now - self._last_expedite < EXPEDITE_MIN_SECONDS):
+                    return
+                self._last_expedite = now
+                self._failures = 0
+                self._blocked_until = 0.0
         if waiting:
             try:
                 self._repo.expedite()
@@ -318,7 +330,7 @@ class ConversationSyncService:
         if blob is not None:
             self._repo.mark_blob_sending(blob.blob_id)
             try:
-                self._client.put_blob(blob.blob_id, blob.mime, blob.data)
+                self._client.put_blob(blob.blob_id, blob.mime, blob.data, conversation_id=blob.conversation_id)
             except SyncFailure as failure:
                 if failure.bridge_wide:
                     self._repo.mark_blob_retry(blob.blob_id, failure.code, self._bridge_failed(failure))
@@ -329,10 +341,16 @@ class ConversationSyncService:
             self._repo.mark_blob_sent(blob.blob_id)
             self._bridge_ok()
             return True
-        batch = self._repo.next_events(now, limit=self._batch_limit, max_bytes=MAX_SEND_BYTES,
+        batch = self._repo.next_events(now, limit=MAX_SEND_EVENTS, max_bytes=MAX_SEND_BYTES,
                                        blob_grace_seconds=BLOB_GRACE_SECONDS)
         if not batch:
             return False
+        with self._lock:
+            solo = set(self._solo)
+        if batch[0].event_id in solo:
+            batch = batch[:1]
+        else:
+            batch = next((batch[:index] for index, item in enumerate(batch) if item.event_id in solo), batch)
         ids = [item.event_id for item in batch]
         self._repo.mark_events_sending(ids)
         try:
@@ -341,15 +359,22 @@ class ConversationSyncService:
             if failure.bridge_wide:
                 self._repo.mark_events_retry(ids, failure.code, self._bridge_failed(failure))
                 return False
-            if len(batch) > 1:  # find the one the Mac refuses: smaller batches, down to one event
-                self._batch_limit = max(1, len(batch) // 2)
+            if len(batch) > 1:  # find the one the Mac refuses: resend each of these alone
+                with self._lock:
+                    if len(self._solo) + len(ids) > MAX_SOLO:
+                        self._solo.clear()
+                    self._solo.update(ids)
                 self._repo.mark_events_retry(ids, failure.code, 0.0)
                 return True
+            with self._lock:
+                self._solo.discard(ids[0])
             self._repo.mark_events_failed(ids, failure.code)
             _LOG.warning("conversation_sync.event_rejected", extra={"code": failure.code, "status": failure.status,
                                                                     "kind": batch[0].kind})
             return True
         self._repo.mark_events_sent(ids)
+        with self._lock:
+            self._solo.difference_update(ids)
         self._bridge_ok()
         return True
 
@@ -369,9 +394,12 @@ class ConversationSyncService:
 
     def _bridge_failed(self, failure: SyncFailure) -> float:
         now = self._clock()
+        config = self._client.config_stamp()
         with self._lock:
             self._failures += 1
             failures = self._failures
+            self._failure_code = failure.code
+            self._failed_config = config
             self._blocked_until = now + backoff_seconds(failures)
             retry_at = self._blocked_until
         if failures == 1 or failures == len(BACKOFF_SECONDS):
@@ -384,8 +412,8 @@ class ConversationSyncService:
         with self._lock:
             recovered = self._failures > 0
             self._failures = 0
+            self._failure_code = None
             self._blocked_until = 0.0
-            self._batch_limit = min(MAX_SEND_EVENTS, self._batch_limit * 2)  # grow back after isolating a refusal
         if recovered:
             _LOG.info("conversation_sync.bridge_recovered")
         self._settings.record_status(lastError=None, lastOkAt=_iso(self._clock()))
