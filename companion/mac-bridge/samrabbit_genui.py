@@ -1099,10 +1099,16 @@ class GenUiService:
             try:
                 self._generate(artifact_id)
             except GenUiError as error:
-                self._fail(artifact_id, error)
+                if self._stopping.is_set():
+                    # stop() killed Claude or the renderer under us: the request stays "generating" on disk and
+                    # the next start picks it up again (_recover), instead of failing for the R1.
+                    _LOG.info("genui %s interrupted by shutdown", artifact_id)
+                else:
+                    self._fail(artifact_id, error)
             except Exception:  # noqa: BLE001 - never leak content into the log
                 _LOG.exception("genui %s failed unexpectedly", artifact_id)
-                self._fail(artifact_id, GenUiError("internal_error", "Something went wrong making the visual."))
+                if not self._stopping.is_set():
+                    self._fail(artifact_id, GenUiError("internal_error", "Something went wrong making the visual."))
             finally:
                 with self._lock:
                     if artifact_id in self._queued:
@@ -1111,6 +1117,8 @@ class GenUiService:
 
     def _ask(self, request: GenerationRequest, deadline: float,
              repair: Optional[InvalidWidget] = None) -> Dict[str, Any]:
+        if self._stopping.is_set():  # never start a (repair) Claude run that stop() can no longer kill
+            raise GenUiError("interrupted", "The Mac restarted while making the visual.")
         remaining = deadline - time.monotonic()
         if remaining < 5:
             raise GenUiError("generation_timeout", "Making the visual took too long.", retryable=True)

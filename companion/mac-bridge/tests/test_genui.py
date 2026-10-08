@@ -500,6 +500,28 @@ class RecoveryTest(GenUiTestBase):
         self.assertEqual("ready", store.meta(fresh)["status"])
         self.assertEqual(("failed", "interrupted"), (store.meta(stale)["status"], store.meta(stale)["error"]))
 
+    def test_a_bridge_restart_mid_generation_resumes_it(self) -> None:
+        self.modes("slow")  # Claude is still thinking when the bridge stops (install.sh, logout, a crash)
+        _, body = self.generate(conversationId="c_" + "9" * 20)
+        self.service.start()
+        deadline = time.monotonic() + 10
+        while not self.calls() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertEqual(1, len(self.calls()), "Claude was running")
+        self.service.stop()
+        meta = self.service.store.meta(body["artifactId"])
+        self.assertEqual("generating", meta["status"], "a shutdown is not a failure the R1 should hear about")
+        self.assertEqual(1, len(self.calls()), "no repair run is started while stopping")
+        self.assertEqual(["ui.generating"], [event["type"] for _, event in self.sync.events])
+        self.modes("ok")
+        restarted = genui.GenUiService(self.service.store, cli=self.service.cli, renderer=self.renderer,
+                                       sync=genui.SyncHooks(self.sync), desktop_token=self.service.desktop_token)
+        restarted.start()
+        self.addCleanup(restarted.stop)
+        self.assertTrue(restarted.wait_idle(30))
+        self.assertEqual("ready", self.service.store.meta(body["artifactId"])["status"])
+        self.assertEqual(["ui.generating", "ui.generated"], [event["type"] for _, event in self.sync.events])
+
 
 class AssemblyTest(unittest.TestCase):
     def test_document_order_matches_build_final_frame_content(self) -> None:
