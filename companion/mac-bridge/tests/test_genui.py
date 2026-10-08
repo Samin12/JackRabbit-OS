@@ -207,7 +207,10 @@ class GenerateTest(GenUiTestBase):
         self.assertEqual((meta["width"], meta["height"]), (width, height))
         self.assertLessEqual(width, 960)
 
-        status, headers, document = self.request("GET", f"/v1/ui/artifacts/{artifact_id}/document")
+        status, _headers, _ = self.request("GET", f"/v1/ui/artifacts/{artifact_id}/document")
+        self.assertEqual(403, status, "the R1's bearer token does not open the document (desktop only)")
+        status, headers, document = self.request("GET", f"/v1/ui/artifacts/{artifact_id}/document", token=None,
+                                                 headers={"X-SamRabbit-Desktop": DESKTOP})
         self.assertEqual(200, status)
         self.assertTrue(headers["Content-Type"].startswith("text/html"))
         self.assertIn("sandbox allow-scripts", headers["Content-Security-Policy"])
@@ -358,7 +361,8 @@ class GenerateTest(GenUiTestBase):
         self.finish()
         meta = self.service.store.meta(body["artifactId"])
         self.assertEqual(("failed", "renderer_missing"), (meta["status"], meta["error"]))
-        status, _headers, document = self.request("GET", f"/v1/ui/artifacts/{body['artifactId']}/document")
+        status, _headers, document = self.request("GET", f"/v1/ui/artifacts/{body['artifactId']}/document",
+                                                  token=None, headers={"X-SamRabbit-Desktop": DESKTOP})
         self.assertEqual(200, status)
         self.assertIn(b'id="bars"', document)
 
@@ -461,6 +465,16 @@ class RoutesTest(GenUiTestBase):
         handler = types.SimpleNamespace(client_address=("192.168.1.20", 5000),
                                         headers={"X-SamRabbit-Desktop": DESKTOP})
         self.assertFalse(self.service.desktop_authorized(handler, "GET", path), "loopback only")
+        for extra, allowed in (({"Host": "127.0.0.1:3780"}, True), ({"Host": "[::1]:3780"}, True),
+                               ({"Host": "localhost:3780", "Origin": "http://127.0.0.1:3780"}, True),
+                               ({"Host": "rebind.example:3780"}, False), ({"Origin": "null"}, False),
+                               ({"Origin": "https://evil.example"}, False)):
+            handler = types.SimpleNamespace(client_address=("127.0.0.1", 5000),
+                                            headers=dict({"X-SamRabbit-Desktop": DESKTOP}, **extra))
+            self.assertEqual(allowed, self.service.desktop_authorized(handler, "GET", path), extra)
+        status, _headers, _ = self.request("GET", path + "/document", token=None,
+                                           headers={"X-SamRabbit-Desktop": DESKTOP, "Origin": "null"})
+        self.assertEqual(401, status, "a sandboxed widget cannot read other artifacts with the desktop cookie")
         self.desktop_file.chmod(0o644)
         self.assertFalse(self.service.desktop_token.matches(DESKTOP), "a world-readable token file is ignored")
 

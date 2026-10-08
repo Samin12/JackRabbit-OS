@@ -13,7 +13,7 @@ Routes (registered by ``samrabbit_bridge.py``):
 
 R1-facing calls use the bridge bearer token from a private-LAN peer. The three GET routes also accept the
 desktop token (``~/.config/samrabbit/desktop-token``, header ``X-SamRabbit-Desktop`` or cookie ``sr_desktop``)
-from a loopback peer.
+from a loopback peer; ``/document`` is for the desktop app only (CONTRACTS-WAVE3 hop 3).
 
 Generation runs one request at a time on a worker thread: the headless Claude Code CLI (``claude -p``, all
 tools off, safe mode, an empty temporary working folder) answers one JSON object ``{title, summary,
@@ -50,7 +50,7 @@ import tempfile
 import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 import uuid
 
 try:  # Owned by the conversation-sync workstream; generative UI works without it.
@@ -97,6 +97,16 @@ _ARTIFACT_ID = re.compile(r"^ui_[0-9a-f]{24}$")
 _ARTIFACT_ROUTE = re.compile(r"^/v1/ui/artifacts/(ui_[0-9a-f]{24})(/image|/document)?$")
 _MODEL = re.compile(r"^claude-[a-z0-9][a-z0-9.\-]{1,60}$")
 _LOOPBACK = ("127.0.0.1", "::1", "::ffff:127.0.0.1")
+_LOOPBACK_NAMES = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+def _host_name(value: str) -> str:
+    """``Host`` / netloc without the port: ``127.0.0.1:3780`` -> ``127.0.0.1``, ``[::1]:3780`` -> ``::1``."""
+    value = (value or "").strip().lower()
+    if value.startswith("["):
+        end = value.find("]")
+        return value[1:end] if end > 0 else ""
+    return value.rsplit(":", 1)[0] if value.count(":") == 1 else value
 
 # The app rail's CSP from OpenGenerativeUI ``frame-content.ts`` (CDN origins for scripts AND connect-src).
 CSP_POLICY = ("default-src 'self'; script-src 'unsafe-inline' 'unsafe-eval' " + " ".join(CDN_ORIGINS) +
@@ -1233,10 +1243,18 @@ class GenUiService:
 
     # ------------------------------------------------------------------ HTTP
     def desktop_authorized(self, handler: Any, method: str, route: str) -> bool:
-        """The desktop app may read artifacts with its loopback token instead of the bridge bearer."""
+        """The desktop app may read artifacts with its loopback token instead of the bridge bearer. Same rule
+        as the sync module's desktop API: loopback peer, loopback ``Host`` (no DNS rebinding), no foreign
+        ``Origin`` (a sandboxed widget's requests carry ``Origin: null``), and the desktop token."""
         if method != "GET" or not _ARTIFACT_ROUTE.match(route):
             return False
         if handler.client_address[0] not in _LOOPBACK:
+            return False
+        host = handler.headers.get("Host")
+        if host and _host_name(host) not in _LOOPBACK_NAMES:
+            return False
+        origin = handler.headers.get("Origin")
+        if origin and _host_name(urlsplit(origin).netloc) not in _LOOPBACK_NAMES:
             return False
         return self.desktop_token.matches(self.desktop_token.presented(handler.headers))
 
@@ -1261,6 +1279,11 @@ class GenUiService:
                     raise GenUiError("image_not_ready", "The picture is not ready yet.", status=409,
                                      retryable=meta.get("status") == "generating")
                 return 200, Raw(data, "image/jpeg")
+            if not self.desktop_authorized(handler, method, route):
+                # The full document (with all the data it shows) is for the desktop app on this Mac only
+                # (CONTRACTS-WAVE3 hop 3); the R1's bearer token does not open it from the network.
+                raise GenUiError("desktop_only", "The document is only served to the desktop app on this Mac.",
+                                 status=403)
             document = self.store.read_bytes(artifact_id, "document.html")
             if document is None:
                 raise GenUiError("document_not_ready", "The visual is not ready yet.", status=409,
