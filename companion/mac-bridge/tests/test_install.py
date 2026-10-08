@@ -63,8 +63,9 @@ class InstallTest(unittest.TestCase):
         self.assertTrue((script.parent / "samrabbit_app.py").is_file(), "the desktop web UI module is installed too")
 
         self.assertEqual(["--host", "0.0.0.0", "--port", "3780", "--token-file", str(token_file),
-                          "--sync-dir", str(sync_dir), "--desktop-token-file", str(desktop_token_file)],
-                         plist["ProgramArguments"][3:])
+                          "--sync-dir", str(sync_dir), "--desktop-token-file", str(desktop_token_file),
+                          "--cli", "auto"],
+                         plist["ProgramArguments"][3:], "the installed bridge, and only it, uses the real CLI")
         self.assertTrue(plist["StandardErrorPath"].endswith("Library/Logs/samrabbit-bridge.log"))
 
         (sync_dir / "conversations.db").write_text("kept")

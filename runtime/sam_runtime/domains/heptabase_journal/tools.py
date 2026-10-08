@@ -17,8 +17,12 @@ JOURNAL_TOOL_NAMES = ("journal_add", "journal_read", "journal_pause")
 _LOG = runtime_logger()
 
 _ADD_DESCRIPTION = (
-    "Add the user's own words to their Heptabase journal, verbatim. Use only when the user asks to "
-    "journal, record, or note something in their journal. Pass exactly the words they want recorded, "
+    "Add the user's own words to their Heptabase journal, verbatim. Call it ONLY when the user explicitly asks "
+    "to add, save, write, put or note something in their journal (for example 'add to my journal that ...', "
+    "'put this in my journal'). Never call it on your own: not as a fallback or workaround when another action "
+    "fails or is unavailable (a calendar event, a reminder, a task), not to log what you did or what was said, "
+    "and not for complaints, comments or questions about the journal (for example 'stop putting things in my "
+    "journal' or 'what did I journal today?'). Pass exactly the words they want recorded, "
     "dropping only the command phrase (for example 'add to my journal that'). Never reword, summarize, "
     "translate, or add anything: the device checks the words against what the user actually said and "
     "records only their words. If they gave no content, ask what to add. state 'sent' means it is in "
@@ -29,9 +33,10 @@ _READ_DESCRIPTION = (
     "Returns at most 4 KB of plain text with secrets redacted. Answer briefly from it; never write."
 )
 _PAUSE_DESCRIPTION = (
-    "Keep the current voice session off the record: nothing said in this session is auto-journaled. "
-    "Use when the user says 'off the record', 'don't journal this', or similar. Explicit journal_add "
-    "requests still work."
+    "Keep the current voice session off the record: nothing said in this session is auto-journaled (that only "
+    "happens when the user turned on 'Record every voice conversation in my journal'; by default only what they "
+    "explicitly ask to add is journaled). Use when the user says 'off the record', 'don't journal this', or "
+    "similar. Explicit journal_add requests still work."
 )
 
 

@@ -33,6 +33,7 @@ from __future__ import annotations
 import argparse
 import atexit
 from datetime import date as Date, datetime, timezone
+import hashlib
 import hmac
 import ipaddress
 import json
@@ -81,6 +82,13 @@ DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 3780
 DEFAULT_TOKEN_FILE = "~/.config/samrabbit/bridge-token"
 FALLBACK_CLI = "/opt/homebrew/bin/heptabase"
+# Which Heptabase CLI a bridge uses (``--cli`` / SAMRABBIT_HEPTABASE_CLI): a path, ``auto`` (the real CLI on PATH
+# or FALLBACK_CLI) or ``dry-run`` (nothing reaches Heptabase). Without a choice, only the installed LaunchAgent
+# copy (INSTALLED_DIR, written by install.sh) uses the real CLI; a copy run from a checkout or a test is dry-run,
+# so a stray test or dev bridge can never write to the user's journal.
+CLI_AUTO = "auto"
+CLI_DRY_RUN = "dry-run"
+INSTALLED_DIR = "~/Library/Application Support/SamRabbit/bridge"
 MAX_BODY_BYTES = 64 * 1024
 MAX_CLI_OUTPUT_BYTES = 32 * 1024 * 1024
 CLI_TIMEOUT_SECONDS = 30.0
@@ -131,6 +139,8 @@ def _app_unavailable() -> BridgeError:
 
 class HeptabaseCli:
     """Runs the ``heptabase`` CLI. Output is parsed, never logged."""
+
+    mode = "real"
 
     def __init__(self, executable: Optional[str] = None) -> None:
         self._explicit = executable
@@ -200,6 +210,66 @@ class HeptabaseCli:
             raise BridgeError(502, "heptabase_cli_bad_output", "The Heptabase CLI answered with unreadable output.",
                               retryable=True, written=unknown)
         raise _cli_failure(done.stderr, unknown)
+
+
+class DryRunHeptabaseCli:
+    """Stands in for the ``heptabase`` CLI without touching Heptabase: appends are kept in this process's
+    memory only (and answered like the real CLI, plus ``dryRun: true``), reads return them. The default for
+    every bridge that is not the installed LaunchAgent copy (see ``cli_for``)."""
+
+    mode = CLI_DRY_RUN
+
+    def __init__(self) -> None:
+        self._journal: Dict[str, List[str]] = {}
+        self._lock = threading.Lock()
+
+    def executable(self) -> Optional[str]:
+        return CLI_DRY_RUN
+
+    def version(self) -> Optional[str]:
+        return CLI_DRY_RUN
+
+    def entries(self, journal_date: str) -> List[str]:
+        with self._lock:
+            return list(self._journal.get(journal_date, []))
+
+    def run(self, args: List[str], *, timeout: float, append: bool = False) -> Dict[str, Any]:
+        if len(args) >= 3 and args[:2] == ["journal", "append"]:
+            journal_date = args[2]
+            path = args[4] if len(args) >= 5 and args[3] == "--content-file" else None
+            if path is None:
+                raise BridgeError(400, "invalid_content", "Dry run: no content file.", written=False)
+            with open(path, "rb") as handle:
+                content = handle.read().decode("utf-8", errors="replace")
+            with self._lock:
+                day = self._journal.setdefault(journal_date, [])
+                day.append(content)
+                digest = hashlib.md5("".join(day).encode("utf-8")).hexdigest()  # noqa: S324 - not security
+            return {"date": journal_date, "title": journal_date, "contentMd5": digest, "dryRun": True}
+        if len(args) >= 3 and args[:2] == ["journal", "read"]:
+            paragraphs = [block for item in self.entries(args[2]) for block in item.split("\n\n") if block.strip()]
+            document = {"type": "doc", "content": [
+                {"type": "paragraph", "content": [{"type": "text", "text": text}]} for text in paragraphs]}
+            content = json.dumps(document)
+            return {"date": args[2], "title": args[2], "content": content, "dryRun": True,
+                    "contentMd5": hashlib.md5(content.encode("utf-8")).hexdigest()}  # noqa: S324
+        raise BridgeError(400, "heptabase_rejected", "Dry run: unsupported command.", reason="unsupported")
+
+
+def default_cli_choice(here: Optional[str] = None) -> str:
+    """``auto`` (the real CLI) for the installed LaunchAgent copy, ``dry-run`` for any other copy."""
+    location = os.path.realpath(here or _HERE)
+    return CLI_AUTO if location == os.path.realpath(os.path.expanduser(INSTALLED_DIR)) else CLI_DRY_RUN
+
+
+def cli_for(choice: Optional[str], *, here: Optional[str] = None) -> Any:
+    """The CLI for ``--cli``: a path (used as given), ``auto``, ``dry-run``, or nothing (``default_cli_choice``)."""
+    value = (choice or "").strip() or default_cli_choice(here)
+    if value == CLI_DRY_RUN:
+        return DryRunHeptabaseCli()
+    if value == CLI_AUTO:
+        return HeptabaseCli(None)
+    return HeptabaseCli(os.path.expanduser(value))
 
 
 def _cli_failure(stderr: bytes, unknown: Any) -> BridgeError:
@@ -406,7 +476,7 @@ class BridgeServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, address: Tuple[str, int], *, token: TokenFile, cli: HeptabaseCli,
+    def __init__(self, address: Tuple[str, int], *, token: TokenFile, cli: Any,
                  cli_timeout: float = CLI_TIMEOUT_SECONDS, allow_any_client: bool = False,
                  mac_control: Optional[mac.MacControl] = None, sync_dir: Optional[str] = None,
                  desktop_token_file: Optional[str] = None,
@@ -479,7 +549,8 @@ class BridgeServer(ThreadingHTTPServer):
                 calendar_write = {"available": False}
             value: Dict[str, Any] = {
                 "ok": True, "service": SERVICE, "version": VERSION,
-                "cli": {"available": version is not None, "version": version},
+                "cli": {"available": version is not None, "version": version,
+                        "mode": getattr(self.cli, "mode", "real")},
                 "app": {"reachable": reachable, "detail": detail},
                 "mac": capabilities,
                 "sync": self.sync.health() if self.sync is not None else {"available": False},
@@ -722,10 +793,11 @@ def make_server(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, *, token_fil
                 claude: Optional[str] = None, agent_browser: Optional[str] = None,
                 genui_model: Optional[str] = None, composio: Optional[str] = None,
                 calendar_id: Optional[str] = None, calendar_writer: Any = None) -> BridgeServer:
-    """Conversation sync runs only with a ``sync_dir`` (the command line passes the default one)."""
+    """Conversation sync runs only with a ``sync_dir`` (the command line passes the default one). ``cli`` is a
+    path, ``auto`` or ``dry-run``; without it only the installed copy uses the real CLI (``cli_for``)."""
     if calendar_writer is None and gcal is not None:
         calendar_writer = gcal.make_writer(composio, calendar_id=calendar_id)
-    return BridgeServer((host, port), token=TokenFile(token_file), cli=HeptabaseCli(cli),
+    return BridgeServer((host, port), token=TokenFile(token_file), cli=cli_for(cli),
                         cli_timeout=cli_timeout, allow_any_client=allow_any_client,
                         mac_control=mac_control or mac.MacControl(mac.CuaDriver(driver)),
                         sync_dir=sync_dir, desktop_token_file=desktop_token_file,
@@ -741,7 +813,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--port", type=int, default=int(os.environ.get("SAMRABBIT_BRIDGE_PORT", DEFAULT_PORT)))
     parser.add_argument("--token-file", default=os.environ.get("SAMRABBIT_BRIDGE_TOKEN_FILE", DEFAULT_TOKEN_FILE))
     parser.add_argument("--cli", default=os.environ.get("SAMRABBIT_HEPTABASE_CLI") or None,
-                        help="path to the heptabase CLI (default: found on PATH)")
+                        help="the heptabase CLI: a path, 'auto' (the real one on PATH) or 'dry-run' (never writes "
+                             "to Heptabase). Default: 'auto' for the installed LaunchAgent copy, else 'dry-run'")
     parser.add_argument("--cli-timeout", type=float, default=CLI_TIMEOUT_SECONDS)
     parser.add_argument("--cua-driver", default=os.environ.get("SAMRABBIT_CUA_DRIVER") or None,
                         help="path to the cua-driver CLI (default: found on PATH or in the usual install folders)")
@@ -787,6 +860,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     signal.signal(signal.SIGINT, stop)
     server.genui.start()
     cli_path = server.cli.executable()
+    if getattr(server.cli, "mode", "real") == CLI_DRY_RUN:
+        _LOG.warning("heptabase CLI: dry-run, journal writes stay in this process and never reach Heptabase "
+                     "(pass --cli auto for the real CLI)")
     composio_found = server.calendar is not None and server.calendar.cli.executable() is not None
     _LOG.info("%s %s listening on %s:%d (cli %s, cua-driver %s, sync %s, composio %s)", SERVICE, VERSION, options.host,
               server.server_address[1], cli_path or "missing", "found" if server.mac.driver.executable() else "missing",

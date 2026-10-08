@@ -52,7 +52,9 @@ class BridgeTest(unittest.TestCase):
         bridge._LOG.addHandler(handler)  # noqa: SLF001
         bridge._LOG.setLevel(logging.INFO)  # noqa: SLF001
         self.addCleanup(bridge._LOG.removeHandler, handler)  # noqa: SLF001
-        self.server = bridge.make_server("127.0.0.1", 0, token_file=str(self.token_file), cli_timeout=2.0)
+        # The fake by path: a bridge started from a checkout never picks up the real CLI by itself.
+        self.server = bridge.make_server("127.0.0.1", 0, token_file=str(self.token_file), cli=str(fake),
+                                         cli_timeout=2.0)
         self.thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
         self.thread.start()
         self.addCleanup(self._stop)
@@ -133,7 +135,7 @@ class BridgeTest(unittest.TestCase):
         status, value = self.call("GET", "/health")
         self.assertEqual(200, status)
         self.assertEqual((True, "samrabbit-bridge"), (value["ok"], value["service"]))
-        self.assertEqual({"available": True, "version": "0.7.0"}, value["cli"])
+        self.assertEqual({"available": True, "version": "0.7.0", "mode": "real"}, value["cli"])
         self.assertEqual(True, value["app"]["reachable"])
         self.server._health = None  # noqa: SLF001
         self.mode("down")

@@ -1,6 +1,7 @@
 (function(){
 // Mac Studio card: is the Mac bridge reachable, what can Voice do on the Mac (cua-driver, Accessibility,
-// Screen Recording with its one fix command), and which T3 project receives Mac tasks and general requests.
+// Screen Recording with its one fix command), which T3 project receives Mac tasks and general requests, and the
+// Google account that Google links opened in Chrome use.
 const body=document.querySelector("#mac-body"),stateEl=document.querySelector("#mac-state");
 if(!body)return;
 let busy=false,flash=null;
@@ -31,6 +32,19 @@ function picker(t3){
   select.addEventListener("change",async()=>{if(busy)return;busy=true;select.disabled=true;try{await api("/v1/management/t3/settings",{method:"POST",body:JSON.stringify({orchestrationProjectId:select.value||null})});flash={text:"Saved. New Mac tasks go to "+(select.selectedOptions[0]?.textContent||"that project")+".",tone:"support"}}catch(error){flash={text:error.message,tone:"error"}}finally{busy=false;load()}});
   wrap.append(select,el("p",{class:"support",style:"margin:0;font-size:.9rem",text:"Voice starts Mac tasks and general requests here. Coding work goes to the project you name, a project the request mentions, or the most recently active one."}));
   return wrap}
+function googleAccount(mac){
+  // The Google account Voice opens Google Calendar, Gmail, Drive, Docs and Meet links in (authuser=).
+  const account=mac.googleAccount;if(!account)return null;
+  const input=el("input",{type:"email",name:"googleAccount",maxlength:"254",autocomplete:"off",spellcheck:"false","aria-label":"Google account",placeholder:account.fromCalendar||"name@example.com"});
+  input.value=account.source==="setting"?account.email||"":"";
+  const save=el("button",{class:"secondary compact",type:"submit",text:"Save"});
+  const hint=account.email?`Voice opens Google Calendar, Gmail, Drive, Docs and Meet links in Chrome as ${account.email}${account.source==="calendar"?" (your calendar's account)":""}. Leave empty to use your calendar's account.`:"Enter your Google account so Calendar, Gmail and Drive links open in it (otherwise Chrome uses its first signed-in account).";
+  const form=el("form",{style:"display:grid;gap:10px;max-width:560px;margin-top:28px",autocomplete:"off"},
+    el("strong",{text:"Google account in Chrome"}),
+    el("div",{style:"display:flex;gap:10px;align-items:center"},input,save),
+    el("p",{class:"support",style:"margin:0;font-size:.9rem",text:hint}));
+  form.addEventListener("submit",async event=>{event.preventDefault();if(busy)return;busy=true;save.disabled=true;try{const result=await api("/v1/management/mac",{method:"POST",body:JSON.stringify({googleAccount:input.value.trim()||null})});const email=result.googleAccount&&result.googleAccount.email;flash={text:email?`Saved. Google links open as ${email}.`:"Saved. Google links open in Chrome's first signed-in account.",tone:"support"}}catch(error){flash={text:error.message,tone:"error"}}finally{busy=false;load()}});
+  return form}
 function render(mac,t3){
   body.className="";body.replaceChildren();
   if(!mac.configured){setState("Not set up","");body.append(message(mac.message||"Connect the Mac bridge first (Heptabase journal > Connect through your Mac)."));return}
@@ -46,6 +60,7 @@ function render(mac,t3){
     stat("Screen vision",!mac.reachable?"—":permissions.screenRecording?"On":"Off",permissions.screenRecording?"Voice can look at the screen":"Screen Recording not allowed")));
   if(mac.reachable&&caps.screenRecordingFix)body.append(fixPanel(caps.screenRecordingFix));
   body.append(picker(t3));
+  const account=googleAccount(mac);if(account)body.append(account);
   if(flash){body.append(message(flash.text,flash.tone));flash=null}
   body.append(el("div",{class:"actions",style:"justify-content:flex-start;margin-top:22px"},el("button",{class:"secondary",type:"button",text:"Check again",onclick:load})))}
 async function load(){

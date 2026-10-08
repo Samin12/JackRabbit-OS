@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import asdict
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, tzinfo
 import json
 from uuid import uuid4
 
@@ -89,7 +89,7 @@ class CalendarService:
     def invoke_tool(self, name: str, context: ToolInvocationContext, arguments: dict[str, object]) -> ToolInvocationResult:
         try:
             if name == "calendar_list_upcoming":
-                value = self._event_views(self._repository.upcoming_events(datetime.now(UTC).isoformat(), limit=_limit(arguments)))
+                value = self._list_upcoming(arguments)
             elif name == "calendar_search":
                 value = self._event_views(self._repository.search_upcoming(datetime.now(UTC).isoformat(), _required(arguments, "query"), limit=_limit(arguments)))
             elif name == "calendar_read_event":
@@ -252,23 +252,36 @@ class CalendarService:
         if account is None: raise ValueError("Calendar connection was not found.")
         return account
 
-    def _event_views(self, events: tuple[CalendarEvent, ...]) -> list[dict[str, object]]:
-        """Events for the model, with their times in the user's zone and minutes until they start. Google
-        Calendar feed events are editable when the Mac bridge is connected (it makes the change)."""
+    def _list_upcoming(self, arguments: dict[str, object]) -> object:
+        """The next events, or (with withinMinutes or from/to) only the events in that window."""
+        from sam_runtime.domains.calendar.window import list_window, requested, window_zone  # time windows, read-only
         now = datetime.now(UTC)
-        zone = event_zone(self._timezone_name)[1]
+        if not requested(arguments):
+            return self._event_views(self._repository.upcoming_events(now.isoformat(), limit=_limit(arguments)))
+        zone_name, zone = window_zone(arguments, event_zone(self._timezone_name)[0])
+        return list_window(self._repository, arguments, now=now, limit=_limit(arguments), view=self._event_viewer(zone, now), default_timezone=zone_name)
+
+    def _event_views(self, events: tuple[CalendarEvent, ...]) -> list[dict[str, object]]:
+        view = self._event_viewer(event_zone(self._timezone_name)[1], datetime.now(UTC))
+        return [view(event) for event in events]
+
+    def _event_viewer(self, zone: tzinfo, now: datetime) -> Callable[[CalendarEvent], dict[str, object]]:
+        """Events for the model, with their times in the user's zone (startsLocal/endsLocal) and minutes until
+        they start (startsInMinutes). Google Calendar feed events are editable when the Mac bridge is connected
+        (it makes the change)."""
         google_accounts: dict[str, bool] = {}
-        values = []
-        for event in events:
+
+        def view(event: CalendarEvent) -> dict[str, object]:
             if event.account_id not in google_accounts:
                 account = self._repository.get_account(event.account_id)
                 google_accounts[event.account_id] = bool(account is not None and self._google_route(account) and self._google is not None and self._google.bridge.configured())
-            view = self._event_view(event)
-            view.update(local_fields(event, zone, now))
+            value = self._event_view(event)
+            value.update(local_fields(event, zone, now))
             if google_accounts[event.account_id] and not event.all_day:
-                view["editable"] = True
-            values.append(view)
-        return values
+                value["editable"] = True
+            return value
+
+        return view
 
     @staticmethod
     def _event_view(event: CalendarEvent) -> dict[str, object]:

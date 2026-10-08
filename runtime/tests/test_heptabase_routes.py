@@ -177,6 +177,7 @@ class HeptabaseRoutesTest(unittest.TestCase):
 
     def test_finalize_journals_before_memory_and_dedupes_by_session(self) -> None:
         self.h.connect()
+        self.h.service.save_settings({"autoSessions": True})  # off by default
         at = int(self.h.clock() * 1000)
         payload = {"sessionId": "voice-123", "entries": [
             {"role": "user", "eventType": USER, "text": "Remember the orb should breathe slower", "at": at},

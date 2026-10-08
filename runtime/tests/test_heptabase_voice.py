@@ -60,6 +60,8 @@ class JournalVoiceToolsTest(unittest.TestCase):
         register_journal_tools(self.catalog, self.h.service)
         TasksToolPackage(TaskService(TaskRepository(self.h.database))).register(self.catalog)
         self.today = journal_date(self.h.clock(), ZONE)
+        # These tests cover end-of-session entries, which are off unless the user turns them on.
+        self.h.service.save_settings({"autoSessions": True})
 
     def ctx(self, utterance: str | None, utterance_id: int, *, call: str = "call-1",
             session: str = "session-1") -> ToolInvocationContext:

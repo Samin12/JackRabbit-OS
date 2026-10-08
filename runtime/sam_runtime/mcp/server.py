@@ -15,6 +15,13 @@ if TYPE_CHECKING:
 
 
 PROTOCOL_VERSION = "2025-11-25"
+# Added to every failed Voice tool result (the Realtime model reads the whole result as text): a failure is
+# said as a failure, never as "still running in the background".
+VOICE_TOOL_FAILURE_NOTE = (
+    "[Host note] This tool call failed: the action did not complete and nothing is still running in the "
+    "background. Tell the user plainly that it did not work and why (from the message above), in a few words. "
+    "Do not say it worked, is in progress, or is happening in the background."
+)
 DEVICE_STATUS_TOOL = {
     "name": "get_device_status",
     "description": "Read the current health of this SamRabbit on-device runtime.",
@@ -128,7 +135,10 @@ class LocalMcpServer:
             agent=self._agent,
             context=ToolInvocationContext(self._agent, voice_session_id, tool_call_id, user_utterance, user_utterance_id, execution_id),
         )
-        return self._result(request_id, result.mcp_result())
+        payload = result.mcp_result()
+        if result.is_error and self._agent is AgentKind.VOICE:
+            payload["content"] = [*payload["content"], {"type": "text", "text": VOICE_TOOL_FAILURE_NOTE}]
+        return self._result(request_id, payload)
 
     def _authorized_session(self, session_id: str | None, version: str | None) -> bool:
         if version != PROTOCOL_VERSION or not session_id:

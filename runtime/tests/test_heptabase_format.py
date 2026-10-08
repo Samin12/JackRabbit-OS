@@ -153,7 +153,7 @@ class SettingsTest(unittest.TestCase):
 
     def test_defaults_and_strict_updates(self) -> None:
         settings = self.h.service.settings()
-        self.assertEqual({"autoSessions": True, "includeActions": True, "includeAssistant": False,
+        self.assertEqual({"autoSessions": False, "includeActions": True, "includeAssistant": False,
                           "redactSecrets": True, "timezone": "America/New_York"}, settings.view())
         view = self.h.service.save_settings({"includeAssistant": True, "timezone": "America/Chicago"})
         self.assertEqual("America/Chicago", view["settings"]["timezone"])

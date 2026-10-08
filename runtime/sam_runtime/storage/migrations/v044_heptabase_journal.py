@@ -8,6 +8,9 @@ def apply(connection: sqlite3.Connection) -> None:
 
     Secrets (OAuth tokens) never live here; they are sealed in
     ``connection_credential_envelopes`` under the fixed journal connection UUID.
+
+    ``auto_sessions`` defaults to 0 (journal only what the user asks to add). Databases created before that
+    keep their stored value; the user changes it in the journal settings.
     """
     connection.executescript(
         """
@@ -45,7 +48,7 @@ def apply(connection: sqlite3.Connection) -> None:
 
         CREATE TABLE IF NOT EXISTS heptabase_journal_settings (
             settings_id INTEGER PRIMARY KEY CHECK (settings_id = 1),
-            auto_sessions INTEGER NOT NULL DEFAULT 1 CHECK (auto_sessions IN (0, 1)),
+            auto_sessions INTEGER NOT NULL DEFAULT 0 CHECK (auto_sessions IN (0, 1)),
             include_actions INTEGER NOT NULL DEFAULT 1 CHECK (include_actions IN (0, 1)),
             include_assistant INTEGER NOT NULL DEFAULT 0 CHECK (include_assistant IN (0, 1)),
             redact_secrets INTEGER NOT NULL DEFAULT 1 CHECK (redact_secrets IN (0, 1)),

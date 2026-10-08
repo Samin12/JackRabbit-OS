@@ -108,8 +108,10 @@ if composio:
     environment["SAMRABBIT_COMPOSIO"] = composio
 value = {
     "Label": label,
+    # --cli auto: the installed bridge is the one that writes to the real Heptabase journal (any other copy
+    # of the bridge, e.g. a test or dev run from a checkout, defaults to a dry-run CLI).
     "ProgramArguments": [python, "-I", script, "--host", host, "--port", port, "--token-file", token,
-                         "--sync-dir", sync_dir, "--desktop-token-file", desktop_token],
+                         "--sync-dir", sync_dir, "--desktop-token-file", desktop_token, "--cli", "auto"],
     "EnvironmentVariables": environment,
     "WorkingDirectory": workdir,
     "RunAtLoad": True,
