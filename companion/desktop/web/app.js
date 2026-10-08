@@ -183,8 +183,8 @@ function renderStatus() {
   let tone;
   let line;
   if (state.listStatus === 'error') {
-    tone = 'error';
     const error = state.listError;
+    tone = error && error.syncMissing ? 'warn' : 'error';
     line = error && error.status === 0 ? 'Bridge not reachable' : error && error.syncMissing ? 'Sync not on yet' : 'Sync unavailable';
   } else if (state.streamState !== 'live') {
     tone = 'warn';
@@ -357,8 +357,7 @@ function renderMain() {
     renderFoot();
     return;
   }
-  showState(null);
-  renderTimeline({ force: true });
+  renderTimeline();
   renderFoot();
 }
 
@@ -376,18 +375,20 @@ function stickToBottom(smooth = false) {
 
 let pendingScrollToBottom = false;
 
-function renderTimeline({ force = false } = {}) {
+function renderTimeline() {
   const c = selectedSummary();
   if (!c) return;
   const timeline = store.timelines.get(c.conversationId);
   if (!timeline || !timeline.loaded) return;
-  if (!els.state.hidden && !force) return;
+  if (!timeline.sorted().length) {
+    showState(h('div', { class: 'pick-state' }, icon('mic', { size: 18 }),
+      h('span', { text: c.live ? 'Listening on your R1…' : 'Nothing was said in this conversation.' })));
+    return;
+  }
+  if (!els.state.hidden) showState(null);
   const wasNear = nearBottom();
   const before = els.timeline.childElementCount;
   view.render(timeline, { live: c.live });
-  if (!timeline.size) {
-    showState(h('div', { class: 'pick-state' }, icon('mic', { size: 18 }), h('span', { text: c.live ? 'Listening on your R1…' : 'Nothing was said in this conversation.' })));
-  }
   if (pendingScrollToBottom || wasNear) {
     pendingScrollToBottom = false;
     stickToBottom();
@@ -599,7 +600,8 @@ const stream = new SyncStream({
 // ---------------------------------------------------------------------------- overlays
 
 function closeOverlay() {
-  const top = els.overlays.lastElementChild;
+  const open = [...els.overlays.children].filter((el) => !el.classList.contains('closing'));
+  const top = open[open.length - 1];
   if (!top) return false;
   top.classList.add('closing');
   setTimeout(() => top.remove(), 160);
@@ -754,6 +756,8 @@ document.addEventListener('error', (event) => {
 
 // ---------------------------------------------------------------------------- generated UI messages
 
+let lastLinkOpen = 0;
+
 window.addEventListener('message', (event) => {
   const data = event.data;
   if (!data || typeof data !== 'object' || typeof data.type !== 'string') return;
@@ -778,7 +782,21 @@ window.addEventListener('message', (event) => {
     }
     if (wasNear) stickToBottom();
   } else if (data.type === 'open-link' && typeof data.url === 'string') {
-    openExternal(data.url);
+    // Only a click inside the generated UI (it then has focus) opens a link directly, at most once a
+    // second; anything else (e.g. a script on load) has to be confirmed.
+    const now = Date.now();
+    if (document.activeElement === frameEl && now - lastLinkOpen > 1000) {
+      lastLinkOpen = now;
+      openExternal(data.url);
+    } else {
+      let host = '';
+      try {
+        host = new URL(data.url).host;
+      } catch {
+        return;
+      }
+      toast(`This UI wants to open ${host}`, { action: { label: 'Open', run: () => openExternal(data.url) }, timeout: 6000 });
+    }
   } else if (data.type === 'send-prompt' && typeof data.text === 'string') {
     toast(`Ask your R1: “${clip(data.text, 90)}”`, { timeout: 5000 });
   }

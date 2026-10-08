@@ -72,7 +72,8 @@ final class SyncMonitor: NSObject, URLSessionDataDelegate {
     private func scheduleRetry() {
         guard !stopped else { return }
         let delays: [TimeInterval] = [1, 2, 4, 8, 15, 30]
-        let delay = delays[min(attempt, delays.count - 1)]
+        var delay = delays[min(attempt, delays.count - 1)]
+        if case .down(let status) = state, status == 401 || status == 404 { delay = max(delay, 30) }  // no sync API yet
         attempt += 1
         retryTimer?.invalidate()
         retryTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in self?.connect() }

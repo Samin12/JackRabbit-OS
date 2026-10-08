@@ -25,6 +25,7 @@ final class AppModel: ObservableObject {
     private var refreshPending = false
     private var firstListDone = false
     private var lastPageStatus = ""
+    private var lastListAttempt = Date.distantPast
 
     var live: Bool { conversations.contains { $0.live } }
 
@@ -48,7 +49,10 @@ final class AppModel: ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 self.now = Date()
-                await self.refreshList()
+                // Every 20 s while synced; once a minute while the bridge has no sync API.
+                if self.bridge == .connected || Date().timeIntervalSince(self.lastListAttempt) >= 59 {
+                    await self.refreshList()
+                }
             }
         }
     }
@@ -95,6 +99,7 @@ final class AppModel: ObservableObject {
     }
 
     func refreshList() async {
+        lastListAttempt = Date()
         switch await SyncAPI.conversations(limit: 8) {
         case .success(let list):
             if bridge != .connected { Log.write("bridge sync API reachable (\(list.count) recent conversations)") }

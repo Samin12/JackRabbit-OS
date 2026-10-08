@@ -328,61 +328,67 @@ export class TimelineView {
       this.reset();
       this.timelineId = timeline.id;
     }
-    const wanted = new Set();
-    let previous = null;
-    let lastAt = 0;
-    const place = (key, signature, build, patch) => {
-      wanted.add(key);
-      let record = this.nodes.get(key);
-      if (!record) {
-        record = { node: build(), signature };
-        this.nodes.set(key, record);
-      } else if (record.signature !== signature) {
-        if (!(patch && patch(record.node))) {
-          const node = build();
-          record.node.replaceWith(node);
-          record.node = node;
-        }
-        record.signature = signature;
-      }
-      const expected = previous ? previous.nextSibling : this.root.firstChild;
-      if (record.node !== expected) this.root.insertBefore(record.node, expected);
-      previous = record.node;
-    };
+    // 1. What should be on screen, in order.
+    const entries = [];
+    const ctx = this.ctx;
     const items = timeline.sorted();
     const eagerFrom = items.length - EAGER_TAIL;
+    let lastAt = 0;
     items.forEach((item, index) => {
       const eager = index >= eagerFrom; // the newest items load right away (lazy loading needs a visible page)
       const dayChanged = !lastAt || startOfDay(lastAt) !== startOfDay(item.at);
       if ((dayChanged || item.at - lastAt > GAP_MS) && item.kind !== 'divider') {
         const at = item.at;
-        place(`ts:${item.key}`, `${dayLabel(at, now)}`, () => renderTimeSeparator(at, now));
+        entries.push({ key: `ts:${item.key}`, signature: dayLabel(at, now), build: () => renderTimeSeparator(at, now) });
       }
       lastAt = Math.max(lastAt, item.at);
       const streaming = this.isStreaming(item, live, now);
       const signature = `${item.version}:${streaming ? 1 : 0}`;
-      const ctx = this.ctx;
+      const entry = { key: item.key, signature };
       switch (item.kind) {
-        case 'user': place(item.key, signature, () => renderUser(item)); break;
+        case 'user': entry.build = () => renderUser(item); break;
         case 'assistant':
-          place(item.key, signature, () => renderAssistant(item, ctx, streaming), (node) => patchAssistant(node, item, ctx, streaming));
+          entry.build = () => renderAssistant(item, ctx, streaming);
+          entry.patch = (node) => patchAssistant(node, item, ctx, streaming);
           break;
-        case 'card': place(item.key, signature, () => renderCardItem(item)); break;
-        case 'ui': place(item.key, signature, () => renderUi(item, ctx, eager)); break;
-        case 'image': place(item.key, signature, () => renderImage(item, ctx, eager)); break;
-        case 'tool': place(item.key, signature, () => renderTool(item, ctx)); break;
-        case 't3': place(item.key, signature, () => renderT3(item, ctx)); break;
-        case 'note': case 'uievent': case 'completion': place(item.key, signature, () => renderSystem(item)); break;
-        case 'divider': place(item.key, signature, () => renderDivider(item)); break;
-        case 'saved': place(item.key, signature, () => renderSaved(item)); break;
-        default: break;
+        case 'card': entry.build = () => renderCardItem(item); break;
+        case 'ui': entry.build = () => renderUi(item, ctx, eager); break;
+        case 'image': entry.build = () => renderImage(item, ctx, eager); break;
+        case 'tool': entry.build = () => renderTool(item, ctx); break;
+        case 't3': entry.build = () => renderT3(item, ctx); break;
+        case 'note': case 'uievent': case 'completion': entry.build = () => renderSystem(item); break;
+        case 'divider': entry.build = () => renderDivider(item); break;
+        case 'saved': entry.build = () => renderSaved(item); break;
+        default: return;
       }
+      entries.push(entry);
     });
+    // 2. Drop what is gone first, so that placing never has to move a kept node (moving an iframe reloads it).
+    const wanted = new Set(entries.map((entry) => entry.key));
     for (const [key, record] of this.nodes) {
       if (!wanted.has(key)) {
         record.node.remove();
         this.nodes.delete(key);
       }
+    }
+    // 3. Create, patch or rebuild changed nodes and insert new ones in place.
+    let previous = null;
+    for (const entry of entries) {
+      let record = this.nodes.get(entry.key);
+      if (!record) {
+        record = { node: entry.build(), signature: entry.signature };
+        this.nodes.set(entry.key, record);
+      } else if (record.signature !== entry.signature) {
+        if (!(entry.patch && entry.patch(record.node))) {
+          const node = entry.build();
+          record.node.replaceWith(node);
+          record.node = node;
+        }
+        record.signature = entry.signature;
+      }
+      const expected = previous ? previous.nextSibling : this.root.firstChild;
+      if (record.node !== expected) this.root.insertBefore(record.node, expected);
+      previous = record.node;
     }
   }
 }

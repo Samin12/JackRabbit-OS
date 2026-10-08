@@ -147,11 +147,10 @@ export class SyncStream {
     source.addEventListener('message', handle);
     source.addEventListener('open', () => {
       this.attempt = 0;
+      this.hadError = false;
       this.setState('live');
-      if (this.hadError) {
-        this.hadError = false;
-        this.onResume?.();
-      }
+      // Every (re)connect: fetch what may have happened while the stream was not open.
+      this.onResume?.();
     });
     source.addEventListener('error', () => {
       if (source !== this.source) return;

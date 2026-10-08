@@ -186,8 +186,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, WKNaviga
         guard let zoom = window?.standardWindowButton(.zoomButton), let close = window?.standardWindowButton(.closeButton) else {
             return 78
         }
-        let spacing = zoom.frame.minX - close.frame.minX
-        return Self.trafficLightX + spacing + zoom.frame.width
+        let spacing = (zoom.frame.minX - close.frame.minX) / 2  // close, minimise, zoom
+        return Self.trafficLightX + 2 * spacing + zoom.frame.width
     }
 
     /// Centres the traffic lights vertically in the 52 pt header (same approach as Electron's
@@ -305,7 +305,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, WKNaviga
 
     private func scheduleRetry() {
         let delays: [TimeInterval] = [2, 3, 5, 8, 10]
-        let delay = delays[min(attempt, delays.count - 1)]
+        var delay = delays[min(attempt, delays.count - 1)]
+        // A bridge that answers but can't serve the app won't change until it is reinstalled: check less often.
+        if waiting.reason == .bridgeWithoutApp || waiting.reason == .http(404) { delay = attempt == 0 ? 5 : 30 }
         attempt += 1
         waiting.retrying = true
         retryTimer?.invalidate()
