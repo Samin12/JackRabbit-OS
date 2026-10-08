@@ -441,6 +441,39 @@ class SyncHttpTest(unittest.TestCase):
         status, value = self.desktop_get("/v1/sync/stream")
         self.assertEqual((503, "too_many_streams"), (status, value["error"]["code"]))
 
+    def test_a_closed_stream_frees_its_slot_at_once(self) -> None:
+        streams = [SseClient(self.port, "/v1/sync/stream", {sync.DESKTOP_HEADER: DESKTOP})
+                   for _ in range(sync.MAX_STREAMS)]
+        for stream in streams:
+            self.addCleanup(stream.close)
+            stream.read_until(lambda text: ": ready" in text)
+        streams[0].close()  # the desktop app reloads: well before the next heartbeat (15 s)
+        deadline = time.monotonic() + 5
+        while True:
+            again = SseClient(self.port, "/v1/sync/stream", {sync.DESKTOP_HEADER: DESKTOP})
+            self.addCleanup(again.close)
+            if again.status == 200 or time.monotonic() > deadline:
+                break
+            again.close()
+            time.sleep(0.2)
+        self.assertEqual(200, again.status, "the closed stream still held its slot")
+
+    def test_a_cursor_from_a_replaced_store_starts_over(self) -> None:
+        self.post_events([event(1, text="first"), event(2, text="second")])
+        status, value = self.desktop_get(f"/v1/sync/conversations/{CONV}/events?after=999")
+        self.assertEqual((200, ["first", "second"], 2), (status, [item["text"] for item in value["events"]],
+                                                          value["cursor"]))
+        stream = SseClient(self.port, "/v1/sync/stream?after=999", {sync.DESKTOP_HEADER: DESKTOP})
+        self.addCleanup(stream.close)
+        self.assertIn(": ready 2", stream.read_until(lambda text: ": ready" in text))
+        self.post_events([event(3, text="third")])
+        self.assertIn("id: 3\n", stream.read_until(lambda text: "event: sync" in text))
+
+    def test_too_many_query_fields_are_a_bad_request(self) -> None:
+        status, value = self.desktop_get("/v1/sync/conversations?" + "&".join(f"k{n}=1" for n in range(9)))
+        self.assertEqual((400, "invalid_query"), (status, value["error"]["code"]))
+        self.assertNotIn("Traceback", self.log.getvalue())
+
     # ------------------------------------------------------------------ Mac screenshots
 
     def test_a_screenshot_is_kept_as_a_blob_and_filed_in_the_conversation(self) -> None:
@@ -571,7 +604,8 @@ class SseClient:
         return self.buffer
 
     def close(self) -> None:
-        try:
+        try:  # the response holds its own reference to the socket: close both, or the fd stays open
+            self.response.close()
             self.connection.close()
         except OSError:
             pass

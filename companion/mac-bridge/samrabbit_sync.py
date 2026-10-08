@@ -34,6 +34,8 @@ import json
 import logging
 import os
 import re
+import select
+import socket
 import sqlite3
 import stat
 import threading
@@ -61,6 +63,7 @@ DEFAULT_CONVERSATIONS = 50
 MAX_CONVERSATIONS = 200
 MAX_QUERY_CHARS = 100
 HEARTBEAT_SECONDS = 15.0
+PEER_CHECK_SECONDS = 1.0  # how often an idle stream looks for a closed desktop connection
 MAX_STREAMS = 8
 LIVE_STALE_MS = 20 * 60 * 1000
 TITLE_CHARS = 80
@@ -801,7 +804,10 @@ class SyncService:
                 "internal_error"
 
     def _desktop(self, handler: Any, route: str) -> int:
-        query = parse_qs(urlsplit(handler.path).query, max_num_fields=8)
+        try:
+            query = parse_qs(urlsplit(handler.path).query, max_num_fields=8)
+        except ValueError:
+            raise SyncError(400, "invalid_query", "Too many query parameters.") from None
         if route == "/v1/sync/conversations":
             limit = _bounded(query, "limit", DEFAULT_CONVERSATIONS, MAX_CONVERSATIONS)
             before = _number(query, "before")
@@ -838,6 +844,8 @@ class SyncService:
         after = _number(query, "after") or 0
         limit = _bounded(query, "limit", DEFAULT_PAGE, MAX_PAGE)
         latest = self.store.latest_cursor()
+        if after > latest:  # a cursor from a replaced store: send this conversation again from the start
+            after = 0
         rows = self.store.events_after(after, limit + 1, conversation_id, upto=latest)
         more = len(rows) > limit
         rows = rows[:limit]
@@ -854,7 +862,10 @@ class SyncService:
         if not self._streams.acquire(blocking=False):
             raise SyncError(503, "too_many_streams", "Too many open sync streams.", retryable=True)
         try:
-            cursor = self.store.latest_cursor() if after is None else after
+            latest = self.store.latest_cursor()
+            # A cursor above the newest event comes from a store that was replaced (deleted, restored):
+            # waiting for it would keep this stream silent until the new store caught up.
+            cursor = latest if after is None or after > latest else after
             handler.send_response(200)
             handler.send_header("Content-Type", "text/event-stream; charset=utf-8")
             handler.send_header("Cache-Control", "no-store")
@@ -873,12 +884,14 @@ class SyncService:
                     beat = time.monotonic()
                     continue
                 cursor = max(cursor, upto)  # nothing left up to the newest event (superseded drafts are gone)
-                if not self.store.wait_for(cursor, max(0.5, HEARTBEAT_SECONDS - (time.monotonic() - beat))):
-                    if self.store.closed:
-                        break
-                    if time.monotonic() - beat >= HEARTBEAT_SECONDS - 0.05:
-                        _write(handler, ": heartbeat\n\n")
-                        beat = time.monotonic()
+                wait = max(0.05, min(PEER_CHECK_SECONDS, HEARTBEAT_SECONDS - (time.monotonic() - beat)))
+                if self.store.wait_for(cursor, wait):
+                    continue
+                if self.store.closed or _peer_closed(handler):
+                    break  # the desktop app went away: free the stream slot now, not after two heartbeats
+                if time.monotonic() - beat >= HEARTBEAT_SECONDS - 0.05:
+                    _write(handler, ": heartbeat\n\n")
+                    beat = time.monotonic()
         except OSError:
             pass  # the desktop app went away
         finally:
@@ -1011,6 +1024,23 @@ def _with_cursor(payload: str, cursor: int) -> str:
 def _write(handler: Any, text: str) -> None:
     handler.wfile.write(text.encode("utf-8"))
     handler.wfile.flush()
+
+
+def _peer_closed(handler: Any) -> bool:
+    """True once the client closed its end (EOF or reset). An SSE client never sends anything after
+    its request, so a readable socket that peeks empty means it is gone."""
+    connection = getattr(handler, "connection", None)
+    if connection is None:
+        return False
+    try:
+        poller = select.poll()  # not select.select: no FD_SETSIZE limit
+        poller.register(connection, select.POLLIN)
+        if not poller.poll(0):
+            return False
+        # Readable now, so this peek returns at once (it would otherwise wait out the socket timeout).
+        return connection.recv(1, socket.MSG_PEEK) == b""
+    except (OSError, ValueError):
+        return True
 
 
 def _send_json(handler: Any, status: int, payload: Dict[str, Any]) -> int:
