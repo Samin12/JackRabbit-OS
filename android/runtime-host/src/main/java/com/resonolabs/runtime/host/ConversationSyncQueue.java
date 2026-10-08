@@ -25,7 +25,7 @@ final class ConversationSyncQueue {
     static final int FLUSH_COUNT = 20;
     static final long FLUSH_DELAY_MS = 750L;
     static final int MAX_BATCH_EVENTS = 100;
-    /** Below the runtime's 256 KB request limit, with room for the envelope. */
+    /** UTF-8 bytes of events per request: below the runtime's 256 KiB body limit, with room for the envelope. */
     static final int MAX_BATCH_BYTES = 200_000;
     static final long[] BACKOFF_MS = {1_000L, 2_000L, 5_000L, 10_000L};
     static final String DELTA = "message.assistant.delta";
@@ -39,6 +39,8 @@ final class ConversationSyncQueue {
         final String json;
         final boolean urgent;
         final long queuedAt;
+        /** UTF-8 size on the wire, plus its comma. */
+        private final int bytes;
         boolean inFlight;
 
         Entry(String conversationId, String sessionId, String type, String messageId, String json,
@@ -50,12 +52,37 @@ final class ConversationSyncQueue {
             this.json = json;
             this.urgent = urgent;
             this.queuedAt = queuedAt;
+            this.bytes = utf8Length(json) + 1;
         }
 
         int bytes() {
-            // UTF-16 length is a close lower bound; the batch cap has headroom for multi-byte text.
-            return json.length() + 1;
+            return bytes;
         }
+    }
+
+    /**
+     * Encoded UTF-8 length without encoding. The runtime limit is in bytes: counting chars would
+     * let a batch of non-Latin text (up to 3 bytes per char) exceed it, and the runtime then
+     * rejects the whole batch (dropped for good).
+     */
+    static int utf8Length(String text) {
+        if (text == null) return 0;
+        int bytes = 0;
+        for (int index = 0; index < text.length(); index++) {
+            char c = text.charAt(index);
+            if (c < 0x80) {
+                bytes += 1;
+            } else if (c < 0x800) {
+                bytes += 2;
+            } else if (Character.isHighSurrogate(c) && index + 1 < text.length()
+                    && Character.isLowSurrogate(text.charAt(index + 1))) {
+                bytes += 4;
+                index++;
+            } else {
+                bytes += 3;
+            }
+        }
+        return bytes;
     }
 
     /** Events sent together (they share conversation and session). */

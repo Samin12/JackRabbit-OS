@@ -138,6 +138,35 @@ public final class ConversationSyncQueueTest {
         assertTrue(ConversationSyncQueue.body(batch).length() <= ConversationSyncQueue.MAX_BATCH_BYTES + 100);
     }
 
+    @Test public void batchCapCountsUtf8BytesNotChars() throws Exception {
+        // 100 events of 1,500 CJK chars: 150,000 chars, but 450,000 UTF-8 bytes. Sent as one
+        // request the runtime (256 KiB body limit) would reject it and the whole batch would be lost.
+        ConversationSyncQueue queue = new ConversationSyncQueue();
+        String words = "你好".repeat(750);
+        for (int index = 0; index < 100; index++) {
+            queue.add(new ConversationSyncQueue.Entry("c_1", "s1", "message.user", null,
+                    new JSONObject().put("id", "c_1:" + index).put("text", words).toString(), false, index));
+        }
+        int sent = 0;
+        ConversationSyncQueue.Batch batch;
+        while ((batch = queue.nextBatch()) != null) {
+            int bytes = ConversationSyncQueue.body(batch).getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+            assertTrue("batch of " + bytes + " bytes", bytes <= 256 * 1024);
+            assertTrue(bytes <= ConversationSyncQueue.MAX_BATCH_BYTES + 100);
+            sent += batch.size();
+            queue.complete(batch, true);
+        }
+        assertEquals(100, sent);
+    }
+
+    @Test public void utf8Length() {
+        String[] samples = {"", "abc", "café", "你好", "😀 ok", "  x"};
+        for (String sample : samples) {
+            assertEquals(sample, sample.getBytes(java.nio.charset.StandardCharsets.UTF_8).length,
+                    ConversationSyncQueue.utf8Length(sample));
+        }
+    }
+
     @Test public void retryKeepsTheBatchAtTheHeadAndBacksOff() {
         ConversationSyncQueue queue = new ConversationSyncQueue();
         queue.add(entry("message.user", null, 0));
