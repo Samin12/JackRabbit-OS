@@ -18,9 +18,10 @@ import android.os.SystemClock;
  * <p>Hero orbs ({@link #hero}) follow the user's orb style: with {@link OrbStyle#PIXEL_HEAD}
  * they draw the voxel {@link PixelHead} instead, same centre, energy and speed. Small orbs that
  * signal a status through their colour stay fluid. Hero call sites: Voice page (all sizes),
- * Settings (About, Display preview), Control Center, background run, camera hand-off, creation
- * import, the T3 "Starting thread" overlay and the GenUI debug preview. Fluid on purpose: the
- * chrome runner orb, T3 list status/state orbs and the T3 New button.
+ * Settings (About), Control Center, background run, camera hand-off, creation import, the T3
+ * "Starting thread" overlay and the GenUI debug preview. Fluid on purpose: the chrome runner orb,
+ * T3 list status/state orbs and the T3 New button. The Settings > Theme previews are
+ * {@link #pinStyle pinned} to one style each, whatever the user picked.
  */
 public final class FluidOrb {
     private static final String SHADER = """
@@ -71,6 +72,10 @@ public final class FluidOrb {
     private LinearGradient fallbackShader;
     private int shaderColor;
     private PixelHead head;
+    private boolean hero;
+    /** Style this orb always draws (a Theme preview), or null to draw its normal style. */
+    private OrbStyle pinned;
+    private boolean holdingArt;
     private final long start = SystemClock.uptimeMillis();
     private int color = SamTheme.ORB_BLUE;
     private float energy;
@@ -122,19 +127,42 @@ public final class FluidOrb {
      * black stage the head is designed for); status colours such as the error red still show.
      */
     public int color() {
-        if (head != null && color == SamTheme.ORB_BLUE && OrbStyleSetting.current() == OrbStyle.PIXEL_HEAD) {
+        if (head != null && color == SamTheme.ORB_BLUE && style() == OrbStyle.PIXEL_HEAD) {
             return PIXEL_AMBIENT;
         }
         return color;
     }
 
     /**
-     * Marks this as a hero orb: it follows the orb style chosen in Settings > Display and draws
+     * Marks this as a hero orb: it follows the orb style chosen in Settings > Theme and draws
      * the Pixel head while that style is on. Status orbs whose colour carries meaning stay plain.
      */
     public FluidOrb hero(Context context) {
+        hero = true;
         if (head == null) head = new PixelHead(context);
         return this;
+    }
+
+    /**
+     * Pins this orb to {@code style} whatever the user's orb style is, so a preview can show a
+     * style before it is applied (Settings > Theme draws both side by side); {@code null} unpins
+     * it. While pinned to the Pixel head its art stays decoded even when the user's style is the
+     * orb, so unpin a preview when it leaves the screen.
+     */
+    public FluidOrb pinStyle(Context context, OrbStyle style) {
+        pinned = style;
+        boolean hold = style == OrbStyle.PIXEL_HEAD;
+        if (hold && head == null) head = new PixelHead(context);
+        if (hold != holdingArt) {
+            holdingArt = hold;
+            if (hold) PixelHeadSprites.hold();
+            else PixelHeadSprites.unhold();
+        }
+        return this;
+    }
+
+    private OrbStyle style() {
+        return OrbStyle.drawn(pinned, hero, OrbStyleSetting.current());
     }
 
     /** Draws the orb with a soft halo; call every frame while animating. */
@@ -142,7 +170,7 @@ public final class FluidOrb {
         long now = SystemClock.uptimeMillis();
         phase += (now - lastFrame) / 1000f * speed;
         lastFrame = now;
-        if (head != null && OrbStyleSetting.current() == OrbStyle.PIXEL_HEAD
+        if (head != null && style() == OrbStyle.PIXEL_HEAD
                 && head.draw(canvas, cx, cy, radius, energy, speed, now)) {
             return;
         }

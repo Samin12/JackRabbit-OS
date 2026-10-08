@@ -18,9 +18,18 @@ public enum OrbStyle {
         return key;
     }
 
-    /** Short UI label (segmented control). */
+    /** Short UI label (Settings > Theme tiles and the Theme row's value). */
     public String label() {
         return label;
+    }
+
+    /**
+     * The style an orb draws: its pin (a Theme preview) if any, else the user's style for a hero
+     * orb, else the plain orb.
+     */
+    static OrbStyle drawn(OrbStyle pinned, boolean hero, OrbStyle user) {
+        if (pinned != null) return pinned;
+        return hero && user != null ? user : FLUID;
     }
 
     /** Persisted value back to a style; anything unknown or missing is {@link #FLUID}. */
