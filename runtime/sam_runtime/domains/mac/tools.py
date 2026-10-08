@@ -338,7 +338,8 @@ class MacToolHandlers:
 
     def _prompt(self, request: str) -> str:
         name = " ".join(str(self._owner_name() or "").split())[:60] or "the user"
-        capabilities = self._client.cached_capabilities() or {}
+        # Probed when not cached: otherwise only the management page's health check fills the cache.
+        capabilities = self._client.capabilities() or {}
         computer = capabilities.get("computer") if isinstance(capabilities.get("computer"), str) else None
         driver = capabilities.get("driver") if isinstance(capabilities.get("driver"), dict) else {}
         permissions = capabilities.get("permissions") if isinstance(capabilities.get("permissions"), dict) else {}

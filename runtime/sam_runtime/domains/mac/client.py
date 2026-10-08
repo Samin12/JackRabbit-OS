@@ -19,6 +19,7 @@ from sam_runtime.domains.heptabase_journal.client import HttpResponse, HttpTrans
 from sam_runtime.domains.heptabase_journal.errors import HeptabaseError, TransportError
 
 HEALTH_TIMEOUT_SECONDS = 15.0
+QUICK_HEALTH_TIMEOUT_SECONDS = 4.0
 STATE_TIMEOUT_SECONDS = 25.0
 OPEN_TIMEOUT_SECONDS = 55.0
 READ_TIMEOUT_SECONDS = 30.0
@@ -83,6 +84,23 @@ class MacControlClient:
         if cached is None or self._clock() - cached[0] > CAPABILITIES_TTL_SECONDS:
             return None
         return cached[1]
+
+    def capabilities(self) -> dict[str, object] | None:
+        """The bridge's Mac capabilities: the cached ones, else one quick ``/health`` probe.
+
+        ``None`` when the Mac does not answer quickly (callers then go on without them)."""
+        cached = self.cached_capabilities()
+        if cached is not None:
+            return cached
+        try:
+            value = self._request("GET", "/health", timeout=QUICK_HEALTH_TIMEOUT_SECONDS)
+        except MacFailure:
+            return None
+        mac = value.get("mac") if value.get("service") == BRIDGE_SERVICE else None
+        if not isinstance(mac, dict):
+            return None
+        self._remember(mac)
+        return mac
 
     def _remember(self, capabilities: object) -> None:
         if isinstance(capabilities, dict):

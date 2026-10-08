@@ -133,7 +133,9 @@ class PlacementTest(unittest.TestCase):
         self.assertNotIn("mac_task", {item["name"] for item in catalog.realtime_definitions()}, "needs T3 connected")
         self.connect()
         self.assertIn("mac_task", {item["name"] for item in catalog.realtime_definitions()})
-        self.mac.health()  # the bridge's capabilities (driver path, screen vision) inform the prompt
+        # No health check ran first (as in a voice session after a restart): mac_task asks the bridge itself
+        # for its capabilities (driver path, screen vision), which inform the prompt.
+        self.assertIsNone(self.mac.cached_capabilities())
         request = "Find my last three invoices in Downloads and put them in one folder"
         result = catalog.invoke("mac_task", {"request": request}, agent=AgentKind.VOICE)
         self.assertFalse(result.is_error, result.text)
@@ -159,6 +161,18 @@ class PlacementTest(unittest.TestCase):
         self.assertEqual(PROJECT_SIDE, self.fake.dispatched[2]["projectId"])
         self.assertEqual("Tidy orbit", self.fake.dispatched[2]["title"])
         self.assertTrue(catalog.invoke("mac_task", {"request": "  "}, agent=AgentKind.VOICE).is_error)
+
+    def test_mac_task_goes_ahead_when_the_bridge_health_check_fails(self) -> None:
+        catalog = ToolCatalog()
+        register_mac_tools(catalog, self.mac, t3=self.service, placement=self.placement, owner_name=lambda: "Samin")
+        self.connect()
+        self.mac_fake.responses["/health"] = (503, {"error": {"code": "bridge_busy", "message": "Busy."}})
+        result = catalog.invoke("mac_task", {"request": "Tidy my desktop"}, agent=AgentKind.VOICE)
+        self.assertFalse(result.is_error, result.text)
+        prompt = self.fake.dispatched[1]["message"]["text"]
+        self.assertTrue(prompt.startswith("Tidy my desktop\n"))
+        self.assertIn("on this Mac", prompt)
+        self.assertNotIn("cua-driver: ", prompt)
 
 
 if __name__ == "__main__":
