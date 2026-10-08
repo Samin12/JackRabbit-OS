@@ -142,4 +142,68 @@ public final class PixelHeadMotionTest {
         assertTrue(PixelHeadMotion.blinking(1000L + PixelHeadMotion.BLINK_MS - 1, 1000L));
         assertFalse(PixelHeadMotion.blinking(1000L + PixelHeadMotion.BLINK_MS, 1000L));
     }
+
+    @Test public void mouthStaysShutUnlessSpeaking() {
+        PixelHeadMotion.Mouth mouth = new PixelHeadMotion.Mouth();
+        for (long t = 1000L; t < 5000L; t += 16L) assertFalse(mouth.update(false, t));
+        assertTrue(mouth.update(true, 5000L));                 // opens as soon as speech starts
+        assertFalse(mouth.update(false, 5016L));               // and shuts the moment it stops
+        assertFalse(mouth.isOpen());
+        assertTrue(mouth.update(true, 9000L));                 // a new reply opens again at once
+    }
+
+    @Test public void mouthFlapsAtASyllableCadenceWithPhrasePauses() {
+        PixelHeadMotion.Mouth mouth = new PixelHeadMotion.Mouth();
+        long start = 10_000L;
+        boolean open = mouth.update(true, start);
+        long changedAt = start;
+        int syllables = 0;
+        int pauses = 0;
+        int sinceTalk = 0;
+        Set<Long> openLengths = new HashSet<>();
+        long end = start + 20_000L;
+        for (long t = start + 1; t <= end; t++) {
+            boolean now = mouth.update(true, t);
+            if (now == open) continue;
+            long length = t - changedAt;
+            if (open) {
+                assertTrue("open " + length, length >= 70L && length <= 110L);
+                openLengths.add(length);
+                syllables++;
+                sinceTalk++;
+            } else if (length >= PixelHeadMotion.MOUTH_PAUSE_MIN_MS) {
+                assertTrue("pause " + length, length <= 420L);
+                assertTrue("phrase of " + sinceTalk, sinceTalk >= 5 && sinceTalk <= 12);
+                pauses++;
+                sinceTalk = 0;
+            } else {
+                assertTrue("closed " + length, length >= 55L && length <= 90L);
+            }
+            open = now;
+            changedAt = t;
+        }
+        float rate = syllables / 20f;
+        assertTrue("syllables per second " + rate, rate >= 4.5f && rate <= 8f);
+        assertTrue(pauses >= 10);
+        assertTrue(openLengths.size() > 10);                   // varied, not a metronome
+    }
+
+    @Test public void mouthIsDeterministicAndSurvivesFrameDropsAndStalls() {
+        PixelHeadMotion.Mouth a = new PixelHeadMotion.Mouth();
+        PixelHeadMotion.Mouth b = new PixelHeadMotion.Mouth();
+        int opens = 0;
+        boolean was = false;
+        for (long t = 0L; t < 4000L; t += 16L) {
+            boolean open = a.update(true, 100L + t);
+            assertEquals(open, b.update(true, 100L + t));
+            if (open && !was) opens++;
+            was = open;
+        }
+        assertTrue("opens in 4 s at 60 fps: " + opens, opens >= 16 && opens <= 32);
+        // a dropped frame or a hidden page: no burst of catch-up flaps, it simply carries on
+        long t = 100_000L;
+        a.update(true, t);
+        assertTrue(a.update(true, t + 60_000L));               // after a stall it restarts open
+        a.update(true, t + 60_200L);                           // 200 ms jump: catches up in bounds
+    }
 }

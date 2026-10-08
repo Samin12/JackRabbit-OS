@@ -117,6 +117,15 @@ public final class FluidOrb {
     }
 
     /**
+     * True while the assistant's voice is playing (Voice page). Only a hero orb drawn as the
+     * Pixel head shows it (its mouth moves); the fluid orb already reads energy and speed.
+     */
+    public FluidOrb setSpeaking(boolean speaking) {
+        if (head != null) head.setSpeaking(speaking);
+        return this;
+    }
+
+    /**
      * The orb's colour; pages also tint the glow behind the orb with it. A Pixel head hero is
      * monochrome, so there the default orb blue becomes a faint neutral cool grey (closer to the
      * black stage the head is designed for); status colours such as the error red still show.

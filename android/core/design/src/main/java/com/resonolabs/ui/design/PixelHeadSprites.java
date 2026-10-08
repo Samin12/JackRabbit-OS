@@ -16,7 +16,10 @@ import java.util.concurrent.atomic.AtomicReferenceArray;
 final class PixelHeadSprites {
     private static final String TAG = "PixelHead";
 
-    /** One size bucket: the 25 idle poses and the eye patches drawn over them. */
+    /**
+     * One size bucket: the 25 idle poses and the patches drawn over them (eyes + earcups lit,
+     * eyes closed, mouth open; the field keeps its first name).
+     */
     static final class Art {
         final Bitmap idle;
         final Bitmap eyes;

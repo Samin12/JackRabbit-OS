@@ -24,6 +24,16 @@ final class PixelHeadMotion {
     static final long BLINK_MS = 170L;
     static final long BLINK_MIN_GAP_MS = 4000L;
     static final long BLINK_GAP_SPREAD_MS = 3000L;
+    /** Mouth open / closed phases while speaking: one syllable every 125-200 ms (5-8 Hz). */
+    static final long MOUTH_OPEN_MIN_MS = 70L;
+    static final long MOUTH_OPEN_SPREAD_MS = 40L;
+    static final long MOUTH_CLOSED_MIN_MS = 55L;
+    static final long MOUTH_CLOSED_SPREAD_MS = 35L;
+    /** A short closed beat between phrases of 5-12 syllables, so the flapping breathes. */
+    static final long MOUTH_PAUSE_MIN_MS = 220L;
+    static final long MOUTH_PAUSE_SPREAD_MS = 200L;
+    static final int PHRASE_MIN_SYLLABLES = 5;
+    static final int PHRASE_SYLLABLE_SPREAD = 7;
 
     private PixelHeadMotion() {}
 
@@ -86,15 +96,80 @@ final class PixelHeadMotion {
 
     /** Gap before blink number {@code index}: 4-7 s, varied but deterministic. */
     static long blinkGapMs(int index) {
+        return BLINK_MIN_GAP_MS + jitter(index, (int) BLINK_GAP_SPREAD_MS);
+    }
+
+    /** Deterministic pseudo-random 0..{@code spread} for step {@code index} (integer hash). */
+    static int jitter(int index, int spread) {
         int h = index * 0x9E3779B1;
         h ^= h >>> 15;
         h *= 0x85EBCA6B;
         h ^= h >>> 13;
-        return BLINK_MIN_GAP_MS + Math.floorMod(h, (int) BLINK_GAP_SPREAD_MS + 1);
+        return Math.floorMod(h, spread + 1);
     }
 
     /** True while a blink that starts at {@code blinkAt} is showing at {@code now}. */
     static boolean blinking(long now, long blinkAt) {
         return now >= blinkAt && now < blinkAt + BLINK_MS;
+    }
+
+    /**
+     * The talking mouth: while speaking it opens and closes at a syllable cadence (5-8 Hz,
+     * varied but deterministic) with a short pause between phrases; it shuts at once when
+     * speaking stops. One per head; {@link #update} allocates nothing.
+     */
+    static final class Mouth {
+        private boolean open;
+        /** When the current open / closed phase ends; 0 = not speaking. */
+        private long phaseEnd;
+        private int step;
+        private int syllablesLeft;
+
+        /** Advances to {@code nowMs} and returns whether the mouth is open. */
+        boolean update(boolean speaking, long nowMs) {
+            if (!speaking) {
+                open = false;
+                phaseEnd = 0L;
+                return false;
+            }
+            if (phaseEnd == 0L || nowMs - phaseEnd > MAX_STEP_MS) {
+                // Starts talking (or the page was hidden for a while): open now, new phrase.
+                syllablesLeft = phraseSyllables(step);
+                open = true;
+                phaseEnd = nowMs + openMs(step++);
+                return true;
+            }
+            while (nowMs >= phaseEnd) {
+                if (open) {
+                    open = false;
+                    phaseEnd += --syllablesLeft > 0 ? closedMs(step++) : pauseMs(step++);
+                } else {
+                    if (syllablesLeft <= 0) syllablesLeft = phraseSyllables(step);
+                    open = true;
+                    phaseEnd += openMs(step++);
+                }
+            }
+            return open;
+        }
+
+        boolean isOpen() {
+            return open;
+        }
+
+        static long openMs(int step) {
+            return MOUTH_OPEN_MIN_MS + jitter(step, (int) MOUTH_OPEN_SPREAD_MS);
+        }
+
+        static long closedMs(int step) {
+            return MOUTH_CLOSED_MIN_MS + jitter(step ^ 0x5BD1E995, (int) MOUTH_CLOSED_SPREAD_MS);
+        }
+
+        static long pauseMs(int step) {
+            return MOUTH_PAUSE_MIN_MS + jitter(step ^ 0x27D4EB2F, (int) MOUTH_PAUSE_SPREAD_MS);
+        }
+
+        static int phraseSyllables(int step) {
+            return PHRASE_MIN_SYLLABLES + jitter(step ^ 0x165667B1, PHRASE_SYLLABLE_SPREAD);
+        }
     }
 }
