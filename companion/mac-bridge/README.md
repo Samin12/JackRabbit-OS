@@ -152,7 +152,8 @@ is not accepted here, and the desktop token is not accepted on the R1 routes):
 Other bridge modules (generative UI) add to the same timeline in-process:
 `samrabbit_sync.record_local_event(conversation_id, {"type": "ui.generated", …})` (id `mac:<uuid>`, `origin: "mac"`)
 and `samrabbit_sync.put_blob(bytes, mime) -> "sha256:<hex>"`. Both return None (never raise) when sync is off.
-`SyncService.desktop_denied(handler)` is the shared desktop-auth check for their loopback routes.
+`samrabbit_sync.desktop_request_denied(handler)` (None = allowed, else a `SyncError` with `status`, `code`,
+`payload()`) is the shared desktop-auth rule for their loopback routes; it works even when sync is off.
 
 `GET /v1/mac/screenshot` also keeps its JPEG in the store and answers `blobId`; with `&conversation=<id>` (the R1
 runtime passes it for `mac_look`) it files an `image` event (`source: "mac_screenshot"`) and answers `imageEventId`.

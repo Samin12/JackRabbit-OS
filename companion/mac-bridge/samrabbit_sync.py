@@ -88,6 +88,7 @@ _LOG = logging.getLogger(SERVICE)
 
 _DEFAULT_LOCK = threading.Lock()
 _DEFAULT: Optional["SyncService"] = None
+_FALLBACK_DESKTOP: Optional["DesktopToken"] = None
 
 
 # --------------------------------------------------------------------------- module API for other bridge modules
@@ -124,6 +125,20 @@ def put_blob(data: bytes, mime: str, conversation_id: Optional[str] = None) -> O
 
 def available() -> bool:
     return _default() is not None
+
+
+def desktop_request_denied(handler: Any) -> Optional["SyncError"]:
+    """The desktop-app auth rule for any bridge route (generative UI documents, the /app UI):
+    None when allowed, else the error to answer. Works even when the sync store is off."""
+    service = _default()
+    if service is not None:
+        return service.desktop_denied(handler)
+    global _FALLBACK_DESKTOP
+    with _DEFAULT_LOCK:
+        if _FALLBACK_DESKTOP is None:
+            _FALLBACK_DESKTOP = DesktopToken(DEFAULT_DESKTOP_TOKEN_FILE)
+        token = _FALLBACK_DESKTOP
+    return _desktop_denied(handler, token)
 
 
 def _default() -> Optional["SyncService"]:
@@ -712,22 +727,8 @@ class SyncService:
     def desktop_denied(self, handler: Any) -> Optional[SyncError]:
         """None when the request comes from the desktop app on this Mac (loopback peer, loopback
         Host/Origin, valid desktop token); otherwise the error to answer. Other bridge modules
-        (generative UI documents, the /app web UI) reuse this for their desktop routes."""
-        if not loopback_peer(str(handler.client_address[0])):
-            return SyncError(403, "forbidden", "The desktop API is only available on this Mac.")
-        host = handler.headers.get("Host")
-        if host and not _loopback_host(host):
-            return SyncError(403, "forbidden", "Use http://127.0.0.1 for the desktop API.")
-        origin = handler.headers.get("Origin")
-        if origin and not _loopback_origin(origin):
-            return SyncError(403, "forbidden", "Cross-site requests are not allowed.")
-        if not self.desktop.available():
-            return SyncError(503, "desktop_token_missing",
-                             "The desktop token is missing; run companion/mac-bridge/install.sh.", retryable=True)
-        presented = (handler.headers.get(DESKTOP_HEADER) or "").strip() or _cookie(handler, DESKTOP_COOKIE)
-        if not self.desktop.matches(presented):
-            return SyncError(401, "unauthorized", "A valid desktop token is required.")
-        return None
+        use ``desktop_request_denied(handler)``, which applies the same rule."""
+        return _desktop_denied(handler, self.desktop)
 
     @staticmethod
     def device_denied(handler: Any) -> Optional[SyncError]:
@@ -891,6 +892,24 @@ class SyncService:
         except (SyncError, binascii.Error, ValueError, OSError, sqlite3.Error):
             _LOG.warning("sync: screenshot not stored")
             return result
+
+
+def _desktop_denied(handler: Any, token: DesktopToken) -> Optional[SyncError]:
+    if not loopback_peer(str(handler.client_address[0])):
+        return SyncError(403, "forbidden", "The desktop API is only available on this Mac.")
+    host = handler.headers.get("Host")
+    if host and not _loopback_host(host):
+        return SyncError(403, "forbidden", "Use http://127.0.0.1 for the desktop API.")
+    origin = handler.headers.get("Origin")
+    if origin and not _loopback_origin(origin):
+        return SyncError(403, "forbidden", "Cross-site requests are not allowed.")
+    if not token.available():
+        return SyncError(503, "desktop_token_missing",
+                         "The desktop token is missing; run companion/mac-bridge/install.sh.", retryable=True)
+    presented = (handler.headers.get(DESKTOP_HEADER) or "").strip() or _cookie(handler, DESKTOP_COOKIE)
+    if not token.matches(presented):
+        return SyncError(401, "unauthorized", "A valid desktop token is required.")
+    return None
 
 
 # --------------------------------------------------------------------------- HTTP plumbing

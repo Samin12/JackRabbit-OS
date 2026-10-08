@@ -333,6 +333,9 @@ class SyncHttpTest(unittest.TestCase):
         for address in ("192.168.1.183", "10.0.0.5", "fe80::1%en0", "8.8.8.8", "::ffff:192.168.1.9"):
             denied = service.desktop_denied(fake(address, **{sync.DESKTOP_HEADER: DESKTOP}))
             self.assertEqual((403, "forbidden"), (denied.status, denied.code), address)
+        self.assertIsNone(sync.desktop_request_denied(fake("127.0.0.1", **{sync.DESKTOP_HEADER: DESKTOP})),
+                          "the module-level rule (for other bridge modules) is the same")
+        self.assertEqual(403, sync.desktop_request_denied(fake("192.168.1.183", **{sync.DESKTOP_HEADER: DESKTOP})).status)
         self.assertIsNone(service.device_denied(fake("192.168.1.186", Authorization="Bearer " + TOKEN)))
         for address in ("8.8.8.8", "100.64.0.1", "2001:4860::8888"):
             denied = service.device_denied(fake(address, Authorization="Bearer " + TOKEN))

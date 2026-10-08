@@ -385,7 +385,7 @@ class ConversationSyncService:
             recovered = self._failures > 0
             self._failures = 0
             self._blocked_until = 0.0
-            self._batch_limit = MAX_SEND_EVENTS
+            self._batch_limit = min(MAX_SEND_EVENTS, self._batch_limit * 2)  # grow back after isolating a refusal
         if recovered:
             _LOG.info("conversation_sync.bridge_recovered")
         self._settings.record_status(lastError=None, lastOkAt=_iso(self._clock()))

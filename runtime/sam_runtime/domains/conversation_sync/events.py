@@ -23,6 +23,7 @@ EVENT_ID = re.compile(r"^[\x21-\x7e]{1,200}$")
 EVENT_TYPE = re.compile(r"^[a-z][a-z0-9_]{0,31}(?:\.[a-z0-9_]{1,32}){0,4}$")
 BLOB_ID = re.compile(r"^sha256:[0-9a-f]{64}$")
 TOOL_CALL_ID = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
+_BASE64 = re.compile(r"^[A-Za-z0-9+/_-]+={0,2}$")
 IMAGE_MIMES = frozenset({"image/jpeg", "image/png", "image/webp", "image/gif"})
 
 MAX_EVENTS_PER_BATCH = 500
@@ -96,7 +97,8 @@ def redact(value: object, *, scrub: bool, key: str | None = None) -> object:
             name = str(item_key)
             if name.lower() in _SECRET_KEYS:
                 result[name] = "[REDACTED]"
-            elif name in ("base64", "data", "dataUrl") and isinstance(item, str) and len(item) > 256:
+            elif isinstance(item, str) and len(item) > 256 and (
+                    name == "base64" or (name in ("data", "dataUrl") and _BASE64.match(item))):
                 result[name] = f"[{len(item)} chars of binary data omitted]"
             else:
                 result[name] = redact(item, scrub=scrub, key=name)

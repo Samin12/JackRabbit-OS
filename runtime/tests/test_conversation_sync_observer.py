@@ -63,8 +63,13 @@ class ConversationSyncObserverTest(unittest.TestCase):
         self.assertNotIn("hunter2", json.dumps(event))
         self.invoke("echo", {"q": "again"})
         self.assertEqual(1, len(self.h.rows()), "the same tool call id is one event")
+        chart = '{"labels":["Mon","Tue"],"values":[3,5]} ' * 10
+        self.invoke("echo", {"q": "chart", "data": chart, "image": {"base64": "QUJD" * 100}}, call="call_data")
+        arguments = self.h.payloads()[-1]["arguments"]
+        self.assertEqual(chart, arguments["data"], "text data is kept")
+        self.assertEqual("[400 chars of binary data omitted]", arguments["image"]["base64"])
         self.invoke("echo", {"q": "x"}, call=None)
-        self.assertEqual(2, len(self.h.rows()), "no call id: a fresh id")
+        self.assertEqual(3, len(self.h.rows()), "no call id: a fresh id")
 
     def test_only_voice_sessions_and_only_when_enabled(self) -> None:
         self.results["echo"] = ToolInvocationResult("ok")
