@@ -2,13 +2,14 @@ package com.resonolabs.ui.design;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.util.Log;
 
 import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * The process-wide orb style (Settings > Display > Orb style). Hero orbs read {@link #current()}
  * on every draw, so a change shows up on the next frame everywhere; views that do not redraw on
- * their own can {@link #addListener listen}. Persisted in SharedPreferences.
+ * their own can {@link #addListener listen}. Persisted in device-protected SharedPreferences.
  */
 public final class OrbStyleSetting {
     static final String PREFS = "sam_orb_style";
@@ -38,7 +39,15 @@ public final class OrbStyleSetting {
             if (store != null) return;
         }
         Context app = context.getApplicationContext() != null ? context.getApplicationContext() : context;
-        SharedPreferences prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        // The app is direct-boot aware (it is HOME) and builds its hero orbs before the user is
+        // unlocked: credential-encrypted SharedPreferences throw then, device-protected ones do not.
+        SharedPreferences prefs;
+        try {
+            prefs = app.createDeviceProtectedStorageContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        } catch (RuntimeException unavailable) {
+            Log.w("OrbStyle", "orb style storage unavailable; using the orb for now", unavailable);
+            return; // stays FLUID; the next init retries
+        }
         attach(new Store() {
             @Override public String read() {
                 return prefs.getString(KEY, null);
