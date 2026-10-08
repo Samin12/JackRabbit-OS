@@ -87,6 +87,7 @@ from .api.announcement_routes import AnnouncementRoutes
 from .domains.t3 import T3Repository, T3Service, T3SyncWorker
 from .domains.t3.tools import T3_TOOL_SET, register_t3_tools
 from .domains.t3.voice import T3VoiceContext
+from .domains.t3.placement import OrchestrationSetting, ProjectPlacement
 from .api.t3_routes import T3Routes
 from .domains.heptabase_journal import JOURNAL_TOOL_SET, HeptabaseJournalService, register_journal_tools
 from .api.heptabase_routes import HeptabaseRoutes
@@ -197,8 +198,9 @@ class RuntimeApplication:
         self._announcement_routes = AnnouncementRoutes(self._announcements)
         self._t3 = T3Service(T3Repository(self._database), connection_envelopes, announcements=self._announcements)
         self._t3_sync = T3SyncWorker(self._t3)
-        self._t3_routes = T3Routes(self._t3)
-        register_t3_tools(self._tools, self._t3)
+        self._t3_placement = ProjectPlacement(self._t3, OrchestrationSetting(self._database))
+        self._t3_routes = T3Routes(self._t3, self._t3_placement)
+        register_t3_tools(self._tools, self._t3, self._t3_placement)
         self._background_agent_runs = AgentRunRepository(self._database)
         self._background_agent_settings = BackgroundAgentSettingsRepository(self._database)
         self._run_workspaces = RunWorkspaceRegistry(config.background_runs_path)
@@ -528,3 +530,4 @@ class RuntimeApplication:
         callback = self._restart_request
         if callback is not None:
             callback.run()
+
