@@ -36,6 +36,7 @@ R1 runtime ──HTTP (LAN, bearer token)──▶ samrabbit_bridge.py on the Ma
 
 ```sh
 companion/mac-bridge/install.sh            # options: --port 3780 --host 0.0.0.0 --python /usr/bin/python3
+                                           #   --google-account you@example.com --t3-orchestration-project <id>
 ```
 
 You can run it again at any time. It:
@@ -50,7 +51,9 @@ You can run it again at any time. It:
    `/opt/homebrew/bin`, `--sync-dir`, `--desktop-token-file` and `--cli auto` (the real Heptabase CLI; see "Which
    Heptabase CLI" below), the Composio CLI's absolute path as
    `SAMRABBIT_COMPOSIO` when it is found, `--mobile-devices-file` and `--t3-token-file`, and logs to
-   `~/Library/Logs/samrabbit-bridge.log`);
+   `~/Library/Logs/samrabbit-bridge.log`). `--google-account` / `--t3-orchestration-project` (or the same
+   `SAMRABBIT_GOOGLE_ACCOUNT` / `SAMRABBIT_T3_ORCHESTRATION_PROJECT` in the environment) are recorded in the agent's
+   environment and kept on later runs; an empty value removes one (see "Mobile API");
 4. pairs the bridge with T3 Code once (`samrabbit_t3.py ensure-paired`: only when there is no good token yet; see
    "Mobile API" below), printing `T3 paired (expires …)` or a warning (the bridge then pairs by itself later);
 5. reloads the agent (`launchctl bootout`/`bootstrap`/`kickstart`), waits for `/health`, prints one status line per
@@ -308,20 +311,20 @@ sync routes, which keep epoch milliseconds):
 
 | Route | What |
 |---|---|
-| `GET /v1/mobile/summary` | `{generatedAt, mac: {name, online, screenLocked}, r1: {lastSeenAt, live, liveConversationId, liveTitle}, t3: {available, needsYou, working, threads: [top 5 {threadId, title, project, status, updatedAt, summary}]}, calendar: {available, next: [≤3 {title, startsAt, endsAt, allDay, location, meetingUrl}]}, latestConversation: {conversationId, title, lastAt, preview, live}, journal: {available}}`. Served from caches (< 300 ms) that a worker refreshes while a device is active (T3 every 10 s, calendar every 120 s, journal every 120 s, screen lock every 15 s); a part that can't be read says `available: false` with a `reason`. |
-| `GET /v1/mobile/conversations?limit=&before=&q=`, `GET /v1/mobile/conversations/<id>[/events?after=]`, `GET /v1/mobile/stream?after=` (SSE), `GET /v1/mobile/blobs/<sha256>` | the desktop sync API's own handlers (same JSON and SSE format), authorized by the mobile token |
+| `GET /v1/mobile/summary` | `{generatedAt, mac: {name, online, screenLocked}, r1: {lastSeenAt, live, liveConversationId, liveTitle}, t3: {available, needsYou, working, threads: [top 5 {threadId, title, project, status, updatedAt, summary}]}, calendar: {available, next: [≤3 {title, startsAt, endsAt, allDay, location, meetingUrl}]}, latestConversation: {conversationId, title, lastAt, preview, live}, journal: {available}}`. Served from caches (< 300 ms) that a worker refreshes while a device is active (T3 every 10 s, calendar every 120 s, journal every 5 min, screen lock every 15 s). The journal check is one read of today through the bridge's own read slots (at most two Heptabase CLI reads at once), and a note added from the phone counts as a check. A part that can't be read says `available: false` with a `reason` (`loading` while a cold start is still reading it). |
+| `GET /v1/mobile/conversations?limit=&before=&q=`, `GET /v1/mobile/conversations/<id>[/events?after=]`, `GET /v1/mobile/stream?after=` (SSE), `GET /v1/mobile/blobs/<sha256>` | the desktop sync API's own handlers (same JSON and SSE format), authorized by the mobile token. Phones and watches share 4 of the sync store's 8 live streams (so the desktop app always has some; 503 `too_many_streams` beyond that), at most 2 per device (a third one, e.g. a reconnect, closes that device's oldest); revoking a device ends its open streams at once |
 | `GET /v1/mobile/ui/artifacts/<id>` (+ `/image` JPEG, `/document` HTML with the generated-UI CSP) | a generated UI's status and content |
-| `POST /v1/mobile/ui/generate {prompt, data?}` | → `202 {artifactId, status, conversationId}`; the request and the result are recorded in the day's **"Phone"** conversation (`phone-YYYYMMDD`, never live), so the desktop app shows them too |
-| `GET /v1/mobile/t3/threads?filter=needs_you\|working\|recent` | `{threads: [{threadId, title, projectId, projectName, status: needs_approval\|needs_input\|working\|done\|error\|idle, statusLabel, updatedAt, summary, settled, pending?: {kind: approval\|question, text, options, requestId, …}}]}` (idle = never ran a turn) |
+| `POST /v1/mobile/ui/generate {prompt, data?, requestId?}` | → `202 {artifactId, status, conversationId}`; the request and the result are recorded in the day's **"Phone"** conversation (`phone-YYYYMMDD`, never live), so the desktop app shows them too. A request the generator would refuse (bad `data`, 503 `genui_busy`) records nothing. With the phone's own `requestId` (1–96 of `A-Z a-z 0-9 . _ : -`), a retry after a timeout answers the same visual and records the request once |
+| `GET /v1/mobile/t3/threads?filter=needs_you\|working\|recent` | `{threads: [{threadId, title, projectId, projectName, status: needs_approval\|needs_input\|working\|done\|error\|idle, statusLabel, updatedAt, summary, settled, pending?: {kind: approval\|question, text, options, requestId, …}}]}` (idle = never ran a turn). Needs-you threads whose open request is not cached yet are read before answering (up to 4, about 2.5 s at most), so `pending` is there on the first load |
 | `GET /v1/mobile/t3/threads/<id>` | `{thread, messages: [{role: user\|assistant\|tool, text, at}], pending, activeTurnId}` (a run of tool steps is one `tool` line) |
-| `POST /v1/mobile/t3/threads/<id>/message {text}` · `/respond {decision: "approve"\|"deny"}` or `{answer}` (or `{answers: {questionId: …}}`) · `/stop` | `thread.turn.start` / `thread.approval.respond` (approve → accept, deny → decline) / `thread.user-input.respond` (option values as T3 expects) / `thread.turn.interrupt` |
-| `POST /v1/mobile/t3/threads {text, projectId?, title?}` | `thread.create` + `thread.turn.start` → `{threadId, title, projectId, projectName, placement}`. Without `projectId`: a project the request names, coding work to the most recently active code project, everything else to the orchestration project (`SAMRABBIT_T3_ORCHESTRATION_PROJECT` id, else the project titled `SAMRABBIT_T3_ORCHESTRATION_TITLE`, default T3's agent project "Hermes", else T3's agent workspace project, else the most recent one). |
+| `POST /v1/mobile/t3/threads/<id>/message {text}` · `/respond {decision: "approve"\|"deny"}` or `{answer}` (or `{answers: {questionId: …}}`) · `/stop` | `thread.turn.start` / `thread.approval.respond` (approve → accept, deny → decline) / `thread.user-input.respond` (option values as T3 expects; as on the R1, an answer may be the label, a shortened label, a number or a position such as "the first one"; other words go as free text only when the question allows it) / `thread.turn.interrupt` |
+| `POST /v1/mobile/t3/threads {text, projectId?, title?}` | `thread.create` + `thread.turn.start` → `{threadId, title, projectId, projectName, placement}`. Without `projectId`: a project the request names, coding work to the most recently active code project, everything else to the orchestration project (`SAMRABBIT_T3_ORCHESTRATION_PROJECT` id, e.g. from `install.sh --t3-orchestration-project`, else the project titled `SAMRABBIT_T3_ORCHESTRATION_TITLE`, default T3's agent project "Hermes", else T3's agent workspace project, else the most recent one). See "Placement compared with the R1" below. |
 | `GET /v1/mobile/t3/projects` | `{projects: [{projectId, name, orchestration}], orchestrationProjectId}` |
 | `GET /v1/mobile/calendar/agenda?hours=24` | Composio `GOOGLECALENDAR_EVENTS_LIST` (single events, by start time) on the bridge's calendar (`primary`), cached 120 s: `{available, timezone, from, to, events: [{eventId, title, startsAt, endsAt, allDay, location, meetingUrl}], cached}` (no cancelled, declined or working-location entries) |
 | `POST /v1/mobile/calendar/block {minutes, title?}` | an event from now (rounded down to the minute) for `minutes` (5–720), in `SAMRABBIT_TIMEZONE` (default America/New_York), default title "Focus" |
 | `POST /v1/mobile/calendar/events {title, startsAt, endsAt}` | the same writer as `/v1/calendar/events` |
-| `POST /v1/mobile/journal {text}` | appends `**HH:MM** <text>` (the words escaped, nothing added) to today's Heptabase journal; explicit notes only |
-| `GET /v1/mobile/mac/state` · `POST /v1/mobile/mac/open {app\|url}` · `GET /v1/mobile/mac/screenshot?max=` | Mac control (`open` pins Google links to the account in `SAMRABBIT_GOOGLE_ACCOUNT` / the calendar's account with `authuser=`); the screenshot is a JPEG, or 409 `screen_locked` / `screen_recording_required` |
+| `POST /v1/mobile/journal {text}` | appends `**HH:MM** <text>` (the words escaped, nothing added) to today's Heptabase journal; explicit notes only. As on the R1 (its "redact secrets" setting is on by default), API keys, tokens, private keys, "the code is 123456" and "password is …" are written as `[redacted]`, and the answer then says `redacted: true` |
+| `GET /v1/mobile/mac/state` · `POST /v1/mobile/mac/open {app\|url}` · `GET /v1/mobile/mac/screenshot?max=` | Mac control; the screenshot is a JPEG, or 409 `screen_locked` / `screen_recording_required`. `open` pins Google Calendar, Gmail, Drive, Docs and Meet links to one account with `authuser=`: `SAMRABBIT_GOOGLE_ACCOUNT` (`install.sh --google-account`), else the account on an event the bridge created, else the account the agenda shows (an event its owner created, the primary calendar's own name, or a calendar id that is an email), learned on every calendar refresh, so right after a restart too (a Google link with nothing known yet reads the agenda first) |
 
 `/health` adds `mobile: {available, devices, t3: {paired, ok}}`.
 
@@ -330,12 +333,29 @@ separate from the R1's. It mints a pairing credential with the CLI inside the T3
 (`ELECTRON_RUN_AS_NODE=1 "/Applications/T3 Code (Alpha).app/Contents/MacOS/T3 Code (Alpha)" …/app.asar/apps/server/dist/bin.mjs
 auth pairing create --label "SamRabbit bridge" --ttl 10m --base-url http://127.0.0.1:3773 --json`), exchanges it
 at `POST /oauth/token` and keeps the 30-day token in `~/.config/samrabbit/t3-token` (0600, JSON with its expiry and
-session id). It pairs again by itself when the token is missing, has less than a day left, or T3 answers 401 (once per
-request; a failed pairing is not retried for a minute, and a token T3 refuses right after it was minted is not
-replaced in a loop). `install.sh` pairs once; `python3 -I samrabbit_t3.py status` shows the state. Options:
+session id). It pairs again by itself when the token is missing, has less than a day left, or T3 answers 401 (at most
+once per request), but never in a loop, since each pairing runs the Electron CLI and adds a "SamRabbit bridge" session
+in T3: a failed pairing waits 1 minute before the next one (doubling up to 10 minutes); a token the bridge minted that
+T3 refuses before it ever worked, or within a minute, means T3 is not taking its credentials, so the next pairing
+waits 5 minutes (doubling up to an hour; every request meanwhile answers 502 `t3_unauthorized` without pairing); a
+token that worked for a while and is then revoked is replaced at once; and there are never more than 6 pairings in
+an hour. `/health` then says `mobile.t3: {paired: false, ok: false, reason}`. `install.sh` pairs once;
+`python3 -I samrabbit_t3.py status` shows the state. Options:
 `--t3-url`, `--t3-cli`, `--t3-token-file` (`SAMRABBIT_T3_URL`, `SAMRABBIT_T3_CLI`, `SAMRABBIT_T3_TOKEN_FILE`).
 A copy of the bridge run from a checkout never talks to T3 unless given `--t3-url` (it answers 503 `t3_dev_copy`),
 just as it never changes Google Calendar (`calendar_dev_copy`) or writes the journal (dry run).
+
+**Placement compared with the R1.** New tasks from the phone follow the R1's `placement.py` (a project the request
+names wins; the same coding and everyday word lists) with three differences:
+
+- A request with nothing to go on ("Tell me a joke") goes to the orchestration project. On the R1, `t3_new_thread`
+  is the coding tool, so there an unsure request goes to the most recently active project.
+- Coding work goes to the most recently active project that is not the orchestration project (while there is one).
+  The R1's "most recently active" fallback can pick the orchestration project.
+- The orchestration project is the bridge's own setting (`SAMRABBIT_T3_ORCHESTRATION_PROJECT` /
+  `SAMRABBIT_T3_ORCHESTRATION_TITLE`, default T3's agent project). The R1 keeps its choice
+  (`t3.orchestration_project_id`) in its own database, which the bridge can't read; changing it on the R1 does not
+  change the phone. To use the same project, pass its T3 id to `install.sh --t3-orchestration-project`.
 
 ## Desktop app page (`/app/`)
 
@@ -363,7 +383,7 @@ just as it never changes Google Calendar (`calendar_dev_copy`) or writes the jou
   Calendar changes log only the route, the status and an error code: never a title, a time or Composio's output.
   Mobile routes are logged as templates (`/v1/mobile/t3/threads/{id}/respond`) with the status and an error code:
   never a mobile token, a pairing code, a device id, thread text, prompts, notes, events or images; T3 pairing logs
-  only "t3 paired (expires <date>)".
+  only "t3 paired (expires <date>)" and its back-off notices ("next pairing in N min").
 - Error replies never repeat the CLI's own messages, because they could quote journal content.
 - The token file is re-read when it changes. To rotate it, delete the file, run `install.sh`, and connect the R1
   again.

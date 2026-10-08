@@ -52,12 +52,17 @@ class Clock:
     def __init__(self, epoch: float) -> None:
         self.now = epoch
         self.mono = 10_000.0
+        self._real: Optional[float] = None
 
     def time(self) -> float:
         return self.now
 
     def monotonic(self) -> float:
-        return self.mono
+        return self.mono + (time.monotonic() - self._real if self._real is not None else 0.0)
+
+    def follow_real_time(self) -> None:
+        """From now on the monotonic clock also moves with real time (tests with the background worker)."""
+        self._real = time.monotonic()
 
     def dt(self) -> datetime:
         return datetime.fromtimestamp(self.now, timezone.utc)
@@ -576,6 +581,43 @@ class SummaryTest(MobileBase):
         self.call("GET", "/v1/mobile/summary", token=phone)
         self.assertLess(time.monotonic() - started, 0.3)
 
+    def test_parts_still_loading_on_a_cold_start_say_so(self) -> None:
+        phone = self.pair()["token"]
+        self.fake_t3.delay["/api/orchestration/shell"] = 4.0
+        (self.hepta_dir / "mode").write_text("slow")
+        (self.hepta_dir / "slow").write_text("4")
+        self.clock.follow_real_time()
+        self.service.start()  # closed by server_close
+        status, value = self.call("GET", "/v1/mobile/summary", token=phone)
+        self.assertEqual(200, status)
+        self.assertEqual({"available": False, "needsYou": 0, "working": 0, "threads": [], "reason": "loading"},
+                         value["t3"])
+        self.assertEqual({"available": False, "reason": "loading"}, value["journal"])
+
+    def test_the_journal_part_keeps_its_reason_and_probes_through_the_read_slots(self) -> None:
+        phone = self.pair()["token"]
+        (self.hepta_dir / "mode").write_text("down")
+        value = self.call("GET", "/v1/mobile/summary", token=phone)[1]
+        self.assertEqual({"available": False, "reason": "heptabase_app_unavailable"}, value["journal"])
+        (self.hepta_dir / "mode").write_text("ok")
+        self.clock.advance(60)
+        value = self.call("GET", "/v1/mobile/summary", token=phone)[1]
+        self.assertFalse(value["journal"]["available"], "probed every 5 minutes, not on every summary")
+        # A note from the phone that goes in is as good as a probe.
+        self.assertEqual(200, self.call("POST", "/v1/mobile/journal", {"text": "back online"}, token=phone)[0])
+        self.assertEqual({"available": True}, self.call("GET", "/v1/mobile/summary", token=phone)[1]["journal"])
+        acquired = []
+        original = self.server.read_slots.acquire
+
+        def counting(*args: Any, **kwargs: Any) -> bool:
+            acquired.append(1)
+            return original(*args, **kwargs)
+
+        self.server.read_slots.acquire = counting  # type: ignore[method-assign]
+        self.clock.advance(301)
+        self.assertTrue(self.call("GET", "/v1/mobile/summary", token=phone)[1]["journal"]["available"])
+        self.assertEqual(1, len(acquired), "the probe goes through the bridge's read slots")
+
     def test_summary_when_t3_is_down_keeps_the_rest(self) -> None:
         phone = self.pair()["token"]
         self.fake_t3.close()
@@ -851,6 +893,95 @@ class T3RoutesTest(MobileBase):
         status, health = self.call("GET", "/health", token=TOKEN)
         self.assertTrue(health["mobile"]["t3"]["paired"])
 
+    def poll_threads(self, minutes: float, every: float = 20.0) -> List[Tuple[int, Optional[str]]]:
+        """What the phone sees asking for its tasks every ``every`` seconds (the summary worker retries a failed
+        T3 part about that often, and each Tasks-tab load asks too)."""
+        answers = []
+        for _ in range(int(minutes * 60 / every)):
+            self.hub.invalidate()
+            status, value = self.call("GET", "/v1/mobile/t3/threads", token=self.phone)
+            answers.append((status, value.get("error", {}).get("code")))
+            self.clock.advance(every)
+        return answers
+
+    def test_t3_refusing_every_token_never_pairs_in_a_loop(self) -> None:
+        self.fake_t3.refuse_tokens = True
+        answers = self.poll_threads(minutes=10)
+        self.assertEqual({(502, "t3_unauthorized")}, set(answers))
+        self.assertEqual(2, len(self.t3_cli_calls()), "paired at the start, then once more after 5 minutes")
+        self.assertGreater(self.hub.status()["nextPairingInSeconds"], 0)
+        self.poll_threads(minutes=50)
+        self.assertEqual(4, len(self.t3_cli_calls()), "an hour: back-off of 5, 10, 20, then 40 minutes")
+        self.assertEqual(4, len(self.fake_t3.exchanges), "one T3 session per pairing, no more")
+        status, health = self.call("GET", "/health", token=TOKEN)
+        self.assertEqual((False, False, "t3_unauthorized"), (health["mobile"]["t3"]["paired"],
+                                                              health["mobile"]["t3"]["ok"],
+                                                              health["mobile"]["t3"]["reason"]))
+        # T3 takes the bridge's credentials again: after the back-off one pairing, and it works.
+        self.fake_t3.refuse_tokens = False
+        self.clock.advance(41 * 60)
+        self.assertEqual(10, len(self.threads()))
+        self.assertEqual(5, len(self.t3_cli_calls()))
+        self.assertTrue(self.hub.status()["ok"])
+        self.assert_log_clean(*[exchange["subject_token"] for exchange in self.fake_t3.exchanges])
+
+    def test_a_token_that_worked_for_a_while_is_replaced_at_once_when_revoked(self) -> None:
+        self.threads()
+        self.clock.advance(3 * 86400)
+        self.threads()
+        self.fake_t3.revoke_all()
+        self.hub.invalidate()
+        self.assertEqual(10, len(self.threads()), "a revoked token is replaced without waiting")
+        self.assertEqual(2, len(self.t3_cli_calls()))
+        # The replacement keeps working for days, then is revoked too: replaced at once again.
+        self.clock.advance(2 * 86400)
+        self.hub.invalidate()
+        self.threads()
+        self.fake_t3.revoke_all()
+        self.hub.invalidate()
+        self.assertEqual(10, len(self.threads()))
+        self.assertEqual(3, len(self.t3_cli_calls()))
+
+    def test_a_cli_that_keeps_failing_pairs_at_most_six_times_an_hour(self) -> None:
+        (self.t3_dir / "cli-mode").write_text("fail")
+        answers = self.poll_threads(minutes=60, every=30)
+        self.assertEqual({(502, "t3_cli_failed")}, set(answers))
+        self.assertEqual(6, len(self.t3_cli_calls()), "1, 2, 4, 8, 10, 10 minutes apart, then the hourly cap")
+        self.poll_threads(minutes=60, every=30)
+        self.assertLessEqual(len(self.t3_cli_calls()), 12)
+
+    def test_the_first_needs_you_list_already_has_the_open_requests(self) -> None:
+        by_id = {item["threadId"]: item for item in self.threads("?filter=needs_you")}
+        self.assertEqual(("approval", "npm test -- --watch=false"),
+                         (by_id["t-approval"]["pending"]["kind"], by_id["t-approval"]["pending"]["text"]))
+        self.assertEqual(["SQLite", "Postgres"], by_id["t-input"]["pending"]["options"])
+        reads = self.fake_t3.count("GET /api/orchestration/threads/")
+        self.threads("?filter=needs_you")
+        self.threads()
+        self.assertEqual(reads, self.fake_t3.count("GET /api/orchestration/threads/"), "read once, then cached")
+        # A thread that starts needing you later is read on the next list.
+        thread = self.fake_t3.get_thread("t-done")
+        thread["hasPendingApprovals"] = True
+        thread["updatedAt"] = "2026-10-08T13:00:00.000Z"
+        self.fake_t3.details["t-done"] = {"messages": [], "activities": [
+            {"id": "x", "kind": "approval.requested", "createdAt": "2026-10-08T13:00:00.000Z",
+             "payload": {"requestId": "req-late", "requestKind": "file-change", "detail": "Edit README.md"}}]}
+        self.clock.advance(4)
+        item = next(entry for entry in self.threads() if entry["threadId"] == "t-done")
+        self.assertEqual(("needs_approval", "req-late", "Edit README.md"),
+                         (item["status"], item["pending"]["requestId"], item["pending"]["text"]))
+
+    def test_dictated_answers_pick_options_by_position(self) -> None:
+        question = self.fake_t3.details["t-input"]["activities"][0]["payload"]["questions"][0]
+        question["allowCustomAnswer"] = True
+        for said, expected in (("the first one", "sqlite"), ("Second option.", "Postgres"), ("2", "Postgres"),
+                               ("the third one", "the third one")):
+            with self.subTest(said=said):
+                status, value = self.call("POST", "/v1/mobile/t3/threads/t-input/respond", {"answer": said},
+                                          token=self.phone)
+                self.assertEqual(200, status, value)
+                self.assertEqual({"q1": expected}, self.fake_t3.dispatched[-1]["answers"])
+
 
 # ====================================================================== calendar
 
@@ -952,6 +1083,25 @@ class JournalTest(MobileBase):
         self.assertEqual("**09:05** a \\[link\\](x) \\<b\\>",
                          mobile.journal_note("a [link](x) <b>", datetime(2026, 1, 2, 9, 5)))
 
+    def test_codes_passwords_and_keys_are_redacted_as_on_the_r1(self) -> None:
+        phone = self.pair()["token"]
+        status, value = self.call("POST", "/v1/mobile/journal",
+                                  {"text": "The code is 123456 and my password is hunter2, see you"}, token=phone)
+        self.assertEqual((200, True), (status, value.get("redacted")))
+        journal = json.loads((self.hepta_dir / "journal.json").read_text())
+        self.assertEqual("**14:37** The code is \\[redacted\\] and my password is \\[redacted\\], see you",
+                         journal["2026-10-08"][-1])
+        self.assertNotIn("redacted", self.call("POST", "/v1/mobile/journal", {"text": NOTE}, token=phone)[1],
+                         "nothing to hide: the words go in as said")
+        moment = datetime(2026, 1, 2, 9, 5)
+        for said, written in (("key sk-ant-" + "a" * 24 + " ok", "key \\[redacted\\] ok"),
+                              ("token ghp_" + "b" * 30, "token \\[redacted\\]"),
+                              ("verification code: 4417 99", "verification code: \\[redacted\\]"),
+                              ("call mom about the 4417 trip", "call mom about the 4417 trip")):
+            with self.subTest(said=said):
+                self.assertEqual("**09:05** " + written, mobile.journal_note(said, moment))
+        self.assert_log_clean("123456", "hunter2")
+
 
 class ConversationsTest(MobileBase):
     def test_conversation_routes_reuse_the_sync_handlers(self) -> None:
@@ -989,6 +1139,55 @@ class ConversationsTest(MobileBase):
         connection.close()
 
 
+class StreamTest(MobileBase):
+    def open_stream(self, token: str) -> Tuple[http.client.HTTPConnection, Any]:
+        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        self.addCleanup(connection.close)
+        connection.request("GET", "/v1/mobile/stream?after=0", headers={"Authorization": "Bearer " + token})
+        response = connection.getresponse()
+        return connection, response
+
+    def assert_open(self, response: Any) -> None:
+        self.assertEqual(200, response.status)
+        self.assertTrue(response.fp.readline().startswith(b"retry:"))
+
+    def assert_closed_soon(self, response: Any) -> None:
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            line = response.fp.readline()
+            if line == b"":
+                return
+        self.fail("the stream is still open")
+
+    def test_phones_share_a_few_streams_and_a_revoked_device_is_cut_off(self) -> None:
+        first, second, third = (self.pair(name=name) for name in ("Phone A", "Phone B", "Phone C"))
+        _c1, a1 = self.open_stream(first["token"])
+        self.assert_open(a1)
+        _c2, a2 = self.open_stream(first["token"])
+        self.assert_open(a2)
+        _c3, a3 = self.open_stream(first["token"])  # a reconnect: the oldest of this phone's streams goes
+        self.assert_open(a3)
+        self.assert_closed_soon(a1)
+        _c4, b1 = self.open_stream(second["token"])
+        self.assert_open(b1)
+        _c5, b2 = self.open_stream(second["token"])
+        self.assert_open(b2)
+        _c6, c1 = self.open_stream(third["token"])
+        self.assertEqual(503, c1.status, "four phone streams at most: the desktop app keeps the other slots")
+        self.assertEqual("too_many_streams", json.loads(c1.read())["error"]["code"])
+        desktop = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        self.addCleanup(desktop.close)
+        desktop.request("GET", "/v1/sync/stream?after=0", headers={"X-SamRabbit-Desktop": DESKTOP})
+        self.assertEqual(200, desktop.getresponse().status, "the desktop app still gets a stream")
+        status, value = self.call("DELETE", f"/v1/mobile/devices/{first['deviceId']}", desktop=True)
+        self.assertEqual((200, 1), (status, value["revoked"]))
+        self.assert_closed_soon(a2)
+        self.assert_closed_soon(a3)
+        _c7, c2 = self.open_stream(third["token"])
+        self.assert_open(c2)
+        self.assertEqual(401, self.open_stream(first["token"])[1].status)
+
+
 class GeneratedUiTest(MobileBase):
     def test_generate_records_into_the_phone_conversation(self) -> None:
         phone = self.pair()["token"]
@@ -1022,6 +1221,41 @@ class GeneratedUiTest(MobileBase):
         self.assertEqual(400, self.call("POST", "/v1/mobile/ui/generate", {"prompt": ""}, token=phone)[0])
         self.assert_log_clean(PROMPT, "9931")
 
+    def phone_events(self) -> List[Dict[str, Any]]:
+        status, value = self.call("GET", "/v1/sync/conversations/phone-20261008/events", desktop=True)
+        return value.get("events", []) if status == 200 else []
+
+    def test_a_refused_request_leaves_no_user_line(self) -> None:
+        phone = self.pair()["token"]
+        status, value = self.call("POST", "/v1/mobile/ui/generate", {"prompt": PROMPT, "data": "x" * 24001},
+                                  token=phone)
+        self.assertEqual((400, "invalid_data"), (status, value["error"]["code"]))
+        status, value = self.call("POST", "/v1/mobile/ui/generate", {"prompt": PROMPT, "requestId": "bad id!"},
+                                  token=phone)
+        self.assertEqual((400, "invalid_request_id"), (status, value["error"]["code"]))
+        for number in range(genui.MAX_QUEUE):  # the generator is not running: these fill its queue
+            self.genui.submit({"requestId": f"r1:{number}", "prompt": "a card"})
+        status, value = self.call("POST", "/v1/mobile/ui/generate", {"prompt": PROMPT}, token=phone)
+        self.assertEqual((503, "genui_busy", True), (status, value["error"]["code"], value["error"]["retryable"]))
+        self.assertEqual([], self.phone_events())
+
+    def test_a_retry_with_the_same_request_id_makes_one_visual(self) -> None:
+        phone = self.pair()["token"]
+        body = {"prompt": PROMPT, "requestId": "4C1F7A3E-2B9D-4E51-8A60-0D2C9B7E1F11"}
+        first = self.call("POST", "/v1/mobile/ui/generate", body, token=phone)
+        again = self.call("POST", "/v1/mobile/ui/generate", body, token=phone)
+        self.assertEqual((202, 202), (first[0], again[0]))
+        self.assertEqual(first[1], again[1])
+        self.assertEqual(["message.user", "ui.generating"], [item["type"] for item in self.phone_events()])
+        self.genui.start()
+        self.assertTrue(self.genui.wait_idle(30))
+        status, value = self.call("POST", "/v1/mobile/ui/generate", body, token=phone)
+        self.assertEqual((200, "ready", first[1]["artifactId"]), (status, value["status"], value["artifactId"]))
+        self.assertEqual(["message.user", "ui.generating", "ui.generated"],
+                         [item["type"] for item in self.phone_events()])
+        other = self.call("POST", "/v1/mobile/ui/generate", {"prompt": PROMPT}, token=phone)[1]
+        self.assertNotEqual(first[1]["artifactId"], other["artifactId"], "without a requestId: a new visual")
+
 
 class MacTest(MobileBase):
     def setUp(self) -> None:
@@ -1047,6 +1281,36 @@ class MacTest(MobileBase):
         for bad in ({"path": "~/Documents"}, {"app": "Calculator", "url": "https://x.com"}, {}, {"app": 5}):
             with self.subTest(body=bad):
                 self.assertEqual(400, self.call("POST", "/v1/mobile/mac/open", bad, token=self.phone)[0])
+
+    def test_the_google_account_is_learned_from_the_calendar_after_a_restart(self) -> None:
+        self.service._google_account = None  # noqa: SLF001 - as installed: no SAMRABBIT_GOOGLE_ACCOUNT
+        events = calendar_events()
+        events["later"]["creator"] = {"email": "Owner2@Example.com", "self": True}
+        self.write_calendar({"events": events})
+        # Nothing known yet (no event was created since the bridge started): a Google link loads the agenda first.
+        self.call("POST", "/v1/mobile/mac/open", {"url": "https://mail.google.com/mail/u/0/#inbox"}, token=self.phone)
+        self.assertEqual("https://mail.google.com/mail/?authuser=owner2@example.com#inbox",
+                         self.cua_calls("open")[-1]["argv"][-1])
+        self.assertEqual(1, len(self.composio_calls()))
+        self.call("POST", "/v1/mobile/mac/open", {"url": "https://example.com/"}, token=self.phone)
+        self.call("POST", "/v1/mobile/mac/open", {"url": "https://drive.google.com/"}, token=self.phone)
+        self.assertEqual("https://drive.google.com/drive/?authuser=owner2@example.com",
+                         self.cua_calls("open")[-1]["argv"][-1])
+        self.assertEqual(1, len(self.composio_calls()), "learned once, then known")
+
+    def test_account_from_events(self) -> None:
+        mine = {"email": "me@example.com", "self": True}
+        group = {"email": "family123@group.calendar.google.com", "self": True}
+        cases = [({"items": [{"creator": {"email": "other@example.com"}}, {"creator": mine}]}, "primary", "me@example.com"),
+                 ({"response_data": {"items": [{"organizer": mine}]}}, "primary", "me@example.com"),
+                 ({"items": [{"organizer": group}]}, "primary", None),
+                 ({"items": [], "summary": "Me@Example.com"}, "primary", "me@example.com"),
+                 ({"items": [], "summary": "Family"}, "family123@group.calendar.google.com", None),
+                 ({"items": [{"organizer": mine}]}, "team@example.com", "team@example.com"),
+                 ({"items": []}, "primary", None)]
+        for data, calendar_id, expected in cases:
+            with self.subTest(data=data, calendar=calendar_id):
+                self.assertEqual(expected, mobile.account_from_events(data, calendar_id))
 
     def test_screenshot_is_a_jpeg_or_a_clear_error(self) -> None:
         status, headers, raw = self.request("GET", "/v1/mobile/mac/screenshot", token=self.phone)

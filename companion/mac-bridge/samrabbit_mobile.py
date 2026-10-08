@@ -21,7 +21,8 @@ Routes (CONTRACTS-WAVE4 "Mobile API"):
   ``POST .../message|respond|stop``, ``POST /v1/mobile/t3/threads {text, projectId?}``, ``GET /v1/mobile/t3/projects``.
 * Calendar (Composio, ``samrabbit_calendar``): ``GET /v1/mobile/calendar/agenda?hours=24``,
   ``POST /v1/mobile/calendar/block {minutes, title?}``, ``POST /v1/mobile/calendar/events {title, startsAt, endsAt}``.
-* ``POST /v1/mobile/journal {text}``: ``**HH:MM** <text>`` appended to today's Heptabase journal (explicit notes only).
+* ``POST /v1/mobile/journal {text}``: ``**HH:MM** <text>`` appended to today's Heptabase journal (explicit notes only;
+  codes, passwords and API keys in the words are redacted first, as on the R1).
 * Mac: ``GET /v1/mobile/mac/state``, ``POST /v1/mobile/mac/open {app|url}``, ``GET /v1/mobile/mac/screenshot`` (JPEG).
 
 Errors are ``{"error": {"code", "message", "retryable"}}``. Times in the routes this module answers itself are ISO
@@ -91,12 +92,16 @@ MAX_AGENDA_HOURS = 7 * 24
 SUMMARY_CACHE_SECONDS = 2.0
 T3_REFRESH_SECONDS = 10.0
 CALENDAR_REFRESH_SECONDS = 120.0
-JOURNAL_REFRESH_SECONDS = 120.0
+JOURNAL_REFRESH_SECONDS = 300.0  # the probe reads today's journal; a phone note also tells
 SCREEN_REFRESH_SECONDS = 15.0
 FAILED_REFRESH_SECONDS = 20.0
 DEMAND_WINDOW_SECONDS = 10 * 60
 COLD_WAIT_SECONDS = 1.5
 HOSTS_CACHE_SECONDS = 30.0
+MAX_MOBILE_STREAMS = 4  # live streams for all phones and watches together (of the sync store's 8; the rest stay
+MAX_DEVICE_STREAMS = 2  # free for the desktop app); per device, a newer stream replaces the oldest
+PENDING_ON_DEMAND = 4  # a thread list reads at most this many uncached open requests before answering ...
+PENDING_BUDGET_SECONDS = 2.5  # ... within about this long
 DEFAULT_SCREENSHOT_SIDE = 1600
 PHONE_TITLE = "Phone"
 PUBLIC, DESKTOP, DEVICE = "public", "desktop", "device"
@@ -106,6 +111,8 @@ _PRIVATE_V4 = tuple(ipaddress.ip_network(net) for net in
                      "100.64.0.0/10"))
 _PRIVATE_V6 = tuple(ipaddress.ip_network(net) for net in ("::1/128", "fc00::/7", "fe80::/10"))
 _DEVICE_ID = re.compile(r"^dev_[0-9a-f]{16}$")
+_CLIENT_REQUEST_ID = re.compile(r"^[A-Za-z0-9._:\-]{1,96}$")
+_JOURNAL_DOWN = frozenset({"heptabase_app_unavailable", "heptabase_cli_missing"})
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 
 
@@ -336,13 +343,13 @@ class DeviceRegistry:
         except OSError:
             _LOG.warning("mobile devices file not updated")
 
-    def revoke(self, device_id: str) -> int:
-        """Removes the device and the devices it provisioned (its watch). Returns how many went."""
+    def revoke(self, device_id: str) -> List[str]:
+        """Removes the device and the devices it provisioned (its watch). Returns the ids that went."""
         with self._lock:
             devices = self._load()
             gone = {device_id} | {item["deviceId"] for item in devices if item.get("parentId") == device_id}
             kept = [dict(item) for item in devices if item["deviceId"] not in gone]
-            removed = len(devices) - len(kept)
+            removed = [item["deviceId"] for item in devices if item["deviceId"] in gone]
             if removed:
                 self._save(kept)
             return removed
@@ -408,6 +415,14 @@ def normalize_email(value: Any) -> Optional[str]:
     return text.lower() if len(text) <= 254 and _EMAIL.match(text) else None
 
 
+def is_google_link(url: str) -> bool:
+    try:
+        parts = urlsplit(url.strip())
+    except ValueError:
+        return False
+    return parts.scheme.lower() in ("http", "https") and (parts.hostname or "").lower() in GOOGLE_HOSTS
+
+
 def with_google_account(url: str, email: Optional[str]) -> str:
     """``url`` with ``authuser=<email>`` for Google Calendar, Gmail, Drive, Docs and Meet links that don't name an
     account by email yet (an account index such as ``authuser=1`` or ``/u/1`` is replaced)."""
@@ -440,6 +455,35 @@ def with_google_account(url: str, email: Optional[str]) -> str:
 
 _INLINE = re.compile(r"([\\`*_~\[\]<>|$])")
 _ENTITY = re.compile(r"&(?=#?[A-Za-z0-9]+;)")
+# Value-pattern secret scrub, as the R1 applies to explicit notes (heptabase_journal/format.py, redact_secrets on).
+_SECRET_PATTERNS = (
+    re.compile(r"\b(?:sk|rk|pk)_(?:live|test)_[A-Za-z0-9]{6,}"),
+    re.compile(r"\bsk-(?:proj-|ant-)?[A-Za-z0-9_\-]{20,}"),
+    re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}"),
+    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}"),
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+    re.compile(r"\bAIza[0-9A-Za-z_\-]{35}"),
+    re.compile(r"\bxox[abposr]-[A-Za-z0-9\-]{10,}"),
+    re.compile(r"\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}"),
+    re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/\-]{16,}=*"),
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)"),
+)
+_CODE_AFTER = re.compile(
+    r"(?i)\b((?:verification|security|login|one[- ]time|2fa|auth|access|confirmation)?\s*"
+    r"(?:code|pin|passcode|otp)\s*(?:is|was|=|:)?\s*)(\d(?:[\s-]?\d){3,7})\b"
+)
+_PASSWORD_AFTER = re.compile(r"(?i)\b(password\s*(?:is|was|=|:)\s*)([^\s,;!?]+)")
+REDACTED = "[redacted]"
+
+
+def scrub_secrets(text: str) -> str:
+    """API keys, tokens, private keys, "the code is 123456" and "password is …" replaced by ``[redacted]``."""
+    value = text
+    for pattern in _SECRET_PATTERNS:
+        value = pattern.sub(REDACTED, value)
+    value = _CODE_AFTER.sub(lambda match: match.group(1) + REDACTED, value)
+    value = _PASSWORD_AFTER.sub(lambda match: match.group(1) + REDACTED, value)
+    return value
 
 
 def escape_verbatim(text: str) -> str:
@@ -451,8 +495,8 @@ def escape_verbatim(text: str) -> str:
 
 
 def journal_note(words: str, moment: datetime) -> str:
-    """``**HH:MM** <words>``: the explicit-note format the R1 uses (no added prose)."""
-    return f"**{moment.strftime('%H:%M')}** {escape_verbatim(words)}"
+    """``**HH:MM** <words>``: the explicit-note format the R1 uses (no added prose), secrets redacted first."""
+    return f"**{moment.strftime('%H:%M')}** {escape_verbatim(scrub_secrets(' '.join(str(words).split())))}"
 
 
 # --------------------------------------------------------------------------- calendar
@@ -525,6 +569,39 @@ def _items(data: Any) -> List[Any]:
         if isinstance(nested, dict) and isinstance(nested.get("items"), list):
             return nested["items"]
     return []
+
+
+def _person_account(value: Any) -> Optional[str]:
+    """The email of a Google event ``creator`` / ``organizer`` that is the signed-in account (``self: true``);
+    calendar addresses (``…@group.calendar.google.com``, resources) are not accounts."""
+    if not isinstance(value, dict) or value.get("self") is not True:
+        return None
+    email = normalize_email(value.get("email"))
+    return email if email and not email.endswith("calendar.google.com") else None
+
+
+def account_from_events(data: Any, calendar_id: Optional[str]) -> Optional[str]:
+    """The Google account behind a ``GOOGLECALENDAR_EVENTS_LIST`` answer: an event its owner created
+    (``creator.self``), else, on the primary calendar, one it organizes (``organizer.self``) or the calendar's own
+    name (Google names the primary calendar after the account's email), else the calendar id when it is an email."""
+    items = [item for item in _items(data) if isinstance(item, dict)]
+    for item in items:
+        found = _person_account(item.get("creator"))
+        if found:
+            return found
+    primary = calendar_id in (None, "", "primary")
+    if primary:
+        for item in items:
+            found = _person_account(item.get("organizer"))
+            if found:
+                return found
+        for container in (data, data.get("response_data") if isinstance(data, dict) else None):
+            if isinstance(container, dict):
+                found = normalize_email(container.get("summary"))
+                if found and not found.endswith("calendar.google.com"):
+                    return found
+    found = normalize_email(calendar_id)
+    return found if found and not found.endswith("calendar.google.com") else None
 
 
 # --------------------------------------------------------------------------- the service
@@ -608,6 +685,7 @@ class MobileService:
         self.zone_name = timezone_name or os.environ.get("SAMRABBIT_TIMEZONE") or DEFAULT_TIMEZONE
         self.zone = load_zone(self.zone_name)
         self._google_account = normalize_email(google_account or os.environ.get("SAMRABBIT_GOOGLE_ACCOUNT"))
+        self._learned_account: Optional[str] = None  # from the agenda (EVENTS_LIST) answers
         self._fixed_hosts = hosts
         self.bridge_version = bridge_version
         self._clock = clock
@@ -620,6 +698,7 @@ class MobileService:
         self._summary: Optional[Tuple[float, Dict[str, Any]]] = None
         self._agenda: Dict[int, Tuple[float, Dict[str, Any]]] = {}
         self._hosts: Optional[Tuple[float, List[str]]] = None
+        self._streams: Dict[str, List[Any]] = {}  # device id -> handlers of its open live streams (oldest first)
         self._demand_at = -1e12
         self._worker: Optional[threading.Thread] = None
         self._wake = threading.Event()
@@ -790,8 +869,9 @@ class MobileService:
         removed = self.devices.revoke(device_id)
         if not removed:
             raise MobileError(404, "device_not_found", "No such device.")
-        _LOG.info("mobile device revoked (%d)", removed)
-        return 200, {"ok": True, "revoked": removed}
+        self._close_streams(removed)
+        _LOG.info("mobile device revoked (%d)", len(removed))
+        return 200, {"ok": True, "revoked": len(removed)}
 
     def _r_child(self, handler: Any, _params: Dict[str, str], device: Dict[str, Any], _route: str) -> Tuple[int, Any]:
         if device.get("parentId") or device.get("platform") != "ios":
@@ -808,7 +888,8 @@ class MobileService:
     def _r_unpair(self, handler: Any, _params: Dict[str, str], device: Dict[str, Any], _route: str) -> Tuple[int, Any]:
         _optional_body(handler)
         removed = self.devices.revoke(device["deviceId"])
-        return 200, {"ok": True, "revoked": removed}
+        self._close_streams(removed)
+        return 200, {"ok": True, "revoked": len(removed)}
 
     # ------------------------------------------------------------------ caches and the worker
     def _work(self) -> None:
@@ -901,18 +982,21 @@ class MobileService:
         return self.agenda(24, fresh=True)
 
     def _load_journal(self) -> Dict[str, Any]:
+        """Is the Heptabase journal reachable? One read of today through the bridge's own ``read`` (its read
+        slots: never more than two Heptabase CLI reads at once), every ``JOURNAL_REFRESH_SECONDS`` while a device
+        is active; a note added from the phone refreshes it too."""
         server = self.server
         if server is None:
-            return {"available": False}
+            return {"available": False, "reason": "journal_unavailable"}
         if getattr(server, "dry_run", False):
             return {"available": True, "dryRun": True}
         cli = getattr(server, "cli", None)
         if cli is None or cli.executable() is None:
             return {"available": False, "reason": "heptabase_cli_missing"}
         try:
-            cli.run(["journal", "read", self._now().date().isoformat()], timeout=10.0)
-        except Exception as error:  # noqa: BLE001 - BridgeError: the app is closed or the CLI is off
-            return {"available": False, "reason": str(getattr(error, "code", "heptabase_unavailable"))}
+            server.read(self._now().date().isoformat())
+        except Exception as error:  # noqa: BLE001 - BridgeError: the app is closed, the CLI is off or busy
+            return {"available": False, "reason": str(getattr(error, "code", "") or "heptabase_unavailable")}
         return {"available": True}
 
     def _load_screen(self) -> Dict[str, Any]:
@@ -935,11 +1019,15 @@ class MobileService:
         t3_state, calendar, journal, screen = (parts[name] or {} for name in ("t3", "calendar", "journal", "screen"))
         if calendar.get("_loading"):
             calendar = {"available": False, "reason": "loading"}
+        if journal.get("_loading"):
+            journal = {"available": False, "reason": "loading"}
         t3_part = self.t3.summary_part(self.t3.cached())
         if t3_state.get("_failed") and t3_state.get("reason"):
             t3_part["reason"] = t3_state["reason"]
             if t3_part.get("available"):
                 t3_part["stale"] = True
+        elif t3_state.get("_loading") and not t3_part.get("available"):
+            t3_part.setdefault("reason", "loading")
         now = self._clock()
         upcoming = []
         if calendar.get("available"):
@@ -959,7 +1047,9 @@ class MobileService:
                          **({"reason": calendar["reason"]} if calendar.get("reason") else {})},
             "latestConversation": None,
             "journal": {"available": bool(journal.get("available")),
-                        **({"dryRun": True} if journal.get("dryRun") else {})},
+                        **({"dryRun": True} if journal.get("dryRun") else {}),
+                        **({"reason": journal["reason"]} if journal.get("reason") and not journal.get("available")
+                           else {})},
         }
         value["r1"], value["latestConversation"] = self._r1_part()
         with self._lock:
@@ -992,26 +1082,70 @@ class MobileService:
         return 200, self.summary()
 
     # ------------------------------------------------------------------ conversations (samrabbit_sync handlers)
-    def _r_sync(self, handler: Any, _params: Dict[str, str], _device: Any, route: str) -> Any:
+    def _r_sync(self, handler: Any, _params: Dict[str, str], device: Dict[str, Any], route: str) -> Any:
         service = getattr(self.server, "sync", None)
         if service is None:
             raise MobileError(503, "sync_unavailable", "Conversation sync is off on the Mac.", retryable=True)
         mapped = "/v1/sync/" + route[len(PREFIX):]
+        stream = route == PREFIX + "stream"
+        if stream:
+            self._open_stream(device["deviceId"], handler)
         try:
             status = service._desktop(handler, mapped)  # noqa: SLF001 - the desktop API's handlers, authorized here
         except Exception as error:  # noqa: BLE001 - SyncError and friends answer with their own envelope
             return _error_answer(error)
+        finally:
+            if stream:
+                self._stream_ended(device["deviceId"], handler)
         return _Written(int(status or 200))
 
+    # ------------------------------------------------------------------ live streams
+    def _open_stream(self, device_id: str, handler: Any) -> None:
+        """Phones and watches share ``MAX_MOBILE_STREAMS`` of the sync store's streams, so the desktop app always
+        has slots left. A device opening one more than ``MAX_DEVICE_STREAMS`` (a reconnect after a network
+        change) closes its own oldest stream instead of being refused."""
+        with self._lock:
+            mine = self._streams.setdefault(device_id, [])
+            total = sum(len(items) for items in self._streams.values())
+            stale = []
+            if len(mine) >= MAX_DEVICE_STREAMS or (total >= MAX_MOBILE_STREAMS and mine):
+                stale.append(mine.pop(0))
+            elif total >= MAX_MOBILE_STREAMS:
+                if not mine:
+                    self._streams.pop(device_id, None)
+                raise MobileError(503, "too_many_streams", "Too many live streams from phones and watches are "
+                                  "open.", retryable=True)
+            mine.append(handler)
+        for old in stale:
+            _shut(old)
+
+    def _stream_ended(self, device_id: str, handler: Any) -> None:
+        with self._lock:
+            items = self._streams.get(device_id)
+            if items is not None:
+                if handler in items:
+                    items.remove(handler)
+                if not items:
+                    self._streams.pop(device_id, None)
+
+    def _close_streams(self, device_ids: List[str]) -> None:
+        """A revoked device's open live streams end now, not when it disconnects."""
+        with self._lock:
+            handlers = [handler for device_id in device_ids for handler in self._streams.pop(device_id, [])]
+        for handler in handlers:
+            _shut(handler)
+
     # ------------------------------------------------------------------ generated UIs
-    def _phone_conversation(self, prompt: str) -> Optional[str]:
-        """Today's "Phone" conversation in the sync store, with the request as its user line."""
+    def _phone_conversation(self, prompt: str, event_id: str) -> Optional[str]:
+        """Today's "Phone" conversation in the sync store, with the request as its user line (``event_id`` makes a
+        retried request record it once)."""
         service = getattr(self.server, "sync", None)
         if service is None:
             return None
         conversation = "phone-" + self._now().strftime("%Y%m%d")
         try:
-            service.store.record_local(conversation, {"type": "message.user", "text": prompt, "origin": "phone"})
+            service.store.record_local(conversation, {"id": event_id, "type": "message.user", "text": prompt,
+                                                      "origin": "phone"})
             store = service.store
             # The store titles a conversation after its first user line and calls it live until it ends: this one
             # is "Phone" and never live (it is not an R1 voice session).
@@ -1024,17 +1158,42 @@ class MobileService:
         return conversation
 
     def _r_ui_generate(self, handler: Any, _params: Dict[str, str], _device: Any, _route: str) -> Tuple[int, Any]:
+        """Everything the generator would refuse is checked first, so a refused request leaves no user line in the
+        "Phone" conversation. ``requestId`` (optional, from the phone) makes a retry after a timeout return the
+        same visual instead of making a second one."""
         body = _json_body(handler)
         prompt = body.get("prompt")
-        if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 4000 or "\x00" in prompt:
-            raise _bad("invalid_prompt", "prompt must be 1 to 4000 characters.")
+        limit = int(getattr(_genui, "MAX_PROMPT_CHARS", 4000))
+        if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > limit or "\x00" in prompt:
+            raise _bad("invalid_prompt", f"prompt must be 1 to {limit} characters.")
+        prompt = prompt.strip()
+        client_id = body.get("requestId")
+        if client_id is not None and (not isinstance(client_id, str) or not _CLIENT_REQUEST_ID.match(client_id)):
+            raise _bad("invalid_request_id", "requestId must be 1 to 96 letters, digits or . _ : -")
+        data = body.get("data")
+        if data is not None and not isinstance(data, str):
+            data = json.dumps(data, ensure_ascii=False)
+        data_limit = int(getattr(_genui, "MAX_DATA_CHARS", 24000))
+        if isinstance(data, str) and (len(data) > data_limit or "\x00" in data):
+            raise _bad("invalid_data", f"data must be at most {data_limit} characters.")
         genui = getattr(self.server, "genui", None)
         if genui is None:
             raise MobileError(503, "genui_unavailable", "Generated UIs are off on the Mac.")
-        conversation = self._phone_conversation(prompt.strip())
-        request = {"requestId": "phone:" + uuid.uuid4().hex, "prompt": prompt.strip(), "size": "r1"}
-        if body.get("data") is not None:
-            request["data"] = body["data"]
+        request_id = "phone:" + (client_id or uuid.uuid4().hex)
+        existing = None
+        if _genui is not None and hasattr(_genui, "artifact_id_for"):
+            existing = genui.store.meta(_genui.artifact_id_for(request_id))
+        if existing is not None:
+            conversation = existing.get("conversationId") if isinstance(existing.get("conversationId"), str) else None
+        else:
+            queued = int((genui.capabilities() or {}).get("queued") or 0)
+            if queued >= int(getattr(_genui, "MAX_QUEUE", 8)):
+                raise MobileError(503, "genui_busy", "The Mac is already making several visuals. Try again in a "
+                                  "minute.", retryable=True)
+            conversation = self._phone_conversation(prompt, request_id + ":prompt")
+        request: Dict[str, Any] = {"requestId": request_id, "prompt": prompt, "size": "r1"}
+        if data is not None:
+            request["data"] = data
         if conversation:
             request["conversationId"] = conversation
         status, value = genui.submit(request)
@@ -1070,7 +1229,19 @@ class MobileService:
     def _r_t3_threads(self, handler: Any, _params: Dict[str, str], _device: Any, _route: str) -> Tuple[int, Any]:
         query = _query(handler)
         filter_name = _one(query, "filter")
-        threads = self.t3.threads(filter_name, limit=_int(query, "limit", 40, 1, 100))
+        limit = _int(query, "limit", 40, 1, 100)
+        threads = self.t3.threads(filter_name, limit=limit)
+        missing = [item["threadId"] for item in threads if item["status"] in t3.MOBILE_NEEDS_YOU and
+                   "pending" not in item]
+        if missing:
+            # A thread that just started needing you has no cached request yet: read it now (bounded), so the
+            # Approve / Reply cards show the command or the question on the first load.
+            try:
+                fetched = self.t3.refresh_pending(PENDING_ON_DEMAND, only=missing, budget=PENDING_BUDGET_SECONDS)
+            except t3.T3Error:
+                fetched = 0
+            if fetched:
+                threads = self.t3.threads(filter_name, limit=limit, max_age=60.0)
         with self._lock:
             self._summary = None
         return 200, {"threads": threads, "updatedAt": iso_utc(self._clock())}
@@ -1141,6 +1312,9 @@ class MobileService:
             if cached is not None:
                 return dict(cached[1], cached=True, stale=True, reason=failed["reason"])
             return failed
+        account = account_from_events(data, writer.calendar_id)
+        if account:
+            self._learned_account = account  # for Google links opened from the phone (``google_account``)
         events = [event for event in (agenda_event(item, self.zone) for item in _items(data)) if event]
         events.sort(key=lambda item: (item["startsAt"], item["title"]))
         value = {"available": True, "timezone": self.zone_name, "from": arguments["timeMin"],
@@ -1204,12 +1378,28 @@ class MobileService:
         if self.server is None:
             raise MobileError(503, "journal_unavailable", "The journal is not set up on the Mac bridge.")
         moment = self._now()
-        result = self.server.append(moment.date().isoformat(), journal_note(text, moment))
+        words = " ".join(text.split())
+        try:
+            result = self.server.append(moment.date().isoformat(), journal_note(words, moment))
+        except Exception as error:  # noqa: BLE001 - BridgeError: answered with its own envelope
+            code = str(getattr(error, "code", "") or "")
+            if code in _JOURNAL_DOWN:
+                self._journal_state({"available": False, "reason": code})
+            raise
         _LOG.info("mobile journal note added")
         value = {"recorded": True, "date": result.get("date"), "time": moment.strftime("%H:%M")}
+        if scrub_secrets(words) != words:
+            value["redacted"] = True  # a code, password or key in the words was written as [redacted]
         if result.get("dryRun"):
             value["dryRun"] = True
+        self._journal_state({"available": True, **({"dryRun": True} if result.get("dryRun") else {})})
         return 200, value
+
+    def _journal_state(self, value: Dict[str, Any]) -> None:
+        """A note that went in (or failed because Heptabase is off) is as good as the periodic probe."""
+        with self._lock:
+            self._cache["journal"] = (self._monotonic(), value)
+            self._summary = None
 
     # ------------------------------------------------------------------ Mac
     def _control(self) -> Any:
@@ -1218,14 +1408,22 @@ class MobileService:
             raise MobileError(503, "mac_unavailable", "Mac control is not set up on the bridge.")
         return control
 
-    def google_account(self) -> Optional[str]:
+    def google_account(self, *, wait: bool = False) -> Optional[str]:
+        """The Google account for ``authuser=``: ``SAMRABBIT_GOOGLE_ACCOUNT`` (install.sh ``--google-account``),
+        else the account the calendar writer saw on an event it created, else the one the agenda shows (learned on
+        every calendar refresh, so it is known soon after the bridge starts). ``wait``: when none is known yet,
+        load the agenda first (at most ``COLD_WAIT_SECONDS`` with the worker running)."""
         if self._google_account:
             return self._google_account
         writer = getattr(self.server, "calendar", None)
         try:
-            return normalize_email((writer.capabilities() or {}).get("account")) if writer is not None else None
+            found = normalize_email((writer.capabilities() or {}).get("account")) if writer is not None else None
         except Exception:  # noqa: BLE001
-            return None
+            found = None
+        if found is None and self._learned_account is None and wait and writer is not None and \
+                hasattr(writer, "create"):
+            self._parts(("calendar",))
+        return found or self._learned_account
 
     def _r_mac_state(self, _handler: Any, _params: Dict[str, str], _device: Any, _route: str) -> Tuple[int, Any]:
         control = self._control()
@@ -1248,7 +1446,8 @@ class MobileService:
         if not isinstance(value, str):
             raise _bad("invalid_open", f"{kinds[0]} must be text.")
         if kinds[0] == "url":
-            value = with_google_account(value.strip(), self.google_account())
+            value = value.strip()
+            value = with_google_account(value, self.google_account(wait=is_google_link(value)))
         result = self._control().open({kinds[0]: value})
         _LOG.info("mobile mac open (%s)", kinds[0])
         return 200, result
@@ -1264,6 +1463,17 @@ class MobileService:
 
 
 # --------------------------------------------------------------------------- HTTP plumbing
+
+
+def _shut(handler: Any) -> None:
+    """End a streaming response from another thread: the stream's next peer check or write fails and it returns."""
+    connection = getattr(handler, "connection", None)
+    if connection is None:
+        return
+    try:
+        connection.shutdown(socket.SHUT_RDWR)
+    except OSError:
+        pass
 
 
 def _error_answer(error: Exception) -> Tuple[int, Dict[str, Any]]:

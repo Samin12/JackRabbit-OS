@@ -4,6 +4,12 @@
 # Conversation sync keeps its store in ~/Library/Application Support/SamRabbit/sync (never deleted here).
 #
 #   companion/mac-bridge/install.sh [--port 3780] [--host 0.0.0.0] [--python /usr/bin/python3]
+#                                   [--google-account you@example.com] [--t3-orchestration-project <T3 project id>]
+#
+# --google-account: the Google account that links opened from the phone are pinned to (authuser=); without it the
+# bridge learns it from the calendar. --t3-orchestration-project: where the phone's non-coding tasks go (default:
+# T3's own agent project). Both are kept in the agent's environment (SAMRABBIT_GOOGLE_ACCOUNT,
+# SAMRABBIT_T3_ORCHESTRATION_PROJECT) across later runs; pass an empty value to remove one.
 #
 # Environment (tests): SAMRABBIT_HOME (default $HOME), SAMRABBIT_SKIP_LAUNCHCTL=1, SAMRABBIT_COMPOSIO (the Composio
 # CLI to record instead of searching PATH, ~/.local/bin, /opt/homebrew/bin and /usr/local/bin), SAMRABBIT_T3_CLI /
@@ -25,7 +31,9 @@ while [ $# -gt 0 ]; do
     --port) PORT=$2; shift 2 ;;
     --host) HOST=$2; shift 2 ;;
     --python) PYTHON=$2; shift 2 ;;
-    -h|--help) sed -n '2,8p' "$0"; exit 0 ;;
+    --google-account) SAMRABBIT_GOOGLE_ACCOUNT=$2; export SAMRABBIT_GOOGLE_ACCOUNT; shift 2 ;;
+    --t3-orchestration-project) SAMRABBIT_T3_ORCHESTRATION_PROJECT=$2; export SAMRABBIT_T3_ORCHESTRATION_PROJECT; shift 2 ;;
+    -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
     *) echo "install.sh: unknown option $1" >&2; exit 64 ;;
   esac
 done
@@ -112,12 +120,26 @@ if [ "$(stat -f %z "$LOG_FILE" 2>/dev/null || echo 0)" -gt 5242880 ]; then : > "
 # 3. LaunchAgent plist (written with plistlib so every path is escaped correctly).
 "$PYTHON" - "$PLIST" "$LABEL" "$PYTHON" "$APP_DIR/samrabbit_bridge.py" "$HOST" "$PORT" "$TOKEN_FILE" "$LOG_FILE" \
     "$APP_DIR" "$SYNC_DIR" "$DESKTOP_TOKEN_FILE" "$COMPOSIO" "$MOBILE_DEVICES_FILE" "$T3_TOKEN_FILE" <<'EOF'
-import os, plistlib, sys
+import os, plistlib, re, sys
 (plist, label, python, script, host, port, token, log, workdir, sync_dir, desktop_token, composio, mobile_devices,
  t3_token) = sys.argv[1:]
 environment = {"PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"}
 if composio:
     environment["SAMRABBIT_COMPOSIO"] = composio
+# Settings given once (flag or environment) stay in the agent's environment on later runs; an empty value removes one.
+try:
+    with open(plist, "rb") as handle:
+        previous = plistlib.load(handle).get("EnvironmentVariables") or {}
+except Exception:  # noqa: BLE001 - no agent yet, or an unreadable one
+    previous = {}
+checks = {"SAMRABBIT_GOOGLE_ACCOUNT": re.compile(r"^[^@\s]{1,128}@[^@\s]{1,128}\.[A-Za-z]{2,}$"),
+          "SAMRABBIT_T3_ORCHESTRATION_PROJECT": re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:\-]{0,127}$")}
+for key, pattern in checks.items():
+    value = os.environ[key].strip() if key in os.environ else str(previous.get(key) or "")
+    if value and not pattern.match(value):
+        print(f"install.sh: warning: {key} is not valid; it is not recorded", file=sys.stderr)
+    elif value:
+        environment[key] = value
 value = {
     "Label": label,
     # --cli auto: the installed bridge is the one that writes to the real Heptabase journal (any other copy

@@ -4,7 +4,9 @@
   (single use) and issues ``base64url(claims).sig`` tokens; the form is recorded in ``exchanges``.
 * ``GET /api/auth/session``, ``GET /api/orchestration/shell``, ``GET /api/orchestration/threads/<id>`` serve
   ``shell`` / ``details``; ``POST /api/orchestration/dispatch`` records each command in ``dispatched``.
-* ``revoke_all()`` makes every issued token answer 401 (as after a revoke or the 30-day expiry).
+* ``revoke_all()`` makes every issued token answer 401 (as after a revoke or the 30-day expiry);
+  ``refuse_tokens = True`` makes every bearer token answer 401, even ones issued afterwards (a broken T3).
+* ``delay``: ``{path: seconds}`` to answer slowly.
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ import copy
 import json
 import os
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional
 from urllib.parse import parse_qs, unquote, urlsplit
@@ -117,6 +120,8 @@ class FakeT3:
         self.dispatched: List[Dict[str, Any]] = []
         self.requests: List[str] = []
         self.dispatch_status = 200
+        self.refuse_tokens = False
+        self.delay: Dict[str, float] = {}
         self.counter = 0
         fake = self
 
@@ -175,7 +180,7 @@ class FakeT3:
         header = handler.headers.get("Authorization", "")
         token = header[7:] if header.startswith("Bearer ") else ""
         with self.lock:
-            return self.tokens.get(token) is True
+            return self.tokens.get(token) is True and not self.refuse_tokens
 
     def handle(self, handler: BaseHTTPRequestHandler, method: str) -> None:
         parts = urlsplit(handler.path)
@@ -184,6 +189,9 @@ class FakeT3:
         raw = handler.rfile.read(length) if length else b""
         with self.lock:
             self.requests.append(f"{method} {path}")
+            pause = self.delay.get(path, 0.0)
+        if pause:
+            time.sleep(pause)
         if method == "POST" and path == "/oauth/token":
             form = {key: values[0] for key, values in parse_qs(raw.decode()).items()}
             with self.lock:

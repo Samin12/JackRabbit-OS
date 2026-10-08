@@ -119,6 +119,36 @@ class InstallTest(unittest.TestCase):
             self.assertNotIn("SAMRABBIT_COMPOSIO", plistlib.load(handle)["EnvironmentVariables"])
         self.assertIn("Composio CLI was not found", output)
 
+    def test_install_records_the_google_account_and_orchestration_project(self) -> None:
+        plist_path = Path(self.home, "Library/LaunchAgents/com.samrabbit.bridge.plist")
+
+        def environment() -> dict:
+            with plist_path.open("rb") as handle:
+                return plistlib.load(handle)["EnvironmentVariables"]
+
+        base = {key: value for key, value in os.environ.items()  # the runner's own settings must not leak in
+                if key not in ("SAMRABBIT_GOOGLE_ACCOUNT", "SAMRABBIT_T3_ORCHESTRATION_PROJECT")}
+
+        def install(*args: str, env: dict | None = None) -> str:
+            merged = {**base, "SAMRABBIT_HOME": self.home, "SAMRABBIT_SKIP_LAUNCHCTL": "1", **(env or {})}
+            done = subprocess.run([str(ROOT / "install.sh"), *args], env=merged, capture_output=True, text=True,
+                                  timeout=60, check=True)
+            return done.stdout + done.stderr
+
+        install()
+        self.assertNotIn("SAMRABBIT_GOOGLE_ACCOUNT", environment())
+        install("--google-account", "samin@example.com", "--t3-orchestration-project", "proj-123")
+        self.assertEqual(("samin@example.com", "proj-123"), (environment()["SAMRABBIT_GOOGLE_ACCOUNT"],
+                                                             environment()["SAMRABBIT_T3_ORCHESTRATION_PROJECT"]))
+        install()
+        self.assertEqual("samin@example.com", environment()["SAMRABBIT_GOOGLE_ACCOUNT"], "kept on a later run")
+        self.assertEqual("proj-123", environment()["SAMRABBIT_T3_ORCHESTRATION_PROJECT"])
+        output = install("--google-account", "not an email")
+        self.assertIn("SAMRABBIT_GOOGLE_ACCOUNT is not valid", output)
+        self.assertNotIn("SAMRABBIT_GOOGLE_ACCOUNT", environment())
+        install(env={"SAMRABBIT_T3_ORCHESTRATION_PROJECT": ""})
+        self.assertNotIn("SAMRABBIT_T3_ORCHESTRATION_PROJECT", environment(), "an empty value removes it")
+
     def test_install_pairs_with_t3_once_and_never_prints_the_token(self) -> None:
         from fake_t3 import FakeT3
 

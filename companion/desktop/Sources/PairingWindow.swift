@@ -122,10 +122,15 @@ final class PairingModel: ObservableObject {
         timer = nil
     }
 
+    /// While a code is on screen and nothing has paired with it yet, the device list is read every 2 s, so a phone
+    /// that just paired shows up at once; otherwise every 30 s (for the "last seen" times), which keeps the bridge
+    /// log quiet while the window stays open.
+    var waitingForPairing: Bool { phase == .ready && start != nil && !expired && justPaired == nil }
+
     private func tick() {
         now = Date()
         ticks += 1
-        if ticks % 2 == 0 { Task { await refreshDevices() } }  // a phone that just paired shows up within ~2 s
+        if ticks % (waitingForPairing ? 2 : 30) == 0 { Task { await refreshDevices() } }
     }
 
     func newCode() async {

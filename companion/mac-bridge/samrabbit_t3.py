@@ -9,7 +9,10 @@ CLI bundled in the T3 Code app::
 
 exchanges it at ``POST /oauth/token`` and keeps the bearer token (30 days, no refresh) in
 ``~/.config/samrabbit/t3-token`` (0600, JSON). It pairs again by itself when the token is missing, about to expire,
-or rejected (HTTP 401): at most once per request, with a back-off after a failed pairing.
+or rejected (HTTP 401), at most once per request. Pairing never runs in a loop: a failed pairing waits 1 minute
+before the next try (doubling up to 10 minutes); a token this process minted that T3 refuses before it ever worked
+(or within a minute of being minted) means T3 is not taking the bridge's credentials, so no new pairing for 5 minutes
+(doubling up to 1 hour); and there are never more than ``MAX_PAIRINGS_PER_HOUR`` pairings in an hour.
 
 Reads: ``GET /api/orchestration/shell`` (a cached snapshot) and ``GET /api/orchestration/threads/<id>``. Writes:
 ``POST /api/orchestration/dispatch`` with ``thread.create`` + ``thread.turn.start`` (new task),
@@ -28,9 +31,9 @@ from __future__ import annotations
 
 import argparse
 import base64
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from difflib import SequenceMatcher
 from http.client import HTTPConnection, HTTPException, HTTPSConnection
 import ipaddress
 import json
@@ -44,7 +47,7 @@ import sys
 import tempfile
 import threading
 import time
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Deque, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import quote, urlencode, urlsplit
 import uuid
 import zlib
@@ -68,7 +71,12 @@ PAIRING_ALPHABET = frozenset("23456789ABCDEFGHJKLMNPQRSTUVWXYZ")
 CLI_TIMEOUT_SECONDS = 30.0
 HTTP_TIMEOUT_SECONDS = 6.0
 REPAIR_BEFORE_EXPIRY = timedelta(days=1)  # a token this close to its end is replaced before it is used
-PAIR_BACKOFF_SECONDS = 60.0  # after a failed pairing, the CLI is not run again for this long
+PAIR_BACKOFF_SECONDS = 60.0  # after a failed pairing, the CLI is not run again for this long ...
+PAIR_BACKOFF_MAX_SECONDS = 10 * 60.0  # ... doubling with each failed pairing in a row, up to this
+REFUSED_BACKOFF_SECONDS = 5 * 60.0  # T3 refused a token this process had just minted: no new pairing for this long ...
+REFUSED_BACKOFF_MAX_SECONDS = 60 * 60.0  # ... doubling each time it happens again, up to an hour
+FRESH_TOKEN_SECONDS = 60.0  # a minted token T3 refuses this soon (or before it ever worked) counts as "just minted"
+MAX_PAIRINGS_PER_HOUR = 6  # a hard cap on new "SamRabbit bridge" sessions, whatever the reason
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_CLI_OUTPUT_BYTES = 256 * 1024
 MAX_PROMPT_CHARS = 120_000
@@ -404,8 +412,14 @@ def _json_object(text: str) -> Optional[Dict[str, Any]]:
 # --------------------------------------------------------------------------- the session (auto-pairing)
 
 
+def _backoff(base: float, ceiling: float, count: int) -> float:
+    """``base`` for the first time, doubling for each time in a row after that, at most ``ceiling``."""
+    return min(ceiling, base * (2 ** max(0, min(count - 1, 16))))
+
+
 class T3Session:
-    """The bridge's T3 credential: paired on first need, again on expiry or a 401 (single flight)."""
+    """The bridge's T3 credential: paired on first need, again on expiry or a 401 (single flight, never in a
+    loop: see ``token``)."""
 
     def __init__(self, http: T3Http, store: TokenStore, cli: T3Cli, *, label: str = CLIENT_LABEL,
                  clock: Callable[[], datetime] = _now_utc, monotonic: Callable[[], float] = time.monotonic) -> None:
@@ -415,10 +429,14 @@ class T3Session:
         self.label = label
         self._clock = clock
         self._monotonic = monotonic
-        self._lock = threading.Lock()
-        self._state_lock = threading.Lock()
-        self._failed: Optional[Tuple[float, T3Error]] = None
+        self._lock = threading.Lock()  # held while pairing (single flight)
+        self._state_lock = threading.Lock()  # the small fields below that successful calls update
+        self._failed: Optional[Tuple[float, float, T3Error]] = None  # (since, seconds, error): no pairing till then
+        self._pair_failures = 0  # failed pairings in a row
+        self._refusals = 0  # minted tokens T3 refused right away, in a row
+        self._paired_at: Deque[float] = deque()  # when this process paired (monotonic), for the hourly cap
         self._minted: Optional[Tuple[float, str]] = None  # (monotonic, token) of this process's last pairing
+        self._accepted: Optional[str] = None  # the last token T3 accepted
         self._rejected: Optional[str] = None  # the last token T3 refused (never used again)
         self._last_ok: Optional[str] = None
         self._last_error: Optional[str] = None
@@ -438,9 +456,15 @@ class T3Session:
         paired = self._usable(record)
         with self._state_lock:
             last_ok, last_error = self._last_ok, self._last_error
-        return {"paired": paired, "ok": paired and last_error is None, "expiresAt": (record or {}).get("expiresAt"),
-                "serverUrl": self.http.base_url, "lastOkAt": last_ok, "lastError": last_error,
-                "cli": self.cli.available()}
+        value = {"paired": paired, "ok": paired and last_error is None, "expiresAt": (record or {}).get("expiresAt"),
+                 "serverUrl": self.http.base_url, "lastOkAt": last_ok, "lastError": last_error,
+                 "cli": self.cli.available()}
+        failed = self._failed
+        if failed is not None and not paired:
+            left = failed[1] - (self._monotonic() - failed[0])
+            if left > 0:
+                value["nextPairingInSeconds"] = int(left)
+        return value
 
     def note_ok(self) -> None:
         with self._state_lock:
@@ -453,33 +477,84 @@ class T3Session:
 
     # ------------------------------------------------------------------ tokens
     def token(self, *, rejected: Optional[str] = None, force: bool = False) -> str:
-        """A usable token. ``rejected`` is a token T3 just refused: pair again unless another request already
-        replaced it. A failed pairing is remembered for ``PAIR_BACKOFF_SECONDS`` (unless ``force``), and a token
-        this process minted moments ago that is refused again is not replaced again right away (T3 is broken
-        then; pairing in a loop would only pile up sessions)."""
+        """A usable token, pairing when there is none. ``rejected`` is a token T3 just refused (see ``_refused``):
+        pair again unless another request already replaced it.
+
+        Pairing never runs in a loop (each one is an Electron CLI run and a new "SamRabbit bridge" session in T3):
+        while a back-off is on, this raises its error without pairing (unless ``force``, install.sh). A failed
+        pairing waits ``PAIR_BACKOFF_SECONDS`` (doubling up to ``PAIR_BACKOFF_MAX_SECONDS``); a refused fresh token
+        waits ``REFUSED_BACKOFF_SECONDS`` (doubling up to an hour); and at most ``MAX_PAIRINGS_PER_HOUR``
+        pairings happen in any hour."""
         with self._lock:
             if rejected is not None:
-                self._rejected = rejected
+                self._refused(rejected)
             record = self.store.load()
             if self._usable(record):
                 return str(record["token"])
             now = self._monotonic()
-            minted = self._minted
-            if rejected is not None and minted is not None and minted[1] == rejected and \
-                    now - minted[0] < PAIR_BACKOFF_SECONDS:
-                self.note_error("t3_unauthorized")
-                raise T3Error(502, "t3_unauthorized", "T3 Code refused the bridge's new credential.", retryable=True)
             failed = self._failed
-            if failed is not None and not force and now - failed[0] < PAIR_BACKOFF_SECONDS:
-                raise failed[1]
+            if failed is not None and not force and now - failed[0] < failed[1]:
+                raise failed[2]
+            while self._paired_at and now - self._paired_at[0] >= 3600.0:
+                self._paired_at.popleft()
+            if not force and len(self._paired_at) >= MAX_PAIRINGS_PER_HOUR:
+                wait = max(60.0, 3600.0 - (now - self._paired_at[0]))
+                code = failed[2].code if failed is not None else "t3_unauthorized"
+                error = T3Error(502, code, "The bridge tried to pair with T3 Code too often in the last hour; it tries "
+                                f"again in about {int(wait // 60) or 1} minutes.", retryable=True)
+                self._failed = (now, wait, error)
+                self.note_error(error.code)
+                _LOG.warning("t3 pairing paused: %d pairings in the last hour", len(self._paired_at))
+                raise error
+            self._paired_at.append(now)
             try:
                 token = self._pair()
             except T3Error as error:
-                self._failed = (self._monotonic(), error)
+                self._pair_failures += 1
+                self._failed = (self._monotonic(), _backoff(PAIR_BACKOFF_SECONDS, PAIR_BACKOFF_MAX_SECONDS,
+                                                            self._pair_failures), error)
                 self.note_error(error.code)
                 raise
+            self._pair_failures = 0
             self._minted = (self._monotonic(), token)
             return token
+
+    def _refused(self, token: str) -> None:
+        """T3 answered 401 to ``token`` (call with ``_lock`` held). An older token (revoked, expired, or one
+        install.sh wrote) is simply replaced by the next ``token()``. A token this process minted that T3 refuses
+        before it ever worked, or within ``FRESH_TOKEN_SECONDS`` of minting, means T3 is not taking the bridge's
+        credentials right now: pairing again would only pile up sessions, so the next pairing waits
+        ``REFUSED_BACKOFF_SECONDS``, doubling each time this happens again (up to an hour)."""
+        if self._rejected == token:
+            return  # already counted (several requests were refused with the same token)
+        self._rejected = token
+        minted = self._minted
+        if minted is None or minted[1] != token:
+            return
+        now = self._monotonic()
+        with self._state_lock:
+            worked = self._accepted == token
+            if worked and now - minted[0] >= FRESH_TOKEN_SECONDS:
+                return  # it worked for a while, then was revoked: pairing again is the fix
+            self._refusals += 1
+            refusals = self._refusals
+        wait = _backoff(REFUSED_BACKOFF_SECONDS, REFUSED_BACKOFF_MAX_SECONDS, refusals)
+        minutes = int(wait // 60)
+        self._failed = (now, wait, T3Error(502, "t3_unauthorized", "T3 Code refused the bridge's new credential. "
+                                           f"The bridge pairs with it again in about {minutes} minutes.",
+                                           retryable=True))
+        self.note_error("t3_unauthorized")
+        _LOG.warning("t3 refused the bridge's new token; next pairing in %d min", minutes)
+
+    def _worked(self, token: str) -> None:
+        """T3 accepted ``token``. Once a token has kept working past ``FRESH_TOKEN_SECONDS``, earlier refusals no
+        longer count towards the next back-off."""
+        with self._state_lock:
+            self._accepted = token
+            if self._refusals:
+                minted = self._minted
+                if minted is None or minted[1] != token or self._monotonic() - minted[0] >= FRESH_TOKEN_SECONDS:
+                    self._refusals = 0
 
     def _pair(self) -> str:
         credential = self.cli.create_credential(self.http.base_url, self.label)
@@ -522,17 +597,20 @@ class T3Session:
         return self.status()
 
     def call(self, request: Callable[[str], Any]) -> Any:
-        """Run ``request(token)``; on a 401, pair again once and repeat. Maps transport failures to T3Error."""
+        """Run ``request(token)``; on a 401, pair again once and repeat (``token`` decides whether pairing is
+        allowed right now). Maps transport failures to T3Error."""
         token = self.token()
         for attempt in (1, 2):
             try:
                 value = request(token)
             except _Unauthorized:
                 if attempt == 2:
+                    with self._lock:
+                        self._refused(token)  # usually the token minted a moment ago: back off
                     self.note_error("t3_unauthorized")
                     raise T3Error(502, "t3_unauthorized", "T3 Code keeps refusing the bridge's credential.",
                                   retryable=True) from None
-                _LOG.info("t3 rejected the bridge's token; pairing again")
+                _LOG.info("t3 rejected the bridge's token")
                 token = self.token(rejected=token)
                 continue
             except _Unavailable:
@@ -544,6 +622,7 @@ class T3Session:
                     raise T3Error(404, "t3_thread_not_found", "That T3 thread was not found.") from None
                 raise T3Error(502, "t3_request_failed", f"T3 Code answered HTTP {failure.status}.",
                               retryable=failure.status >= 500) from None
+            self._worked(token)
             self.note_ok()
             return value
         raise unavailable()  # pragma: no cover - the loop always returns or raises
@@ -845,7 +924,11 @@ def resolve_answers(request: PendingInput, answers: Dict[str, Any]) -> Dict[str,
     return resolved
 
 
+_ORDINALS = {"first": 0, "second": 1, "third": 2, "fourth": 3, "fifth": 4}
+
+
 def _pick_option(question: PendingQuestion, value: str) -> str:
+    """The value T3 expects for one answer: ``option.value ?? option.label``, or free text (port of service.py)."""
     text = " ".join(value.split())
     options = list(question.options)
     lowered = text.lower().strip(" .!")
@@ -855,6 +938,11 @@ def _pick_option(question: PendingQuestion, value: str) -> str:
     numeric_labels = any(option.strip().isdigit() for option in options)
     if lowered.isdigit() and not numeric_labels and 1 <= int(lowered) <= len(options):
         return question.answer_value(int(lowered) - 1)
+    # "the first one", "second option" (dictated on the watch) pick by position, as on the R1.
+    for word, index in _ORDINALS.items():
+        if index < len(options) and lowered in {word, f"the {word}", f"{word} one", f"the {word} one",
+                                                f"{word} option", f"the {word} option"}:
+            return question.answer_value(index)
     shortened = [index for index, option in enumerate(options) if lowered and lowered in option.lower()]
     if len(shortened) == 1:
         return question.answer_value(shortened[0])
@@ -1043,8 +1131,15 @@ def orchestration_project(records: List[Dict[str, Any]], *, project_id: Optional
 
 def place(text: str, records: List[Dict[str, Any]], *, orchestration_id: Optional[str] = None,
           orchestration_title: Optional[str] = DEFAULT_ORCHESTRATION_TITLE) -> Tuple[Dict[str, Any], str]:
-    """Where a new task from the phone goes: a project the request names, coding work to the most recently active
-    repo project, everything else to the orchestration project."""
+    """Where a new task from the phone goes (CONTRACTS-WAVE4): a project the request names, coding work to the most
+    recently active repo project, everything else to the orchestration project.
+
+    Two differences from the R1's ``placement.py`` on purpose: a request with nothing to go on goes to the
+    orchestration project here (the R1's ``t3_new_thread`` is its coding tool, so there "unsure" means coding), and
+    coding work never lands in the orchestration project while a repo project exists (the R1's "most recently
+    active" fallback can pick it). The orchestration project is the bridge's own setting
+    (``SAMRABBIT_T3_ORCHESTRATION_PROJECT`` / ``_TITLE``); the R1's ``t3.orchestration_project_id`` lives on the
+    R1 and is not read here."""
     if not records:
         raise T3Error(409, "t3_no_projects", "T3 Code has no projects yet. Add one on the Mac first.")
     mentioned = mentioned_project(text, records)
@@ -1115,6 +1210,7 @@ class T3Hub:
         self._clock = clock
         self._lock = threading.RLock()
         self._fetch_lock = threading.Lock()
+        self._pending_lock = threading.Lock()
         self._snapshot: Optional[_Snapshot] = None
         self._details: Dict[Tuple[str, int], Tuple[float, Dict[str, Any]]] = {}
         self._pending: Dict[str, Tuple[str, Optional[Dict[str, Any]]]] = {}  # thread id -> (updatedAt, view)
@@ -1308,29 +1404,35 @@ class T3Hub:
             found = pending_requests(_dict(detail.get("thread")).get("activities"))
         return found
 
-    def refresh_pending(self, limit: int = 6) -> int:
-        """Background: fetch the open request of each needs-you thread whose ``updatedAt`` changed."""
+    def refresh_pending(self, limit: int = 6, *, only: Optional[Iterable[str]] = None,
+                        budget: Optional[float] = None) -> int:
+        """Fetch the open request of each needs-you thread (of ``only``, when given) whose ``updatedAt`` changed:
+        at most ``limit`` threads, and none after ``budget`` seconds. One refresh at a time (the background worker
+        and a thread list share the results). Returns how many threads were read."""
         snapshot = self.cached()
         if snapshot is None:
             return 0
+        wanted = set(only) if only is not None else None
+        started = time.monotonic()
         fetched = 0
-        for thread_id, thread in snapshot.threads.items():
-            if thread_status(thread) not in NEEDS_YOU:
-                continue
-            marker = str(thread.get("updatedAt") or "")
-            with self._lock:
-                known = self._pending.get(thread_id)
-            if known is not None and known[0] == marker:
-                continue
-            if fetched >= limit:
-                break
-            fetched += 1
-            try:
-                view = pending_view(self.pending(thread_id))
-            except T3Error:
-                continue
-            with self._lock:
-                self._pending[thread_id] = (marker, view)
+        with self._pending_lock:
+            for thread_id, thread in snapshot.threads.items():
+                if (wanted is not None and thread_id not in wanted) or thread_status(thread) not in NEEDS_YOU:
+                    continue
+                marker = str(thread.get("updatedAt") or "")
+                with self._lock:
+                    known = self._pending.get(thread_id)
+                if known is not None and known[0] == marker:
+                    continue
+                if fetched >= limit or (budget is not None and fetched and time.monotonic() - started > budget):
+                    break
+                fetched += 1
+                try:
+                    view = pending_view(self.pending(thread_id))
+                except T3Error:
+                    continue
+                with self._lock:
+                    self._pending[thread_id] = (marker, view)
         return fetched
 
     def thread_view(self, thread_id: str) -> Dict[str, Any]:

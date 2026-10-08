@@ -86,6 +86,21 @@ class StatusTest(unittest.TestCase):
         with self.assertRaises(t3.T3Error):
             t3.resolve_answers(strict, {"q1": "C"})
 
+    def test_ordinal_answers_pick_by_position_as_on_the_r1(self) -> None:
+        question = t3.PendingQuestion("q1", "H", "Which?", ("Use SQLite", "Postgres", "None"), True, False,
+                                      ("sqlite", "Postgres", "none"))
+        request = t3.PendingInput("r", (question,), False, "")
+        for said, expected in (("first", "sqlite"), ("the first one", "sqlite"), ("The second option.", "Postgres"),
+                               ("third one", "none"), ("the fourth one", "the fourth one"),
+                               ("first, but skip tests", "first, but skip tests")):
+            with self.subTest(said=said):
+                self.assertEqual({"q1": expected}, t3.resolve_answers(request, {"q1": said}))
+        strict = t3.PendingInput("r", (t3.PendingQuestion("q1", "H", "Which?", ("A", "B"), False, False, ("a", "b")),),
+                                 False, "")
+        self.assertEqual({"q1": "b"}, t3.resolve_answers(strict, {"q1": "the second one"}))
+        with self.assertRaises(t3.T3Error):
+            t3.resolve_answers(strict, {"q1": "the third one"})
+
     def test_timeline_folds_tool_steps(self) -> None:
         thread = {"messages": [
             {"id": "1", "role": "user", "text": "go", "createdAt": "2026-10-08T10:00:00Z"},
