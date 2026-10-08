@@ -1204,7 +1204,7 @@ public final class SettingsPanelView extends View implements UiInputTarget {
         if (openPage == null) {
             int row = (int) ((y - ROW_TOP) / ROW_STEP);
             float within = (y - ROW_TOP) % ROW_STEP;
-            if (row >= 0 && row < ROWS.size() && within <= 58f) {
+            if (y >= ROW_TOP && row < ROWS.size() && within <= 58f) {   // header taps never open Wi-Fi
                 selected = row;
                 activateSelectedRow();
             }
