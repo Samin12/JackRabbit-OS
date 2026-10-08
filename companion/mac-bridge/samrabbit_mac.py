@@ -622,32 +622,46 @@ class MacControl:
 
     def _open_app(self, name: str) -> Dict[str, Any]:
         self._require_accessibility()
-        apps = self._installed_apps()
-        match = _best_app(name, apps)
-        if match is None:
-            raise MacError(404, "app_not_found", "No app with that name is installed on the Mac.",
-                           details={"suggestions": _suggest(name, apps)})
-        arguments: Dict[str, Any] = {"bundle_id": match["bundle_id"]} if match.get("bundle_id") else \
-            {"name": match.get("name")}
-        launched = self._call("launch_app", arguments, timeout=30.0, expect=("pid",))
-        pid = int(launched.get("pid") or 0)
-        if pid <= 0:
-            raise MacError(502, "launch_failed", "The app did not start.")
-        windows = [window for window in launched.get("windows") or [] if isinstance(window, dict)]
-        window = _pick_window(windows)
-        deadline = time.monotonic() + 3.0
-        while window is None and time.monotonic() < deadline:
-            time.sleep(0.4)
-            window = _pick_window(self._on_screen(pid))
+        running, _ = self._regular_apps()  # fast; list_apps (installed apps) takes about a second
+        wanted = _norm(name)
+        exact = [app for app in running if _norm(app.get("name")) == wanted or
+                 str(app.get("bundle_id") or "").lower() == name.strip().lower()]
+        if exact:
+            match: Optional[Dict[str, Any]] = {**exact[0], "running": True}
+        else:
+            installed = self._installed_apps()
+            match = _best_app(name, installed)
+            if match is None:
+                raise MacError(404, "app_not_found", "No app with that name is installed on the Mac.",
+                               details={"suggestions": _suggest(name, installed)})
+        assert match is not None
+        pid = int(match.get("pid") or 0) if match.get("running") else 0
+        window: Optional[Dict[str, Any]] = None
+        if pid > 0:
+            window = self._window_for(pid, self._on_screen())
+        else:
+            arguments: Dict[str, Any] = {"bundle_id": match["bundle_id"]} if match.get("bundle_id") else \
+                {"name": match.get("name")}
+            launched = self._call("launch_app", arguments, timeout=30.0, expect=("pid",))
+            pid = int(launched.get("pid") or 0)
+            if pid <= 0:
+                raise MacError(502, "launch_failed", "The app did not start.")
+            window = _pick_window([item for item in launched.get("windows") or [] if isinstance(item, dict)])
+            deadline = time.monotonic() + 3.0
+            while window is None and time.monotonic() < deadline:
+                time.sleep(0.4)
+                window = _pick_window(self._on_screen(pid))
+            self._apps = None  # its running state changed
         front_arguments: Dict[str, Any] = {"pid": pid}
         if window is not None and window.get("window_id"):
             front_arguments["window_id"] = int(window["window_id"])
         verified = False
         try:
             raised = self._call("bring_to_front", front_arguments, timeout=10.0)
-            exact = raised.get("exact_window_effect") if isinstance(raised.get("exact_window_effect"), dict) else {}
+            exact_effect = raised.get("exact_window_effect") if isinstance(raised.get("exact_window_effect"), dict) \
+                else {}
             verified = raised.get("activated") is True or raised.get("status") == "activated" or \
-                exact.get("verified") is True
+                exact_effect.get("verified") is True
         except MacError:
             pass
         frontmost = self._lsappinfo_front() == pid
@@ -658,7 +672,6 @@ class MacControl:
                 frontmost = self._lsappinfo_front() == pid
             except MacError:
                 pass
-        self._apps = None if not match.get("running") else self._apps
         return {"ok": True, "opened": "app", "app": _clean(match.get("name"), 60),
                 "wasRunning": bool(match.get("running")), "frontmost": frontmost or verified,
                 "window": _clean(window.get("title"), 100) if window else None}

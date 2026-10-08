@@ -271,11 +271,20 @@ class MacControlTest(unittest.TestCase):
         self.assertEqual(200, status, value)
         self.assertEqual({"ok": True, "opened": "app", "app": "Heptabase", "wasRunning": True, "frontmost": True,
                           "window": "Journal | Heptabase"}, value)
-        launch = [entry for entry in self.calls() if entry["tool"] == "launch_app"]
-        self.assertEqual([{"bundle_id": "app.projectmeta.projectmeta"}], [entry["args"] for entry in launch])
+        self.assertNotIn("launch_app", self.tools(), "a running app is brought forward directly")
+        self.assertNotIn("list_apps", self.tools(), "and without the slow installed-apps scan")
         front = [entry for entry in self.calls() if entry["tool"] == "bring_to_front"]
         self.assertEqual([{"pid": HEPTA, "window_id": 21}], [entry["args"] for entry in front])
         self.assertEqual([], self.calls("open"), "no LaunchServices fallback when it already came forward")
+
+    def test_open_app_launches_an_app_that_is_not_running(self) -> None:
+        status, value = self.call("POST", "/v1/mac/open", {"app": "calculator"})
+        self.assertEqual(200, status, value)
+        self.assertFalse(value["wasRunning"])
+        launch = [entry["args"] for entry in self.calls() if entry["tool"] == "launch_app"]
+        self.assertEqual([{"bundle_id": "com.apple.calculator"}], launch)
+        self.assertEqual([["-b", "com.apple.calculator"]], [entry["argv"] for entry in self.calls("open")],
+                         "LaunchServices reopens it when bring_to_front could not raise a window")
 
     def test_open_app_matches_spoken_names_and_suggests_on_a_miss(self) -> None:
         status, value = self.call("POST", "/v1/mac/open", {"app": "Chrome"})
