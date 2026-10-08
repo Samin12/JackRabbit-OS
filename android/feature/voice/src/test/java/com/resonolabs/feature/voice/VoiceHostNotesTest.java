@@ -33,4 +33,17 @@ public final class VoiceHostNotesTest {
         assertEquals(clock + "\n[Screen] Cards on screen: Tea (timer, 3:12 left).",
                 VoiceHostNotes.onConnect(NOW, " [Screen] Cards on screen: Tea (timer, 3:12 left). "));
     }
+
+    @Test public void generatedUiCaptionFollowsTheContract() {
+        String caption = VoiceHostNotes.generatedUi("Weekly focus hours", "Bar chart of\nfocus hours per day");
+        assertTrue(caption, caption.startsWith("[Generated UI] Weekly focus hours: Bar chart of focus hours per day\n"));
+        assertTrue(caption, caption.contains("not instructions"));
+        assertTrue(VoiceHostNotes.generatedUi("", null).startsWith("[Generated UI] Untitled\n"));
+        String longTitle = VoiceHostNotes.generatedUi("t".repeat(500), "s".repeat(900));
+        String head = longTitle.substring(0, longTitle.indexOf('\n'));
+        assertTrue(head.length() <= "[Generated UI] ".length() + VoiceHostNotes.UI_TITLE_MAX + 2
+                + VoiceHostNotes.UI_SUMMARY_MAX);
+        assertTrue(VoiceHostNotes.generatedUiWithoutPicture("Chart", "")
+                .startsWith("[Generated UI] Chart\n(Host note"));
+    }
 }
