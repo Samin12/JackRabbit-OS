@@ -81,14 +81,22 @@ const view = new TimelineView(els.timeline, ctx);
 
 const dirty = new Set();
 let frame = 0;
+let fallback = 0;
 
+// requestAnimationFrame pauses while the window is closed, occluded or the display sleeps; a timer
+// fallback keeps the DOM current so everything is already there when the window comes back.
 function schedule(...parts) {
   for (const part of parts) dirty.add(part);
   if (!frame) frame = requestAnimationFrame(flush);
+  if (!fallback) fallback = setTimeout(flush, 250);
 }
 
 function flush() {
+  if (frame) cancelAnimationFrame(frame);
+  clearTimeout(fallback);
   frame = 0;
+  fallback = 0;
+  if (!dirty.size) return;
   const parts = new Set(dirty);
   dirty.clear();
   if (parts.has('list')) renderList();
@@ -176,7 +184,8 @@ function renderStatus() {
   let line;
   if (state.listStatus === 'error') {
     tone = 'error';
-    line = state.listError && state.listError.status === 0 ? 'Bridge not reachable' : 'Sync unavailable';
+    const error = state.listError;
+    line = error && error.status === 0 ? 'Bridge not reachable' : error && error.syncMissing ? 'Sync not on yet' : 'Sync unavailable';
   } else if (state.streamState !== 'live') {
     tone = 'warn';
     line = state.streamState === 'connecting' ? 'Connecting…' : 'Reconnecting…';
@@ -284,11 +293,11 @@ function errorCopy(error) {
   if (!error || error.status === 0) {
     return ['Waiting for the SamRabbit bridge…', 'The bridge on this Mac isn’t answering yet. SamRabbit keeps trying in the background.', ''];
   }
+  if (error.syncMissing) {
+    return ['Conversation sync isn’t on yet', 'This bridge doesn’t serve conversations yet. SamRabbit keeps checking; updating the bridge turns it on:', 'companion/mac-bridge/install.sh'];
+  }
   if (error.status === 401 || error.status === 403) {
     return ['SamRabbit can’t sign in to the bridge', 'The desktop token was not accepted. Reinstall the desktop app, then reopen SamRabbit:', 'companion/desktop/install.sh'];
-  }
-  if (error.status === 404) {
-    return ['Conversation sync isn’t on yet', 'This bridge doesn’t serve conversations yet. SamRabbit keeps checking; updating the bridge turns it on:', 'companion/mac-bridge/install.sh'];
   }
   return ['Sync is having trouble', `The bridge answered with an error (HTTP ${error.status}). SamRabbit keeps retrying.`, ''];
 }
@@ -510,7 +519,7 @@ async function loadList({ manual = false, quiet = false } = {}) {
       state.listStatus = 'error';
       state.listError = error;
     }
-    postNative({ type: 'status', api: 'error', status: error.status, code: error.code || '' });
+    postNative({ type: 'status', api: error.syncMissing ? 'sync-missing' : 'error', status: error.status, code: error.code || '' });
     const delay = RETRY_MS[Math.min(state.listAttempt, RETRY_MS.length - 1)];
     state.listAttempt += 1;
     listTimer = setTimeout(() => loadList({ quiet: true }), delay);
@@ -721,6 +730,28 @@ function toast(text, { action = null, timeout = 3200 } = {}) {
   }, timeout);
 }
 
+// ---------------------------------------------------------------------------- diagnostics for the native log
+
+const diag = { images: 0, imagesFailed: 0, frames: new Set(), timer: 0 };
+function reportDiag() {
+  clearTimeout(diag.timer);
+  diag.timer = setTimeout(() => postNative({
+    type: 'diag', images: diag.images, imagesFailed: diag.imagesFailed, frames: diag.frames.size,
+  }), 800);
+}
+document.addEventListener('load', (event) => {
+  if (event.target && event.target.tagName === 'IMG' && event.target.closest('.shot, .lightbox')) {
+    diag.images += 1;
+    reportDiag();
+  }
+}, true);
+document.addEventListener('error', (event) => {
+  if (event.target && event.target.tagName === 'IMG') {
+    diag.imagesFailed += 1;
+    reportDiag();
+  }
+}, true);
+
 // ---------------------------------------------------------------------------- generated UI messages
 
 window.addEventListener('message', (event) => {
@@ -741,6 +772,10 @@ window.addEventListener('message', (event) => {
     const wasNear = frameEl.classList.contains('ui-iframe') && nearBottom();
     state.frameHeights.set(id, height);
     frameEl.style.height = `${height}px`;
+    if (!diag.frames.has(id)) {
+      diag.frames.add(id);
+      reportDiag();
+    }
     if (wasNear) stickToBottom();
   } else if (data.type === 'open-link' && typeof data.url === 'string') {
     openExternal(data.url);

@@ -9,6 +9,7 @@ import { baseName, clip, dayLabel, hostOf, humanize, parseMaybeJson, plural, pre
 
 const GAP_MS = 20 * 60 * 1000;
 const STREAM_STALE_MS = 45 * 1000;
+const EAGER_TAIL = 12;
 
 // ---------------------------------------------------------------------------- tools
 
@@ -145,7 +146,7 @@ function iconButton(name, label, onClick, extra = '') {
     icon(name, { size: 14 }), h('span', { text: label }));
 }
 
-function renderUi(item, ctx) {
+function renderUi(item, ctx, eager) {
   const ready = item.status === 'ready';
   const failed = item.status === 'failed';
   const eyebrow = ready ? 'Generated UI' : failed ? 'Couldn’t build this UI' : 'Building a UI on your Mac…';
@@ -165,7 +166,7 @@ function renderUi(item, ctx) {
       sandbox: 'allow-scripts',
       src: api.documentUrl(item.artifactId),
       referrerpolicy: 'no-referrer',
-      loading: 'lazy',
+      loading: eager ? 'eager' : 'lazy',
       title: item.title || 'Generated UI',
       style: `height:${ctx.frameHeight(item.artifactId)}px`,
     });
@@ -189,12 +190,12 @@ const SOURCE_LABELS = {
   tool: ['image', 'Image'],
 };
 
-function renderImage(item, ctx) {
+function renderImage(item, ctx, eager) {
   const [glyph, label] = SOURCE_LABELS[item.source] || ['image', 'Image'];
   const ratio = item.width && item.height ? `aspect-ratio:${item.width} / ${item.height}` : '';
   return h('figure', { class: `shot source-${item.source || 'image'}` },
     h('button', { class: 'shot-frame', type: 'button', title: 'Click to zoom', style: ratio, onclick: () => ctx.openImage(item) },
-      h('img', { src: api.blobUrl(item.blobId), alt: item.caption || label, loading: 'lazy', decoding: 'async' })),
+      h('img', { src: api.blobUrl(item.blobId), alt: item.caption || label, loading: eager ? 'eager' : 'lazy', decoding: 'async' })),
     h('figcaption', null, icon(glyph, { size: 13 }), h('span', { text: item.caption || label }),
       item.width && item.height ? h('span', { class: 'dims', text: `${item.width}×${item.height}` }) : null));
 }
@@ -348,7 +349,10 @@ export class TimelineView {
       if (record.node !== expected) this.root.insertBefore(record.node, expected);
       previous = record.node;
     };
-    for (const item of timeline.sorted()) {
+    const items = timeline.sorted();
+    const eagerFrom = items.length - EAGER_TAIL;
+    items.forEach((item, index) => {
+      const eager = index >= eagerFrom; // the newest items load right away (lazy loading needs a visible page)
       const dayChanged = !lastAt || startOfDay(lastAt) !== startOfDay(item.at);
       if ((dayChanged || item.at - lastAt > GAP_MS) && item.kind !== 'divider') {
         const at = item.at;
@@ -364,8 +368,8 @@ export class TimelineView {
           place(item.key, signature, () => renderAssistant(item, ctx, streaming), (node) => patchAssistant(node, item, ctx, streaming));
           break;
         case 'card': place(item.key, signature, () => renderCardItem(item)); break;
-        case 'ui': place(item.key, signature, () => renderUi(item, ctx)); break;
-        case 'image': place(item.key, signature, () => renderImage(item, ctx)); break;
+        case 'ui': place(item.key, signature, () => renderUi(item, ctx, eager)); break;
+        case 'image': place(item.key, signature, () => renderImage(item, ctx, eager)); break;
         case 'tool': place(item.key, signature, () => renderTool(item, ctx)); break;
         case 't3': place(item.key, signature, () => renderT3(item, ctx)); break;
         case 'note': case 'uievent': case 'completion': place(item.key, signature, () => renderSystem(item)); break;
@@ -373,7 +377,7 @@ export class TimelineView {
         case 'saved': place(item.key, signature, () => renderSaved(item)); break;
         default: break;
       }
-    }
+    });
     for (const [key, record] of this.nodes) {
       if (!wanted.has(key)) {
         record.node.remove();

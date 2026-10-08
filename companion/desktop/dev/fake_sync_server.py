@@ -531,7 +531,7 @@ class FakeHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
-        sys.stderr.write("fake-sync %s %s\n" % (self.command, urlsplit(self.path).path.split("/")[1:3]))
+        sys.stderr.write("fake-sync %s %s\n" % (self.command, urlsplit(self.path).path))
 
     def do_GET(self) -> None:  # noqa: N802
         self.route("GET")

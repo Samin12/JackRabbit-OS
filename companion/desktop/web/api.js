@@ -2,10 +2,16 @@
 // as the sr_desktop cookie that the native app sets before loading this page.
 
 export class ApiError extends Error {
-  constructor(status, code, message) {
+  constructor(status, code, message, detail = '') {
     super(message);
     this.status = status;
     this.code = code;
+    this.detail = detail;
+  }
+
+  /** A bridge without the sync module answers its own bearer-token 401 for /v1/sync/*. */
+  get syncMissing() {
+    return this.status === 404 || (this.status === 401 && /bridge token/i.test(this.detail));
   }
 }
 
@@ -24,13 +30,15 @@ async function getJSON(path, { signal } = {}) {
   }
   if (!response.ok) {
     let code = '';
+    let detail = '';
     try {
       const body = await response.json();
       code = (body && body.error && body.error.code) || '';
+      detail = (body && body.error && body.error.message) || '';
     } catch {
       // not JSON
     }
-    throw new ApiError(response.status, code, `HTTP ${response.status}`);
+    throw new ApiError(response.status, code, `HTTP ${response.status}`, String(detail).slice(0, 200));
   }
   try {
     return await response.json();
