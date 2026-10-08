@@ -1,0 +1,166 @@
+# SamRabbit for iPhone and Apple Watch - XcodeGen spec. Run apple/generate.sh; never edit the
+# generated .xcodeproj. Signing lives in Config/Signing.xcconfig (one overridable DEVELOPMENT_TEAM).
+name: SamRabbit
+
+options:
+  bundleIdPrefix: com.samrabbit
+  deploymentTarget:
+    iOS: "26.0"
+    watchOS: "26.0"
+  developmentLanguage: en
+  createIntermediateGroups: true
+  groupSortPosition: top
+  xcodeVersion: "27.0"
+
+configFiles:
+  Debug: Config/Signing.xcconfig
+  Release: Config/Signing.xcconfig
+
+settings:
+  base:
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS: YES
+    LOCALIZATION_PREFERS_STRING_CATALOGS: YES
+    DEAD_CODE_STRIPPING: YES
+
+packages:
+  SamRabbitKit:
+    path: Shared/SamRabbitKit
+
+targets:
+  # ------------------------------------------------------------------ iPhone app
+  SamRabbit:
+    type: application
+    platform: iOS
+    sources:
+      - path: iOS/App
+      - path: iOS/WidgetViews
+      - path: Shared/Intents
+      - path: iOS/Resources
+    dependencies:
+      - package: SamRabbitKit
+      - target: SamRabbitWidgets
+        embed: true
+        codeSign: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.samrabbit.mobile
+        PRODUCT_NAME: SamRabbit
+        INFOPLIST_KEY_CFBundleDisplayName: SamRabbit
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        TARGETED_DEVICE_FAMILY: "1"
+        SUPPORTS_MACCATALYST: NO
+        ENABLE_PREVIEWS: YES
+    entitlements:
+      path: iOS/App/SamRabbit.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.samrabbit.mobile
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)com.samrabbit.mobile
+    info:
+      path: iOS/App/Info.plist
+      properties:
+        CFBundleDisplayName: SamRabbit
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSRequiresIPhoneOS: true
+        ITSAppUsesNonExemptEncryption: false
+        UILaunchScreen:
+          UIColorName: LaunchBackground
+        UIUserInterfaceStyle: Dark
+        UIApplicationSupportsIndirectInputEvents: true
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UIBackgroundModes:
+          - fetch
+        BGTaskSchedulerPermittedIdentifiers:
+          - com.samrabbit.mobile.refresh
+        NSSupportsLiveActivities: true
+        CFBundleURLTypes:
+          - CFBundleURLName: com.samrabbit.mobile
+            CFBundleURLSchemes:
+              - samrabbit
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+        NSLocalNetworkUsageDescription: SamRabbit talks to the SamRabbit bridge on your Mac over your local network.
+        NSCameraUsageDescription: Scan the pairing QR code shown by SamRabbit on your Mac.
+        NSMicrophoneUsageDescription: Dictate tasks, replies and journal notes.
+        NSSpeechRecognitionUsageDescription: Turn what you say into text on this iPhone.
+        NSUserActivityTypes:
+          - AskSamRabbitIntent
+          - BlockTimeIntent
+          - AddJournalNoteIntent
+
+  # ------------------------------------------------------------------ Widgets, controls, Live Activity
+  SamRabbitWidgets:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: iOS/Widgets
+      - path: iOS/WidgetViews
+      - path: Shared/Intents
+    dependencies:
+      - package: SamRabbitKit
+      - sdk: WidgetKit.framework
+      - sdk: SwiftUI.framework
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.samrabbit.mobile.widgets
+        PRODUCT_NAME: SamRabbitWidgets
+        INFOPLIST_KEY_CFBundleDisplayName: SamRabbit
+        TARGETED_DEVICE_FAMILY: "1"
+        SKIP_INSTALL: YES
+        APPLICATION_EXTENSION_API_ONLY: YES
+    entitlements:
+      path: iOS/Widgets/SamRabbitWidgets.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.samrabbit.mobile
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)com.samrabbit.mobile
+    info:
+      path: iOS/Widgets/Info.plist
+      properties:
+        CFBundleDisplayName: SamRabbit
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+
+  # ------------------------------------------------------------------ Apple Watch (next builder)
+  # SamRabbitWatch (com.samrabbit.mobile.watchkitapp, platform watchOS, type application) and
+  # SamRabbitWatchWidgets (com.samrabbit.mobile.watchkitapp.widgets, app-extension with
+  # NSExtensionPointIdentifier com.apple.widgetkit-extension) go here. Both depend on the
+  # SamRabbitKit package and use the App Group group.com.samrabbit.mobile; the iPhone app embeds
+  # the watch app (dependencies: - target: SamRabbitWatch) once it exists.
+
+schemes:
+  SamRabbit:
+    build:
+      targets:
+        SamRabbit: all
+        SamRabbitWidgets: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - package: SamRabbitKit/SamRabbitKitTests
+    archive:
+      config: Release
+  SamRabbitWidgets:
+    build:
+      targets:
+        SamRabbitWidgets: all
+        SamRabbit: all
+    run:
+      config: Debug
+      executable: SamRabbit

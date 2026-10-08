@@ -13,7 +13,7 @@ public enum OrbMood: String, Sendable, CaseIterable {
         switch self {
         case .idle: 0.12
         case .working: 0.26
-        case .live: 0.42
+        case .live: 0.36
         case .attention: 0.2
         case .offline: 0.05
         }

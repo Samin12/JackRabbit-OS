@@ -1,0 +1,17 @@
+// Signing for every SamRabbit target - the one place to change it.
+//
+// Default: simulator builds with ad-hoc signing (no Apple ID needed); entitlements such as the
+// App Group are still embedded.
+//
+// To install on your own iPhone / Apple Watch: add your Apple ID in Xcode > Settings > Accounts,
+// then create apple/Config/Signing.local.xcconfig (git-ignored) with:
+//     DEVELOPMENT_TEAM = ABCDE12345
+//     CODE_SIGN_STYLE = Automatic
+//     CODE_SIGN_IDENTITY = Apple Development
+// and run apple/generate.sh again (or just rebuild).
+DEVELOPMENT_TEAM =
+CODE_SIGN_STYLE = Manual
+CODE_SIGN_IDENTITY = -
+PROVISIONING_PROFILE_SPECIFIER =
+
+#include? "Signing.local.xcconfig"

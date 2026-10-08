@@ -16,7 +16,7 @@ What is in it:
   Markdown messages; approving, answering, replying and new tasks progress on their own.
 * Three R1 conversations (one live, with a generated UI; one with a Mac screenshot; one with cards),
   served with the sync event format and an SSE stream; with ``--chatter`` (default on) the live one
-  gets a new streamed exchange every 30 s.
+  gets a new streamed exchange every minute.
 * An agenda relative to now, Block / new events, an in-memory journal, Mac state, open and a
   screenshot JPEG, and generated UIs (``/ui/generate`` is ready after about four seconds).
 
@@ -113,8 +113,9 @@ def chart_document(title: str, subtitle: str, labels: List[str], values: List[fl
 <title>%(title)s</title>
 <style>
 :root { color-scheme: dark; }
-body { margin: 0; font: 15px/1.45 -apple-system, system-ui, sans-serif; color: #f5f8ff;
-  background: radial-gradient(600px 300px at 90%% -10%%, rgba(26,115,242,.28), transparent 60%%), #0b0f18; }
+html { min-height: 100%%; background: #0b0f18; }
+body { margin: 0; min-height: 100vh; font: 15px/1.45 -apple-system, system-ui, sans-serif; color: #f5f8ff;
+  background: radial-gradient(600px 300px at 90%% -10%%, rgba(26,115,242,.28), transparent 60%%) no-repeat, #0b0f18; }
 #content { padding: 22px 18px 28px; }
 .eyebrow { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: #8c98ac; font-weight: 600; }
 h1 { margin: 6px 0 2px; font-size: 26px; letter-spacing: -.01em; }
@@ -218,6 +219,7 @@ class FakeBridge:
             self.journal: List[str] = []
             self.jobs = []
             self.event_counter = 0
+            self.chatter_count = 0
             self.r1_seen = time.time() - 40
             now = time.time()
             self.focus_jpg = self.put_blob(read_fixture("genui-focus.jpg"))
@@ -484,8 +486,12 @@ class FakeBridge:
         prompts = [("What's next on my calendar?", "Standup in a few minutes, then lunch with Maya at noon."),
                    ("Any tasks waiting for me?", "Two: the staging deploy needs your approval and the login "
                                                  "fix has a question."),
-                   ("How long until the design review?", "About four hours. You have a focus block before it.")]
-        user, answer = prompts[self.event_counter % len(prompts)]
+                   ("How long until the design review?", "About four hours. You have a focus block before it."),
+                   ("Remind me what Wednesday looked like.", "Wednesday was your best day: four and a half hours "
+                                                             "of focus, mostly before lunch."),
+                   ("Thanks, that's all for now.", "Anytime. I'll keep an eye on the deploy.")]
+        user, answer = prompts[self.chatter_count % len(prompts)]
+        self.chatter_count += 1
         self.r1_seen = time.time()
         self.emit(cid, {"type": "message.user", "text": user})
         message_id = "m_live_%d" % self.event_counter
@@ -505,7 +511,7 @@ class FakeBridge:
         while not self.closed:
             time.sleep(0.1)
             self.run_due()
-            if self.chatter and time.time() - last_chatter > 30:
+            if self.chatter and time.time() - last_chatter > 60:
                 last_chatter = time.time()
                 with self.lock:
                     self.chatter_exchange()
@@ -1018,15 +1024,22 @@ class Handler(BaseHTTPRequestHandler):
                                   "summary": "Starting…", "pending": None,
                                   "messages": [{"role": "user", "text": text, "at": time.time()}]}
 
-            def progress() -> None:
-                with b.lock:
-                    t = b.threads.get(tid)
-                    if t and t["status"] == "working":
-                        t["summary"] = "Working on it: reading the project and planning."
-                        b.say(t, "assistant", "Looking into it. I'll report back here.")
-            b.later(3.0, progress)
-            b.later(9.0, lambda: b.finish(tid, "Done. Here is what I did:\n\n- Read the request\n- Made the change\n"
-                                               "- Checked it\n\n**All set.**", "Finished: all set."))
+            def progress(summary: str, line: Optional[str]) -> Callable[[], None]:
+                def step() -> None:
+                    with b.lock:
+                        t = b.threads.get(tid)
+                        if t and t["status"] == "working":
+                            t["summary"] = summary
+                            t["updatedAt"] = time.time()
+                            if line:
+                                b.say(t, "assistant", line)
+                return step
+            # About 45 s from start to finish, so phones can show the task running (Live Activity).
+            b.later(3.0, progress("Reading the project and planning…", "Looking into it. I'll report back here."))
+            b.later(18.0, progress("Making the changes (2 of 3)…", None))
+            b.later(32.0, progress("Checking the result…", None))
+            b.later(45.0, lambda: b.finish(tid, "Done. Here is what I did:\n\n- Read the request\n- Made the change\n"
+                                                "- Checked it\n\n**All set.**", "Finished: all set."))
             return self.send_json(202, {"threadId": tid, "title": title, "projectName": project["name"]})
         match = re.match(r"^t3/threads/([A-Za-z0-9_-]{1,64})(?:/(message|respond|stop))?$", rest)
         if not match:
@@ -1177,7 +1190,7 @@ def serve(argv: Optional[List[str]] = None) -> None:
                         help="where pairings persist ('' = memory only)")
     parser.add_argument("--mac-name", default="Samin's MacBook Pro")
     parser.add_argument("--advertise", default="", help="hosts for pairUrl, comma separated (default this server)")
-    parser.add_argument("--no-chatter", action="store_true", help="no streamed exchange every 30 s")
+    parser.add_argument("--no-chatter", action="store_true", help="no streamed exchange every minute")
     parser.add_argument("--screen-locked", action="store_true")
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--print-port", action="store_true", help="print 'PORT <n>' once listening")

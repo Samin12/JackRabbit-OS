@@ -13,8 +13,8 @@ public enum Formatting {
         return date.formatted(.dateTime.month(.abbreviated).day())
     }
 
-    /// "in 25 min", "in 2 h 10 min", "now", "ended".
-    public static func until(_ date: Date?, end: Date? = nil, now: Date = .now) -> String {
+    /// "in 25 min", "in 2 h 10 min", "now", "ended" (`short`: "in 25m", "in 2h 10m").
+    public static func until(_ date: Date?, end: Date? = nil, now: Date = .now, short: Bool = false) -> String {
         guard let date else { return "" }
         let seconds = date.timeIntervalSince(now)
         if seconds <= 0 {
@@ -22,10 +22,11 @@ public enum Formatting {
             return end == nil ? "now" : "ended"
         }
         let minutes = Int((seconds / 60).rounded(.up))
-        if minutes < 60 { return "in \(minutes) min" }
+        let (m, h) = short ? ("m", "h") : (" min", " h")
+        if minutes < 60 { return "in \(minutes)\(m)" }
         let hours = minutes / 60
         let rest = minutes % 60
-        if hours < 24 { return rest == 0 ? "in \(hours) h" : "in \(hours) h \(rest) min" }
+        if hours < 24 { return rest == 0 ? "in \(hours)\(h)" : "in \(hours)\(h) \(rest)\(m)" }
         return date.formatted(.dateTime.weekday(.abbreviated).hour().minute())
     }
 

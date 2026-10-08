@@ -23,8 +23,9 @@ public struct TimelineItem: Sendable, Equatable, Identifiable {
     public var content: Content
 }
 
-public struct GeneratedUIItem: Sendable, Equatable {
+public struct GeneratedUIItem: Sendable, Equatable, Identifiable {
     public enum Status: String, Sendable { case generating, ready, failed }
+    public var id: String { artifactId }
     public var artifactId: String
     public var status: Status
     public var title: String

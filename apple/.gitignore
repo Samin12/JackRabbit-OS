@@ -10,3 +10,10 @@ Shared/SamRabbitKit/.swiftpm/
 xcuserdata/
 # Fake bridge runtime state
 dev/.state/
+# Personal signing (DEVELOPMENT_TEAM) - see Config/Signing.xcconfig
+Config/Signing.local.xcconfig
+# Info.plist and entitlements files are generated from project.yml
+iOS/App/Info.plist
+iOS/App/SamRabbit.entitlements
+iOS/Widgets/Info.plist
+iOS/Widgets/SamRabbitWidgets.entitlements
