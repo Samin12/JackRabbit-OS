@@ -46,6 +46,7 @@ class InstallTest(unittest.TestCase):
         self.assertTrue(script.is_file())
         self.assertTrue(str(script).startswith(self.home), "the agent runs an installed copy, not the checkout")
         self.assertTrue((script.parent / "samrabbit_mac.py").is_file(), "the Mac-control module is installed too")
+        self.assertTrue((script.parent / "samrabbit_app.py").is_file(), "the desktop web UI module is installed too")
         self.assertEqual(["--host", "0.0.0.0", "--port", "3780", "--token-file", str(token_file)],
                          plist["ProgramArguments"][3:])
         self.assertTrue(plist["StandardErrorPath"].endswith("Library/Logs/samrabbit-bridge.log"))

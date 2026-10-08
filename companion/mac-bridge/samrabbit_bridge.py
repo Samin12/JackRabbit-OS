@@ -51,6 +51,11 @@ if _HERE not in sys.path:
 
 import samrabbit_mac as mac  # noqa: E402
 
+try:  # desktop web UI at /app/ (loopback + desktop token); optional so the bridge runs without it
+    import samrabbit_app as desktop_app  # noqa: E402
+except ImportError:  # pragma: no cover
+    desktop_app = None  # type: ignore[assignment]
+
 VERSION = "1.1.0"
 SERVICE = "samrabbit-bridge"
 DEFAULT_HOST = "0.0.0.0"
@@ -497,6 +502,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
     def _dispatch(self, method: str) -> None:
         started = time.monotonic()
         route = urlsplit(self.path).path
+        if desktop_app is not None and desktop_app.handles(route):
+            desktop_app.serve(self, method)  # its own auth (loopback + desktop token) and logging
+            return
         status = 500
         try:
             if not client_allowed(self.client_address[0]) and \

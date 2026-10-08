@@ -58,6 +58,7 @@ umask 022
 mkdir -p "$APP_DIR" "$(dirname "$LOG_FILE")" "$(dirname "$PLIST")"
 install -m 0644 "$SOURCE_DIR/samrabbit_bridge.py" "$APP_DIR/samrabbit_bridge.py"
 install -m 0644 "$SOURCE_DIR/samrabbit_mac.py" "$APP_DIR/samrabbit_mac.py"
+install -m 0644 "$SOURCE_DIR/samrabbit_app.py" "$APP_DIR/samrabbit_app.py"  # desktop web UI at /app/
 touch "$LOG_FILE"; chmod 600 "$LOG_FILE"
 if [ "$(stat -f %z "$LOG_FILE" 2>/dev/null || echo 0)" -gt 5242880 ]; then : > "$LOG_FILE"; fi
 
