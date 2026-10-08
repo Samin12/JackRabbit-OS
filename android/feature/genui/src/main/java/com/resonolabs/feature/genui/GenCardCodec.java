@@ -99,6 +99,11 @@ public final class GenCardCodec {
                     }
                 }
                 case DIVIDER -> { }
+                case IMAGE -> {
+                    json.put("ref", block.ref);
+                    putOpt(json, "alt", block.alt);
+                    json.put("aspect", (double) block.aspect);
+                }
             }
         } catch (Exception ignored) {
             // org.json only throws for NaN/Infinity, which the parser never produces.

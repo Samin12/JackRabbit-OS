@@ -109,8 +109,24 @@ public final class RuntimeVoiceClient implements AutoCloseable {
     private final AtomicBoolean closed = new AtomicBoolean();
 
     public void createCall(Context context, String offerSdp, Callback callback) {
+        createCall(context, offerSdp, null, callback);
+    }
+
+    /**
+     * {@code POST /v1/voice/calls}. {@code conversationId} (the R1's id for the user-visible
+     * conversation, kept across always-on reconnects) lets the runtime link its new
+     * {@code voiceSessionId} to it (CONTRACTS-WAVE3); null or empty leaves it out.
+     */
+    public void createCall(Context context, String offerSdp, String conversationId, Callback callback) {
         Context application = context.getApplicationContext();
-        worker.execute(() -> request(application, offerSdp, callback));
+        worker.execute(() -> request(application, offerSdp, conversationId, callback));
+    }
+
+    /** The {@code /v1/voice/calls} request body. */
+    static JSONObject callBody(String offerSdp, String conversationId) throws org.json.JSONException {
+        JSONObject body = new JSONObject().put("sdp", offerSdp);
+        if (conversationId != null && !conversationId.isBlank()) body.put("conversationId", conversationId);
+        return body;
     }
 
     public void callTool(Context context, String voiceSessionId, String toolCallId, String userUtterance, long userUtteranceId, String name, JSONObject arguments, ToolCallback callback) {
@@ -291,7 +307,7 @@ public final class RuntimeVoiceClient implements AutoCloseable {
         }
     }
 
-    private void request(Context context, String offerSdp, Callback callback) {
+    private void request(Context context, String offerSdp, String conversationId, Callback callback) {
         HttpURLConnection connection = null;
         try {
             String token = new RuntimeSecretStore(context).loadLocalApiToken();
@@ -303,7 +319,7 @@ public final class RuntimeVoiceClient implements AutoCloseable {
             connection.setDoOutput(true);
             connection.setRequestProperty("Authorization", "Bearer " + token);
             connection.setRequestProperty("Content-Type", "application/json");
-            byte[] body = new JSONObject().put("sdp", offerSdp).toString()
+            byte[] body = callBody(offerSdp, conversationId).toString()
                     .getBytes(StandardCharsets.UTF_8);
             connection.getOutputStream().write(body);
             int status = connection.getResponseCode();

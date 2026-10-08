@@ -52,4 +52,12 @@ public final class RuntimeVoiceClientTest {
         // A real 38-event calendar listing was ~75 KB (text + structured copy).
         assertTrue(RuntimeVoiceClient.MAX_MCP_RESPONSE_BYTES >= 512 * 1024);
     }
+
+    @Test public void callBodyCarriesTheConversationId() throws Exception {
+        JSONObject body = RuntimeVoiceClient.callBody("v=0 offer", "c_0123456789abcdef0123");
+        assertEquals("v=0 offer", body.getString("sdp"));
+        assertEquals("c_0123456789abcdef0123", body.getString("conversationId"));
+        assertFalse(RuntimeVoiceClient.callBody("v=0", null).has("conversationId"));
+        assertFalse(RuntimeVoiceClient.callBody("v=0", " ").has("conversationId"));
+    }
 }

@@ -102,4 +102,15 @@ public final class RealtimeToolImageTest {
         assertTrue(new JSONObject(note).has("imageNote"));
         assertFalse(note.contains(image.base64));
     }
+
+    @Test public void hostPictureEventsAreBoundedToTheDataChannel() throws Exception {
+        org.json.JSONObject event = RealtimeToolImage.imageEvent("[Generated UI] Chart: bars", "image/jpeg", "QUJD");
+        org.json.JSONObject item = event.getJSONObject("item");
+        org.junit.Assert.assertEquals("user", item.getString("role"));
+        org.json.JSONArray content = item.getJSONArray("content");
+        org.junit.Assert.assertEquals("[Generated UI] Chart: bars", content.getJSONObject(0).getString("text"));
+        org.junit.Assert.assertEquals("data:image/jpeg;base64,QUJD", content.getJSONObject(1).getString("image_url"));
+        String huge = "A".repeat(RealtimeToolOutput.MAX_EVENT_BYTES);
+        org.junit.Assert.assertNull(RealtimeToolImage.imageEvent("x", "image/jpeg", huge));
+    }
 }

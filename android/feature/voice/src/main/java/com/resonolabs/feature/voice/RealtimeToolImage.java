@@ -97,13 +97,22 @@ final class RealtimeToolImage {
      * data-channel limit.
      */
     JSONObject inputImageEvent() throws Exception {
+        return imageEvent(CAPTION, mime, base64);
+    }
+
+    /**
+     * A user {@code conversation.item.create} with {@code caption} and a picture (data URL), or
+     * null when it would exceed the data-channel limit. Also used for host pictures such as a
+     * Mac-generated UI ("[Generated UI] title: summary").
+     */
+    static JSONObject imageEvent(String caption, String mime, String base64) throws Exception {
         JSONObject event = new JSONObject()
                 .put("type", "conversation.item.create")
                 .put("item", new JSONObject()
                         .put("type", "message")
                         .put("role", "user")
                         .put("content", new JSONArray()
-                                .put(new JSONObject().put("type", "input_text").put("text", CAPTION))
+                                .put(new JSONObject().put("type", "input_text").put("text", caption))
                                 .put(new JSONObject().put("type", "input_image")
                                         .put("image_url", "data:" + mime + ";base64," + base64))));
         return fits(event) ? event : null;

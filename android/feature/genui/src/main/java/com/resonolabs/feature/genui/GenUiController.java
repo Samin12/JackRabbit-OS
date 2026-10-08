@@ -36,6 +36,9 @@ public final class GenUiController implements GenCardStore.Listener, AutoCloseab
 
         /** A {@link GenAction.Kind#HOST} button on an app-built card was tapped. */
         default void onHostAction(GenCard card, String action) { }
+
+        /** A host picture on a card was tapped: show it full screen. */
+        default void openImage(String ref, String caption) { }
     }
 
     public static final int SHOWS_PER_RESPONSE = 2;
@@ -181,7 +184,7 @@ public final class GenUiController implements GenCardStore.Listener, AutoCloseab
             lastTranscriptLine = "";
             return error(missing(id));
         }
-        if (hasHostAction(card)) {
+        if (hasHostAction(card) || hasImage(card)) {
             // An app-built card with trusted buttons (T3 Approve/Deny): the model must not be
             // able to change what the user reads next to a button that acts on the real request.
             lastTranscriptLine = "";
@@ -334,6 +337,19 @@ public final class GenUiController implements GenCardStore.Listener, AutoCloseab
         host.invalidateUi();
     }
 
+    /** Tap on a host picture: full screen, captioned "<alt or title>: <subtitle>". */
+    public void onImageTapped(GenCard card, GenBlock image) {
+        if (image == null || image.ref == null) return;
+        host.openImage(image.ref, imageCaption(card, image));
+    }
+
+    static String imageCaption(GenCard card, GenBlock image) {
+        String head = image.alt != null ? image.alt : card.displayTitle();
+        String sub = card.displaySubtitle();
+        if (sub == null || sub.isEmpty() || sub.equals(head)) return head;
+        return head + ": " + sub;
+    }
+
     /** Tap on a card body with nothing hidden: make it the conversation topic, silently. */
     public void onCardFocused(GenCard card) {
         long now = store.now();
@@ -374,11 +390,21 @@ public final class GenUiController implements GenCardStore.Listener, AutoCloseab
                         .append(GenSchema.CONDITIONS[block.condition]);
                 case TIMER -> out.append(added++ == 0 ? ": " : ", ").append("timer ")
                         .append(GenTimers.brief(block.totalMs));
+                case IMAGE -> out.append(added++ == 0 ? ": " : ", ").append("picture")
+                        .append(block.alt != null ? " (" + block.alt + ")" : "");
                 default -> { }
             }
         }
         String text = out.toString();
         return text.length() > 200 ? text.substring(0, 199) + "…" : text;
+    }
+
+    /** Picture cards are built by the R1 (camera, screenshots, generated UIs) and stay as built. */
+    static boolean hasImage(GenCard card) {
+        for (GenBlock block : card.body) {
+            if (block.type == GenBlock.Type.IMAGE) return true;
+        }
+        return false;
     }
 
     private static boolean hasHostAction(GenCard card) {

@@ -2,9 +2,14 @@ package com.resonolabs.feature.voice;
 
 import android.app.Activity;
 import android.content.pm.ApplicationInfo;
+import android.graphics.Bitmap;
 import android.graphics.Canvas;
+import android.graphics.Color;
 import android.graphics.Paint;
+import android.graphics.Path;
+import android.graphics.Rect;
 import android.graphics.RectF;
+import android.graphics.Typeface;
 import android.os.SystemClock;
 import android.util.Log;
 import android.Manifest;
@@ -14,10 +19,16 @@ import android.view.View;
 import org.json.JSONArray;
 
 import com.resonolabs.feature.genui.GenCard;
+import com.resonolabs.feature.genui.GenCardCodec;
 import com.resonolabs.feature.genui.GenCardOverlay;
+import com.resonolabs.feature.genui.GenCardStore;
+import com.resonolabs.feature.genui.GenImages;
 import com.resonolabs.feature.genui.GenUiController;
 import com.resonolabs.feature.genui.GenUiTools;
+import com.resonolabs.feature.genui.HostImageCards;
 import com.resonolabs.feature.genui.IdleGlance;
+import com.resonolabs.runtime.host.ConversationSyncClient;
+import com.resonolabs.runtime.host.ConversationTimeline;
 import com.resonolabs.runtime.host.RuntimeVoiceClient;
 import com.resonolabs.ui.design.FluidOrb;
 import com.resonolabs.ui.design.GlassPainter;
@@ -60,7 +71,9 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
     private float orbY;
     private static final float BAR_Y = 588f;
     private static final float[] BAR_X = {64f, 152f, 240f, 328f, 416f};
-    private final java.util.ArrayList<String[]> messages = new java.util.ArrayList<>();
+    /** The transcript (text, pictures, generated UIs); at most {@link #MAX_ITEMS}, kept across reconnects. */
+    private final java.util.ArrayList<TranscriptItem> messages = new java.util.ArrayList<>();
+    private static final int MAX_ITEMS = 80;
     private int assistantMessage = -1;
     private boolean micMuted;
     private boolean speakerMuted;
@@ -134,6 +147,49 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
     private boolean sessionActive;
     private SessionListener sessionListener;
     private HostActions hostActions;
+    // ---- conversation sync (CONTRACTS-WAVE3 hop 1; observe-only, never affects the session) ----
+    private final ConversationSyncClient sync;
+    private final ConversationTimeline timeline;
+    /** Sync id of the assistant message being spoken ({@code a_<n>}); null between replies. */
+    private String assistantSyncId;
+    /** The user interrupted the current reply: its late {@code done} is not a new message. */
+    private boolean assistantInterrupted;
+    /** A model card tool is executing (card events it causes have origin "model"). */
+    private boolean cardToolRunning;
+    private final GenCardStore.Listener cardSync = new GenCardStore.Listener() {
+        @Override public void onCardsChanged() { }
+
+        @Override public void onCardEvent(int event, GenCard card) {
+            mirrorCard(event, card);
+        }
+    };
+    // ---- pictures: transcript thumbnails, full-screen viewer ----
+    private final GenImages images;
+    private final Paint bitmapPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+    private final Paint measurePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private static final Typeface MEASURE_REGULAR = Typeface.create("sans-serif", Typeface.NORMAL);
+    private static final Typeface MEASURE_MEDIUM = Typeface.create("sans-serif-medium", Typeface.NORMAL);
+    private final TranscriptLayout.Measurer measurer = new TranscriptLayout.Measurer() {
+        @Override public float width(String text, float size, boolean bold) {
+            measurePaint.setTextSize(size);
+            measurePaint.setTypeface(bold ? MEASURE_MEDIUM : MEASURE_REGULAR);
+            return measurePaint.measureText(text == null ? "" : text);
+        }
+
+        @Override public int fit(String text, float size, boolean bold, float maxWidth) {
+            measurePaint.setTextSize(size);
+            measurePaint.setTypeface(bold ? MEASURE_MEDIUM : MEASURE_REGULAR);
+            return measurePaint.breakText(text, true, maxWidth, null);
+        }
+    };
+    private final Path pictureClip = new Path();
+    private final RectF pictureFrame = new RectF();
+    private final RectF pictureDst = new RectF();
+    private final Path speakerCone = new Path();
+    /** The picture shown full screen (tap or BACK closes); null when the viewer is closed. */
+    private String viewerRef;
+    private Bitmap viewerBitmap;
+    private String[] viewerCaption = new String[0];
 
     private static final class PendingModeTool {
         final String callId;
@@ -188,7 +244,12 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
             @Override public boolean sendSystemNote(String text, boolean respond) {
                 if (!isAvailable() || !sendItem("system", text)) return false;
                 if (respond) responseCoordinator.requestDefault();
+                timeline.uiEvent(text);
                 return true;
+            }
+
+            @Override public void openImage(String ref, String caption) {
+                openViewer(ref, caption);
             }
 
             @Override public void open(String page) {
@@ -232,6 +293,10 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
         });
         cards = new GenCardOverlay(genUi);
         glance = new IdleGlance(activity, this::postInvalidate);
+        images = GenImages.get(activity);
+        sync = new ConversationSyncClient(activity);
+        timeline = new ConversationTimeline(sync::emit);
+        genUi.store().addListener(cardSync);
     }
 
     // ------------------------------------------------------------------ shell API
@@ -269,17 +334,29 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
      * for a spoken response. Never recorded as the user's words. False if no live session.
      */
     public boolean deliverHostUpdate(String text) {
+        return deliverHostUpdate(text, 0L, "t3.thread.update");
+    }
+
+    /**
+     * {@link #deliverHostUpdate(String)} for runtime announcement {@code announcementId} of
+     * {@code kind}; mirrored as {@code host.t3_update} (T3 kinds) or {@code host.note}.
+     */
+    public boolean deliverHostUpdate(String text, long announcementId, String kind) {
         if (!isAvailable() || text == null || text.isBlank()) return false;
         if (!sendItem("user", text)) return false;
         logTool("host update " + shown(text, 240));
         responseCoordinator.requestDefault();
+        if (kind != null && kind.startsWith("t3.")) timeline.hostT3Update(text, announcementId, kind);
+        else timeline.hostNote(text, kind == null ? "host" : kind);
         invalidate();
         return true;
     }
 
     /** Silent "[UI event]" note for the model (no response). False if no live session. */
     public boolean sendUiEvent(String text) {
-        return isAvailable() && text != null && !text.isBlank() && sendItem("system", text);
+        boolean sent = isAvailable() && text != null && !text.isBlank() && sendItem("system", text);
+        if (sent) timeline.uiEvent(text);
+        return sent;
     }
 
     /**
@@ -312,6 +389,7 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
         responseCoordinator.requestDefault();
         addMessage("user", text);
         recordTranscript("user", eventType, text);
+        timeline.userMessage(text, eventType);
         transcript = text;
         invalidate();
         return true;
@@ -329,6 +407,11 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
     }
 
     public boolean onInput(UiInputIntent intent) {
+        if (viewerRef != null) {
+            // Full-screen picture: the wheel does nothing, anything else closes it.
+            if (intent != UiInputIntent.NEXT && intent != UiInputIntent.PREVIOUS) closeViewer();
+            return true;
+        }
         if (!transcriptOpen && cards.onInput(intent)) {
             invalidate();
             return true;
@@ -348,6 +431,12 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
     @Override public boolean onTouchEvent(MotionEvent event) {
         float x = event.getX() * WIDTH / Math.max(1f, getWidth());
         float y = event.getY() * HEIGHT / Math.max(1f, getHeight());
+        if (viewerRef != null) {
+            if (event.getActionMasked() == MotionEvent.ACTION_DOWN) { touchDownX = x; touchDownY = y; }
+            else if (event.getActionMasked() == MotionEvent.ACTION_UP
+                    && Math.abs(x - touchDownX) < 40f && Math.abs(y - touchDownY) < 40f) closeViewer();
+            return true;
+        }
         switch (event.getActionMasked()) {
             case MotionEvent.ACTION_DOWN -> {
                 touchDownX = x; touchDownY = y; touchLastY = y; touchDragging = false;
@@ -385,6 +474,15 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
     private void tap(float x, float y) {
         // Cards never overlap the control bar (y >= 548), so they go first.
         if (transcriptOpen && cards.chipAt(x, y)) { transcriptOpen = false; invalidate(); return; }
+        if (transcriptOpen && y >= TranscriptLayout.TOP && y <= TranscriptLayout.BOTTOM) {
+            int index = TranscriptLayout.itemAt(messages, y - TranscriptLayout.TOP + transcriptScroll);
+            TranscriptItem item = index >= 0 ? messages.get(index) : null;
+            if (item != null && item.hasPicture()) {
+                openViewer(item.imageRef, item.kind == TranscriptItem.Kind.UI && !item.detail.isEmpty()
+                        ? item.text() + ": " + item.detail : item.text());
+                return;
+            }
+        }
         if (!transcriptOpen && cards.onTap(x, y)) { invalidate(); return; }
         if (showsGlance() && glance.hasChips()) {
             String chip = glance.chipAt(x, y);
@@ -454,9 +552,12 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
             peer.sendRealtimeEvent(new JSONObject().put("type", "output_audio_buffer.clear"));
         } catch (Exception ignored) { }
         if (assistantMessage >= 0 && assistantMessage < messages.size()) {
-            String[] message = messages.get(assistantMessage);
-            message[1] = message[1].trim() + " —";
+            TranscriptItem message = messages.get(assistantMessage);
+            message.setText(message.text() + " —");
         }
+        timeline.assistantInterrupted(assistantSyncId, assistantDraft.toString());
+        assistantSyncId = null;
+        assistantInterrupted = true;
         assistantMessage = -1;
         assistantDraft.setLength(0);
         sessionState.live();
@@ -466,7 +567,7 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
     }
 
     private void scrollTranscript(float delta) {
-        float max = Math.max(0f, transcriptHeight - 330f);
+        float max = TranscriptLayout.maxScroll(transcriptHeight);
         transcriptScroll = Math.max(0f, Math.min(max, transcriptScroll + delta));
         followTranscript = transcriptScroll >= max - 4f;
         invalidate();
@@ -474,8 +575,12 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
 
     private void addMessage(String role, String text) {
         if (text == null || text.isBlank()) return;
-        messages.add(new String[]{role, text.trim()});
-        while (messages.size() > 80) { messages.remove(0); if (assistantMessage >= 0) assistantMessage--; }
+        addItem(TranscriptItem.text(role, text));
+    }
+
+    private void addItem(TranscriptItem item) {
+        messages.add(item);
+        while (messages.size() > MAX_ITEMS) { messages.remove(0); if (assistantMessage >= 0) assistantMessage--; }
     }
 
     private void toggle() {
@@ -496,6 +601,10 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
         // A new conversation starts unmuted; mutes only carry over across automatic reconnects.
         micMuted = false;
         speakerMuted = false;
+        // A new conversation id; always-on reconnects (beginSession(true)) keep it.
+        timeline.start("user");
+        assistantSyncId = null;
+        assistantInterrupted = false;
         beginSession(false);
     }
 
@@ -567,6 +676,7 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
                     boolean resumed = reconnecting;
                     reconnecting = false;
                     reconnectPolicy.onLive(SystemClock.elapsedRealtime());
+                    timeline.sessionConnected(sessionId, resumed);
                     transcript = "I’m listening";
                     // Local clock (the instructions have none; calendar tools speak UTC) and
                     // the cards on screen, as one host note.
@@ -621,9 +731,10 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
 
     private void requestAnswer(String offer) {
         if (runtimeClient == null) return;
-        runtimeClient.createCall(activity, offer, new RuntimeVoiceClient.Callback() {
+        runtimeClient.createCall(activity, offer, timeline.conversationId(), new RuntimeVoiceClient.Callback() {
             @Override public void onAnswer(String sdp, String connectedSessionId, JSONObject connectGreetingEvent) {
                 sessionId = connectedSessionId;
+                timeline.setSessionId(connectedSessionId);
                 genUi.onSessionStarted(connectedSessionId);
                 pendingConnectGreeting = connectGreetingEvent;
                 if (peer != null) peer.applyAnswer(sdp);
@@ -645,6 +756,7 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
             if ("response.created".equals(type)) {
                 responseCoordinator.onResponseCreated();
                 responseAudioSeen = false;
+                assistantInterrupted = false;
                 genUi.onResponseCreated();
             } else if ("response.done".equals(type)) {
                 responseCoordinator.onResponseDone();
@@ -661,9 +773,10 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
                 if (!text.isEmpty()) userUtteranceId += 1;
                 recordTranscript("user", type, text);
                 if (!text.isEmpty()) {
+                    timeline.userMessage(text, type);
                     transcript = text;
                     if (assistantMessage >= 0) {
-                        messages.add(assistantMessage, new String[]{"user", text});
+                        messages.add(assistantMessage, TranscriptItem.text("user", text));
                         assistantMessage++;
                     } else {
                         addMessage("user", text);
@@ -679,8 +792,10 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
                         addMessage("assistant", transcript);
                         assistantMessage = messages.size() - 1;
                     } else {
-                        messages.get(assistantMessage)[1] = transcript;
+                        messages.get(assistantMessage).setText(transcript);
                     }
+                    if (assistantSyncId == null) assistantSyncId = timeline.nextMessageId();
+                    timeline.assistantDelta(assistantSyncId, transcript); // throttled to every 300 ms
                 }
             } else if ("response.audio_transcript.done".equals(type)
                     || "response.output_audio_transcript.done".equals(type)) {
@@ -690,9 +805,12 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
                 assistantDraft.setLength(0);
                 if (!text.isEmpty()) {
                     transcript = text;
-                    if (assistantMessage >= 0) messages.get(assistantMessage)[1] = text;
+                    if (assistantMessage >= 0) messages.get(assistantMessage).setText(text);
                     else addMessage("assistant", text);
+                    if (assistantSyncId == null && !assistantInterrupted) assistantSyncId = timeline.nextMessageId();
+                    timeline.assistantDone(assistantSyncId, text);
                 }
+                assistantSyncId = null;
                 assistantMessage = -1;
             } else if ("response.function_call_arguments.done".equals(type)) {
                 callTool(event);
@@ -741,7 +859,7 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
     private boolean sendHostNote(String note) {
         if (peer == null) return false;
         try {
-            return peer.sendRealtimeEvent(new JSONObject()
+            boolean sent = peer.sendRealtimeEvent(new JSONObject()
                     .put("type", "conversation.item.create")
                     .put("item", new JSONObject()
                             .put("type", "message")
@@ -749,6 +867,8 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
                             .put("content", new JSONArray().put(new JSONObject()
                                     .put("type", "input_text")
                                     .put("text", note)))));
+            if (sent) timeline.hostNote(note, "host");
+            return sent;
         } catch (Exception error) {
             Log.w(LOG_TAG, "host note injection failed", error);
             return false;
@@ -768,7 +888,10 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
             peer = null;
         }
 
-        // Hand any captured transcript to the runtime for review before teardown.
+        // Mirror the end (before finalize), then hand the transcript to the runtime for review.
+        if (!timeline.sessionId().isEmpty()) timeline.sessionEnded(ConversationTimeline.REASON_USER);
+        timeline.end(ConversationTimeline.REASON_USER);
+        assistantSyncId = null;
         dispatchPendingFinalize();
 
         // Update UI immediately
@@ -824,6 +947,10 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
 
     private void fail(String reason) {
         pendingHostNote = null;
+        // A dropped provider session: mirrored before finalize. The conversation goes on if
+        // always-on reconnects (same conversationId), else it ends below.
+        if (!timeline.sessionId().isEmpty()) timeline.sessionEnded(reason);
+        assistantSyncId = null;
         dispatchPendingFinalize();
         closeTransports();
         removeCallbacks(completionPoll);
@@ -844,6 +971,7 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
             return;
         }
         Log.i(LOG_TAG, "voice session ended: " + reason);
+        timeline.end(reason);
         sessionState.error();
         failure = messageFor(reason);
         transcript = failure;
@@ -859,9 +987,10 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
         String user = null;
         String assistant = null;
         for (int index = messages.size() - 1; index >= 0 && (user == null || assistant == null); index--) {
-            String[] message = messages.get(index);
-            if ("user".equals(message[0]) && user == null) user = message[1];
-            else if (!"user".equals(message[0]) && assistant == null) assistant = message[1];
+            TranscriptItem message = messages.get(index);
+            if (message.kind != TranscriptItem.Kind.TEXT) continue;
+            if (message.user() && user == null) user = message.text();
+            else if (!message.user() && assistant == null) assistant = message.text();
         }
         if (user != null || assistant != null) {
             note.append(" Last exchange:");
@@ -894,17 +1023,27 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
     }
 
     @Override public void close() {
+        if (!timeline.sessionId().isEmpty()) timeline.sessionEnded(ConversationTimeline.REASON_CLOSED);
+        timeline.end(ConversationTimeline.REASON_CLOSED);
         dispatchPendingFinalize();
         closeTransports();
         cancelReconnect();
         setSessionActive(false);
+        genUi.store().removeListener(cardSync);
         genUi.close();
         glance.close();
+        sync.close(); // sends what is queued once, then stops its thread
     }
 
     @Override protected void onDraw(Canvas canvas) {
         canvas.save();
         canvas.scale(getWidth() / WIDTH, getHeight() / HEIGHT);
+        if (viewerRef != null) {
+            // A still picture: no animation loop while it is open (redrawn when it loads).
+            drawViewer(canvas);
+            canvas.restore();
+            return;
+        }
         long now = SystemClock.elapsedRealtime();
         VoiceSessionStateTracker.State state = sessionState.state();
         boolean error = state == VoiceSessionStateTracker.State.ERROR;
@@ -1050,8 +1189,8 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
         boolean live = inSession();
         drawRoundButton(canvas, 0, transcriptOpen ? Look.SELECTED : Look.GLASS, Glyph.TRANSCRIPT, true);
         if (!live) {
-            RectF start = new RectF(112f, BAR_Y - 30f, 456f, BAR_Y + 30f);
-            SamTheme.glass(canvas, paint, start, 30f, false);
+            scratch.set(112f, BAR_Y - 30f, 456f, BAR_Y + 30f);
+            glass.draw(canvas, paint, scratch, 30f, false);
             paint.setColor(SamTheme.ORB_PALE);
             drawMicGlyph(canvas, 160f, BAR_Y, false, SamTheme.ORB_PALE);
             SamTheme.text(canvas, paint, state == VoiceSessionStateTracker.State.ERROR
@@ -1071,11 +1210,12 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
 
     private void drawRoundButton(Canvas canvas, int slot, Look look, Glyph glyph, boolean enabled) {
         float cx = BAR_X[slot];
-        RectF circle = new RectF(cx - 30f, BAR_Y - 30f, cx + 30f, BAR_Y + 30f);
+        RectF circle = scratch;
+        circle.set(cx - 30f, BAR_Y - 30f, cx + 30f, BAR_Y + 30f);
         int ink = SamTheme.INK;
         switch (look) {
-            case GLASS -> SamTheme.glass(canvas, paint, circle, 30f, false);
-            case SELECTED -> SamTheme.glass(canvas, paint, circle, 30f, true);
+            case GLASS -> glass.draw(canvas, paint, circle, 30f, false);
+            case SELECTED -> glass.draw(canvas, paint, circle, 30f, true);
             case DANGER -> { paint.setColor(android.graphics.Color.rgb(196, 54, 48)); canvas.drawOval(circle, paint); }
             case WHITE -> { paint.setColor(SamTheme.INK); canvas.drawOval(circle, paint); ink = SamTheme.BACKGROUND; }
         }
@@ -1097,7 +1237,8 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
             }
             case SPEAKER -> {
                 paint.setStyle(Paint.Style.FILL);
-                android.graphics.Path cone = new android.graphics.Path();
+                android.graphics.Path cone = speakerCone;
+                cone.rewind();
                 cone.moveTo(cx - 12f, BAR_Y - 5f); cone.lineTo(cx - 6f, BAR_Y - 5f);
                 cone.lineTo(cx + 1f, BAR_Y - 11f); cone.lineTo(cx + 1f, BAR_Y + 11f);
                 cone.lineTo(cx - 6f, BAR_Y + 5f); cone.lineTo(cx - 12f, BAR_Y + 5f); cone.close();
@@ -1133,21 +1274,16 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
         paint.setStyle(Paint.Style.FILL);
     }
 
-    /** Scrollable conversation, newest at the bottom, like ChatGPT Voice's transcript. */
+    /**
+     * Scrollable conversation, newest at the bottom, like ChatGPT Voice's transcript: text
+     * bubbles, pictures (camera photos, Mac screenshots) and generated UIs inline. Geometry comes
+     * from {@link TranscriptLayout} (measured once per item change); drawing allocates nothing.
+     */
     private void drawTranscript(Canvas canvas) {
-        float top = 196f;
-        float bottom = 518f;
-        float y = 0f;
-        java.util.ArrayList<Object[]> layout = new java.util.ArrayList<>();
-        for (String[] message : messages) {
-            boolean user = "user".equals(message[0]);
-            java.util.List<String> lines = wrap(message[1], user ? 300f : 404f, 16f);
-            float height = lines.size() * 22f + (user ? 20f : 8f);
-            layout.add(new Object[]{user, lines, y, height});
-            y += height + 12f;
-        }
-        transcriptHeight = y;
-        float max = Math.max(0f, transcriptHeight - (bottom - top));
+        float top = TranscriptLayout.TOP;
+        float bottom = TranscriptLayout.BOTTOM;
+        transcriptHeight = TranscriptLayout.layout(messages, measurer);
+        float max = TranscriptLayout.maxScroll(transcriptHeight);
         if (followTranscript) transcriptScroll = max;
         transcriptScroll = Math.min(transcriptScroll, max);
         canvas.save();
@@ -1156,46 +1292,140 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
             SamTheme.text(canvas, paint, "Your conversation will show up here", 240f, 340f, 16f,
                     SamTheme.MUTED, Paint.Align.CENTER, false);
         }
-        for (Object[] item : layout) {
-            boolean user = (Boolean) item[0];
-            @SuppressWarnings("unchecked") java.util.List<String> lines = (java.util.List<String>) item[1];
-            float itemTop = top + (Float) item[2] - transcriptScroll;
-            float height = (Float) item[3];
-            if (itemTop + height < top || itemTop > bottom) continue;
-            if (user) {
-                float widest = 0f;
-                paint.setTextSize(16f);
-                for (String line : lines) widest = Math.max(widest, paint.measureText(line));
-                RectF bubble = new RectF(452f - widest - 28f, itemTop, 452f, itemTop + height);
-                SamTheme.glass(canvas, paint, bubble, 18f, true);
-                for (int line = 0; line < lines.size(); line++) {
-                    SamTheme.text(canvas, paint, lines.get(line), 438f, itemTop + 26f + line * 22f, 16f,
-                            SamTheme.INK, Paint.Align.RIGHT, false);
-                }
-            } else {
-                for (int line = 0; line < lines.size(); line++) {
-                    SamTheme.text(canvas, paint, lines.get(line), 30f, itemTop + 16f + line * 22f, 16f,
-                            SamTheme.INK, Paint.Align.LEFT, false);
-                }
+        for (int index = 0; index < messages.size(); index++) {
+            TranscriptItem item = messages.get(index);
+            float itemTop = top + item.top - transcriptScroll;
+            if (itemTop + item.height < top || itemTop > bottom) continue;
+            switch (item.kind) {
+                case TEXT -> drawTextItem(canvas, item, itemTop);
+                case IMAGE -> drawImageItem(canvas, item, itemTop);
+                case UI -> drawUiItem(canvas, item, itemTop);
             }
         }
         canvas.restore();
+        if (transcriptScroll < max - 1f) {
+            // More below: content softly fades into the page instead of a hard cut.
+            glass.fillVertical(canvas, paint, 0f, bottom - 28f, WIDTH, bottom, 0f,
+                    SamTheme.withAlpha(SamTheme.BACKGROUND, 0), SamTheme.withAlpha(SamTheme.BACKGROUND, 235), 28f);
+        }
     }
 
-    private java.util.List<String> wrap(String value, float width, float size) {
-        java.util.ArrayList<String> lines = new java.util.ArrayList<>();
-        paint.setTextSize(size);
-        String remaining = value == null ? "" : value.trim();
-        while (!remaining.isEmpty()) {
-            int count = paint.breakText(remaining, true, width, null);
-            if (count < remaining.length()) {
-                int space = remaining.lastIndexOf(' ', Math.max(0, count - 1));
-                if (space > 0) count = space;
+    private void drawTextItem(Canvas canvas, TranscriptItem item, float itemTop) {
+        String[] lines = item.lines;
+        if (item.user()) {
+            glass.draw(canvas, paint, TranscriptLayout.USER_RIGHT - item.bubbleWidth, itemTop,
+                    TranscriptLayout.USER_RIGHT, itemTop + item.height, 18f, true);
+            for (int line = 0; line < lines.length; line++) {
+                SamTheme.text(canvas, paint, lines[line], TranscriptLayout.USER_RIGHT - 14f,
+                        itemTop + 26f + line * TranscriptLayout.LINE, 16f, SamTheme.INK, Paint.Align.RIGHT, false);
             }
-            lines.add(remaining.substring(0, Math.max(1, count)).trim());
-            remaining = remaining.substring(Math.min(remaining.length(), Math.max(1, count))).trim();
+        } else {
+            for (int line = 0; line < lines.length; line++) {
+                SamTheme.text(canvas, paint, lines[line], TranscriptLayout.ASSISTANT_LEFT,
+                        itemTop + 16f + line * TranscriptLayout.LINE, 16f, SamTheme.INK, Paint.Align.LEFT, false);
+            }
         }
-        return lines;
+    }
+
+    /** A photo (user side, right) or a tool picture (left) with a one-line caption under it. */
+    private void drawImageItem(Canvas canvas, TranscriptItem item, float itemTop) {
+        boolean user = item.user();
+        float left = user ? TranscriptLayout.USER_RIGHT - item.frameWidth : TranscriptLayout.ASSISTANT_LEFT;
+        pictureFrame.set(left, itemTop, left + item.frameWidth, itemTop + item.frameHeight);
+        drawPicture(canvas, item.imageRef, pictureFrame, 16f, item.source);
+        SamTheme.text(canvas, paint, item.titleLine, user ? pictureFrame.right - 4f : pictureFrame.left + 4f,
+                pictureFrame.bottom + 17f, TranscriptLayout.CAPTION_SIZE, SamTheme.MUTED,
+                user ? Paint.Align.RIGHT : Paint.Align.LEFT, false);
+    }
+
+    /** A generated UI: glass panel with a "Generated UI" label, the thumbnail, title and summary. */
+    private void drawUiItem(Canvas canvas, TranscriptItem item, float itemTop) {
+        float left = TranscriptLayout.UI_LEFT;
+        float right = TranscriptLayout.UI_RIGHT;
+        float pad = TranscriptLayout.UI_PAD;
+        glass.draw(canvas, paint, left, itemTop, right, itemTop + item.height, 22f, false);
+        float labelBaseline = itemTop + pad + 13f;
+        drawSparkGlyph(canvas, left + pad + 7f, labelBaseline - 4.5f, SamTheme.VIOLET);
+        SamTheme.text(canvas, paint, "Generated UI", left + pad + 20f, labelBaseline, 12.5f,
+                SamTheme.withAlpha(SamTheme.ORB_PALE, 230), Paint.Align.LEFT, true);
+        if (item.imageRef != null) {
+            SamTheme.text(canvas, paint, "Tap to open", right - pad, labelBaseline, 12f, SamTheme.MUTED,
+                    Paint.Align.RIGHT, false);
+        }
+        float thumbTop = itemTop + pad + TranscriptLayout.UI_LABEL_H + 8f;
+        float thumbLeft = (left + right - item.frameWidth) / 2f;
+        pictureFrame.set(thumbLeft, thumbTop, thumbLeft + item.frameWidth, thumbTop + item.frameHeight);
+        drawPicture(canvas, item.imageRef, pictureFrame, 14f, item.source);
+        float titleBaseline = pictureFrame.bottom + 10f + 17f;
+        SamTheme.text(canvas, paint, item.titleLine, left + pad, titleBaseline, TranscriptLayout.UI_TITLE_SIZE,
+                SamTheme.INK, Paint.Align.LEFT, true);
+        if (!item.detailLine.isEmpty()) {
+            SamTheme.text(canvas, paint, item.detailLine, left + pad, titleBaseline + TranscriptLayout.UI_SUMMARY_H,
+                    TranscriptLayout.UI_SUMMARY_SIZE, SamTheme.MUTED, Paint.Align.LEFT, false);
+        }
+    }
+
+    /**
+     * A stored picture fitted into {@code frame} (rounded, never cropped or stretched) on a dark
+     * backdrop; a quiet placeholder glyph while its thumbnail decodes or after it was evicted.
+     */
+    private void drawPicture(Canvas canvas, String ref, RectF frame, float radius, String source) {
+        paint.setShader(null);
+        paint.setStyle(Paint.Style.FILL);
+        paint.setColor(SamTheme.withAlpha(SamTheme.BACKGROUND, 215));
+        canvas.drawRoundRect(frame, radius, radius, paint);
+        Bitmap thumb = ref == null ? null : images.thumb(ref);
+        if (thumb != null && thumb.getWidth() > 0 && thumb.getHeight() > 0) {
+            float scale = Math.min(frame.width() / thumb.getWidth(), frame.height() / thumb.getHeight());
+            float width = thumb.getWidth() * scale;
+            float height = thumb.getHeight() * scale;
+            float left = frame.centerX() - width / 2f;
+            float top = frame.centerY() - height / 2f;
+            pictureDst.set(left, top, left + width, top + height);
+            pictureClip.rewind();
+            pictureClip.addRoundRect(pictureDst.left, pictureDst.top, pictureDst.right, pictureDst.bottom,
+                    radius - 1f, radius - 1f, Path.Direction.CW);
+            canvas.save();
+            canvas.clipPath(pictureClip);
+            canvas.drawBitmap(thumb, null, pictureDst, bitmapPaint);
+            canvas.restore();
+        } else if (HostImageCards.CAMERA.equals(source)) {
+            drawCameraGlyph(canvas, frame.centerX(), frame.centerY());
+        } else if (HostImageCards.MAC_SCREENSHOT.equals(source)) {
+            drawScreenGlyph(canvas, frame.centerX(), frame.centerY());
+        } else {
+            drawSparkGlyph(canvas, frame.centerX(), frame.centerY(), SamTheme.ORB_PALE);
+        }
+        paint.setStyle(Paint.Style.STROKE);
+        paint.setStrokeWidth(1.2f);
+        paint.setColor(SamTheme.LINE);
+        canvas.drawRoundRect(frame, radius, radius, paint);
+        paint.setStyle(Paint.Style.FILL);
+    }
+
+    /** Four-point sparkle: "generated". */
+    private void drawSparkGlyph(Canvas canvas, float cx, float cy, int color) {
+        paint.setShader(null);
+        paint.setStyle(Paint.Style.FILL);
+        paint.setColor(color);
+        speakerCone.rewind();
+        speakerCone.moveTo(cx, cy - 7f);
+        speakerCone.quadTo(cx + 1.2f, cy - 1.2f, cx + 7f, cy);
+        speakerCone.quadTo(cx + 1.2f, cy + 1.2f, cx, cy + 7f);
+        speakerCone.quadTo(cx - 1.2f, cy + 1.2f, cx - 7f, cy);
+        speakerCone.quadTo(cx - 1.2f, cy - 1.2f, cx, cy - 7f);
+        speakerCone.close();
+        canvas.drawPath(speakerCone, paint);
+    }
+
+    /** Monitor outline: a Mac screenshot that is not decoded yet. */
+    private void drawScreenGlyph(Canvas canvas, float cx, float cy) {
+        paint.setStyle(Paint.Style.STROKE);
+        paint.setStrokeWidth(2.2f);
+        paint.setColor(SamTheme.ORB_PALE);
+        canvas.drawRoundRect(cx - 15f, cy - 11f, cx + 15f, cy + 8f, 3f, 3f, paint);
+        canvas.drawLine(cx - 6f, cy + 13f, cx + 6f, cy + 13f, paint);
+        paint.setStyle(Paint.Style.FILL);
     }
 
     private void drawCameraGlyph(Canvas canvas, float cx, float cy) {
@@ -1288,7 +1518,13 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
             // output must not trigger a second spoken reply.
             boolean followUp = !responseAudioSeen;
             toolCallQueue.enqueue(completion -> {
-                String output = genUi.execute(name, raw, SystemClock.elapsedRealtime());
+                cardToolRunning = true;
+                String output;
+                try {
+                    output = genUi.execute(name, raw, SystemClock.elapsedRealtime());
+                } finally {
+                    cardToolRunning = false;
+                }
                 logTool("output " + name + " " + shownTool(name, output, 400));
                 recordTranscript("assistant", "genui." + name, genUi.lastTranscriptLine());
                 sendToolOutput(callId, output, followUp);
@@ -1320,6 +1556,7 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
                         beginModeUpdate(callId, output, sessionUpdate, completion::complete);
                     } else if (image != null) {
                         sendToolOutputWithImage(callId, image);
+                        showToolPicture(name, image);
                         completion.complete();
                     } else {
                         sendToolOutput(callId, output, true);
@@ -1450,6 +1687,7 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
             if (!peer.sendRealtimeEvent(event)) return;
             runtimeClient.acknowledgeCompletion(activity, sessionId, runId);
             responseCoordinator.requestDefault();
+            timeline.hostCompletion(runId, completion.toString());
         } catch (Exception error) {
             Log.w(LOG_TAG, "background completion injection failed", error);
         }
@@ -1529,9 +1767,288 @@ public final class VoicePageView extends View implements AutoCloseable, VoiceSes
             String transcriptText = "[Image handoff: " + (filename == null ? "camera.jpg" : filename) + "]";
             recordTranscript("user", "conversation.item.input_image.completed", transcriptText);
             sessionState.toolOutputSent();
-            transcript = transcriptText;
+            transcript = "Photo sent";
+            addPicture(HostImageCards.CAMERA, image, mimeType, "Photo", "You sent this photo", true);
             invalidate();
             return true;
         } catch (Exception ignored) { return false; }
+    }
+
+    // ------------------------------------------------------------------ pictures
+
+    /**
+     * A picture joins the conversation: an IMAGE transcript item, a host card while live, and
+     * (camera photos) the bytes to the conversation mirror. Mac screenshots are mirrored by the
+     * runtime/bridge (the tool result), so only camera photos are uploaded from here.
+     */
+    private String addPicture(String source, byte[] bytes, String mime, String caption, String cardSubtitle,
+                              boolean cardWhileLive) {
+        String ref = images.put(bytes);
+        boolean camera = HostImageCards.CAMERA.equals(source);
+        if (ref != null) {
+            float aspect = images.aspect(ref, 0.75f);
+            addItem(TranscriptItem.image(camera ? TranscriptItem.USER : TranscriptItem.ASSISTANT, ref, aspect,
+                    caption, source));
+            followTranscript = true;
+            if (cardWhileLive && isAvailable()) {
+                JSONObject card = HostImageCards.cardJson(source, ref, aspect, camera ? "Photo" : "Your Mac",
+                        cardSubtitle, null, false);
+                if (card != null) genUi.showHostCard(card);
+            }
+        }
+        if (camera) {
+            String conversation = timeline.conversationId();
+            String blob = conversation == null ? null : sync.uploadBlob(bytes, mime, conversation);
+            if (blob != null) {
+                // No caption: the camera's file name (IMG_<millis>.jpg) is not words for the user; the
+                // desktop labels camera pictures itself.
+                timeline.image(blob, mime, ref == null ? 0 : images.width(ref), ref == null ? 0 : images.height(ref),
+                        bytes.length, "camera", null);
+            }
+        }
+        invalidate();
+        return ref;
+    }
+
+    /** {@code mac_look}'s screenshot (already sent to the model): into the transcript and a card. */
+    private void showToolPicture(String tool, RealtimeToolImage image) {
+        try {
+            byte[] bytes = android.util.Base64.decode(image.base64, android.util.Base64.DEFAULT);
+            String source = tool != null && tool.startsWith("mac_") ? HostImageCards.MAC_SCREENSHOT : "tool";
+            addPicture(source, bytes, image.mime, "Your Mac", "Screenshot", true);
+        } catch (IllegalArgumentException invalid) {
+            logTool("tool picture not decodable");
+        }
+    }
+
+    /**
+     * A UI generated on the Mac is ready ({@code ui.generated}): a UI transcript item, a host card
+     * ("New: …" pill when no session is live) and, when live, the picture shown to the model with
+     * the caption {@code [Generated UI] <title>: <summary>} so it can talk about it.
+     * {@code image} may be null (fetch failed): the item then has a placeholder. Returns true when
+     * the model got it.
+     */
+    public boolean showGeneratedUi(String artifactId, String title, String summary, byte[] image, String mime) {
+        String ref = image == null ? null : images.put(image);
+        float aspect = ref == null ? 0.75f : images.aspect(ref, 0.75f);
+        boolean known = false;
+        for (TranscriptItem item : messages) {
+            if (item.kind == TranscriptItem.Kind.UI && artifactId != null && artifactId.equals(item.artifactId)) {
+                known = true;
+                break;
+            }
+        }
+        if (!known) {
+            addItem(TranscriptItem.generatedUi(ref, aspect, title, summary, artifactId));
+            followTranscript = true;
+        }
+        boolean live = isAvailable();
+        JSONObject card = HostImageCards.cardJson(HostImageCards.GENERATED_UI, ref, aspect, title, summary,
+                artifactId, !live);
+        if (card != null) genUi.showHostCard(card);
+        invalidate();
+        if (!live || known) return live;
+        String caption = VoiceHostNotes.generatedUi(title, summary);
+        boolean sent = false;
+        try {
+            if (image != null && mime != null && mime.startsWith("image/")) {
+                JSONObject picture = RealtimeToolImage.imageEvent(caption, mime,
+                        android.util.Base64.encodeToString(image, android.util.Base64.NO_WRAP));
+                sent = picture != null && peer != null && peer.sendRealtimeEvent(picture);
+            }
+        } catch (Exception invalid) {
+            sent = false;
+        }
+        if (!sent) sent = sendItem("user", VoiceHostNotes.generatedUiWithoutPicture(title, summary));
+        if (!sent) return false;
+        logTool("generated UI shown to the model (" + (image == null ? 0 : image.length) + " bytes)");
+        responseCoordinator.requestDefault();
+        recordTranscript("assistant", "ui.generated", VoiceHostNotes.flat(
+                "[Generated UI] " + (title == null ? "" : title) + (summary == null || summary.isBlank() ? "" : ": " + summary),
+                600));
+        return true;
+    }
+
+    /** Opens a generated UI's picture full screen (notification tap). False when it is not here. */
+    public boolean openGeneratedUi(String artifactId) {
+        for (int index = messages.size() - 1; index >= 0; index--) {
+            TranscriptItem item = messages.get(index);
+            if (item.kind == TranscriptItem.Kind.UI && artifactId != null && artifactId.equals(item.artifactId)
+                    && item.imageRef != null) {
+                openViewer(item.imageRef, item.detail.isEmpty() ? item.text() : item.text() + ": " + item.detail);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Full-screen picture (480x640, fitted); tap or BACK closes. The chrome is hidden meanwhile. */
+    private void openViewer(String ref, String caption) {
+        if (!GenImages.validRef(ref)) return;
+        viewerRef = ref;
+        viewerBitmap = null;
+        viewerCaption = captionLines(caption);
+        post(() -> immersive.accept(true));
+        int width = Math.max(480, getWidth());
+        int height = Math.max(640, getHeight());
+        images.loadFull(ref, width, height, bitmap -> {
+            if (ref.equals(viewerRef)) {
+                viewerBitmap = bitmap;
+                invalidate();
+            }
+        });
+        invalidate();
+    }
+
+    private void closeViewer() {
+        if (viewerRef == null) return;
+        viewerRef = null;
+        viewerBitmap = null;
+        boolean expanded = cards.dock() == GenCardOverlay.Dock.EXPANDED;
+        post(() -> immersive.accept(expanded));
+        invalidate();
+    }
+
+    /** True while a picture is open full screen. */
+    public boolean viewerOpen() {
+        return viewerRef != null;
+    }
+
+    private String[] captionLines(String caption) {
+        String text = caption == null ? "" : caption.replace('\n', ' ').trim();
+        if (text.isEmpty()) return new String[0];
+        String[] lines = TranscriptLayout.wrap(text, 420f, measurer);
+        if (lines.length <= 2) return lines;
+        return new String[]{lines[0], TranscriptLayout.ellipsize(lines[1] + " " + lines[2], 16f, false, 420f, measurer)};
+    }
+
+    private void drawViewer(Canvas canvas) {
+        paint.setShader(null);
+        paint.setStyle(Paint.Style.FILL);
+        paint.setColor(Color.BLACK);
+        canvas.drawRect(0f, 0f, WIDTH, HEIGHT, paint);
+        Bitmap bitmap = viewerBitmap != null ? viewerBitmap : images.thumb(viewerRef);
+        if (bitmap != null && bitmap.getWidth() > 0 && bitmap.getHeight() > 0) {
+            float scale = Math.min(WIDTH / bitmap.getWidth(), HEIGHT / bitmap.getHeight());
+            float width = bitmap.getWidth() * scale;
+            float height = bitmap.getHeight() * scale;
+            pictureDst.set((WIDTH - width) / 2f, (HEIGHT - height) / 2f, (WIDTH + width) / 2f, (HEIGHT + height) / 2f);
+            canvas.drawBitmap(bitmap, null, pictureDst, bitmapPaint);
+        } else {
+            drawSparkGlyph(canvas, 240f, 300f, SamTheme.ORB_PALE);
+            SamTheme.text(canvas, paint, "Loading…", 240f, 340f, 15f, SamTheme.MUTED, Paint.Align.CENTER, false);
+        }
+        // Close hint (top) and caption (bottom) over soft scrims, so they read on any picture.
+        glass.fillVertical(canvas, paint, 0f, 0f, WIDTH, 84f, 0f, SamTheme.withAlpha(Color.BLACK, 170),
+                SamTheme.withAlpha(Color.BLACK, 0), 84f);
+        scratch.set(184f, 22f, 296f, 58f);
+        glass.draw(canvas, paint, scratch, 18f, false);
+        SamTheme.text(canvas, paint, "Tap to close", 240f, 45f, 13f, SamTheme.INK, Paint.Align.CENTER, false);
+        if (viewerCaption.length > 0) {
+            float scrimTop = HEIGHT - 40f - viewerCaption.length * 24f - 24f;
+            glass.fillVertical(canvas, paint, 0f, scrimTop, WIDTH, HEIGHT, 0f, SamTheme.withAlpha(Color.BLACK, 0),
+                    SamTheme.withAlpha(Color.BLACK, 215), HEIGHT - scrimTop);
+            for (int line = 0; line < viewerCaption.length; line++) {
+                SamTheme.text(canvas, paint, viewerCaption[line], 30f,
+                        HEIGHT - 34f - (viewerCaption.length - 1 - line) * 24f, 16f, SamTheme.INK,
+                        Paint.Align.LEFT, line == 0);
+            }
+        }
+    }
+
+    @Override protected void onVisibilityChanged(View changedView, int visibility) {
+        super.onVisibilityChanged(changedView, visibility);
+        // Another tab or page took the screen: do not leave a full-screen picture behind it.
+        if (visibility != VISIBLE && viewerRef != null) closeViewer();
+    }
+
+    /** GenCardStore events while a conversation is active → card.shown|updated|dismissed. */
+    private void mirrorCard(int event, GenCard card) {
+        if (card == null || !timeline.active()) return;
+        String type = switch (event) {
+            case GenCardStore.EVENT_SHOWN -> "card.shown";
+            case GenCardStore.EVENT_UPDATED -> "card.updated";
+            case GenCardStore.EVENT_DISMISSED -> "card.dismissed";
+            default -> null;
+        };
+        if (type == null) return;
+        String origin = cardToolRunning ? ConversationTimeline.ORIGIN_MODEL
+                : event == GenCardStore.EVENT_DISMISSED && genUi.store().wasDismissedByUser(card.id)
+                ? ConversationTimeline.ORIGIN_USER : ConversationTimeline.ORIGIN_HOST;
+        long wallOffset = System.currentTimeMillis() - SystemClock.elapsedRealtime();
+        timeline.card(type, GenCardCodec.cardToJson(card, wallOffset), origin);
+    }
+
+    // ------------------------------------------------------------------ debug hooks
+
+    /**
+     * Debug builds (VoiceDebugReceiver): adds a picture item exactly like a real one, without a
+     * session or the runtime; the host card is shown even when idle so it can be screenshotted.
+     * {@code source}: camera, mac_screenshot or generated_ui.
+     */
+    public void debugAddPicture(String source, byte[] bytes, String title, String summary, String artifactId) {
+        if (!debuggable || bytes == null) return;
+        if (HostImageCards.GENERATED_UI.equals(source)) {
+            showGeneratedUi(artifactId, title, summary, bytes, "image/jpeg");
+            return;
+        }
+        boolean camera = HostImageCards.CAMERA.equals(source);
+        String ref = addPicture(source, bytes, "image/jpeg", camera ? "Photo" : "Your Mac",
+                summary, false);
+        if (ref != null) {
+            JSONObject card = HostImageCards.cardJson(source, ref, images.aspect(ref, 0.75f),
+                    title, summary, null, false);
+            if (card != null) genUi.showHostCard(card);
+        }
+    }
+
+    /**
+     * Debug: removes every picture from the transcript and every picture card (stack, deck and
+     * Recent), so test pictures never linger for the user. Returns how many cards went.
+     */
+    public int debugClearPictures() {
+        if (!debuggable) return 0;
+        closeViewer();
+        if (!inSession()) {
+            messages.removeIf(item -> item.kind != TranscriptItem.Kind.TEXT);
+            assistantMessage = -1;
+        }
+        GenCardStore store = genUi.store();
+        int removed = 0;
+        for (GenCard card : store.activeCards()) {
+            if (hasPicture(card) && store.dismiss(card.id, true)) removed++;
+        }
+        for (GenCard card : store.recent()) {
+            if (hasPicture(card) && store.removeRecent(card.id)) removed++;
+        }
+        invalidate();
+        return removed;
+    }
+
+    private static boolean hasPicture(GenCard card) {
+        for (com.resonolabs.feature.genui.GenBlock block : card.body) {
+            if (block.type == com.resonolabs.feature.genui.GenBlock.Type.IMAGE) return true;
+        }
+        return false;
+    }
+
+    /** Debug: open or close the transcript; open the newest picture full screen. */
+    public void debugTranscript(boolean open, boolean viewer) {
+        if (!debuggable) return;
+        transcriptOpen = open;
+        followTranscript = true;
+        if (viewer) {
+            for (int index = messages.size() - 1; index >= 0; index--) {
+                TranscriptItem item = messages.get(index);
+                if (item.hasPicture()) {
+                    openViewer(item.imageRef, item.kind == TranscriptItem.Kind.UI && !item.detail.isEmpty()
+                            ? item.text() + ": " + item.detail : item.text());
+                    break;
+                }
+            }
+        } else {
+            closeViewer();
+        }
+        invalidate();
     }
 }

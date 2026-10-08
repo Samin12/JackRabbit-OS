@@ -1,7 +1,10 @@
 package com.resonolabs.feature.genui;
 
+import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Paint;
+import android.graphics.Path;
+import android.graphics.Rect;
 import android.graphics.RectF;
 
 import com.resonolabs.ui.design.GlassPainter;
@@ -20,6 +23,10 @@ public final class GenCardRenderer {
     final GlassPainter glass = new GlassPainter();
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final RectF arc = new RectF();
+    private final Paint bitmapPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+    private final Path clip = new Path();
+    private final RectF dst = new RectF();
+    private final Rect src = new Rect();
     private final char[] clock = new char[12];
     private final char[] counter = new char[8];
 
@@ -248,7 +255,74 @@ public final class GenCardRenderer {
                 paint.setColor(GenColors.LINE);
                 canvas.drawRect(x, top, x + inner, top + 1f, paint);
             }
+            case IMAGE -> drawImage(canvas, box, block, x, inner, top);
         }
+    }
+
+    /**
+     * A host picture fitted (never cropped) into its box, centered, in a rounded frame that hugs
+     * it; a placeholder of the same shape while the thumbnail decodes.
+     */
+    private void drawImage(Canvas canvas, GenCardLayout.Box box, GenBlock block, float x, float inner, float top) {
+        float h = box.height;
+        float radius = 16f;
+        GenImages images = GenImages.peek();
+        Bitmap bitmap = images == null ? null : images.thumb(block.ref);
+        boolean ready = bitmap != null && bitmap.getWidth() > 0 && bitmap.getHeight() > 0;
+        float aspect = ready ? bitmap.getHeight() / (float) bitmap.getWidth() : block.aspect;
+        float dw = Math.min(inner, h / Math.max(0.01f, aspect));
+        float dh = Math.min(h, dw * aspect);
+        float left = x + (inner - dw) / 2f;
+        float imageTop = top + (h - dh) / 2f;
+        dst.set(left, imageTop, left + dw, imageTop + dh);
+        paint.setShader(null);
+        paint.setStyle(Paint.Style.FILL);
+        paint.setColor(GenColors.withAlpha(GenColors.BACKGROUND, 200));
+        canvas.drawRoundRect(dst, radius, radius, paint);
+        if (ready) {
+            drawRounded(canvas, bitmap, null, dst, radius);
+        } else {
+            icons.draw(canvas, paint, GenSchema.ICON_CHART, dst.centerX(), dst.centerY(), 30f,
+                    GenColors.withAlpha(GenColors.ORB_PALE, 140), 2f);
+        }
+        paint.setStyle(Paint.Style.STROKE);
+        paint.setStrokeWidth(1.2f);
+        paint.setColor(GenColors.LINE);
+        canvas.drawRoundRect(dst, radius, radius, paint);
+        paint.setStyle(Paint.Style.FILL);
+    }
+
+    /** {@code bitmap} (or its {@code source} part) into {@code target} with rounded corners. */
+    private void drawRounded(Canvas canvas, Bitmap bitmap, Rect source, RectF target, float radius) {
+        clip.rewind();
+        clip.addRoundRect(target.left, target.top, target.right, target.bottom, radius, radius, Path.Direction.CW);
+        canvas.save();
+        canvas.clipPath(clip);
+        canvas.drawBitmap(bitmap, source, target, bitmapPaint);
+        canvas.restore();
+    }
+
+    /** Square, center-cropped thumbnail of a card's picture for the pill's leading slot. */
+    private boolean drawPillThumb(Canvas canvas, GenCard card, float cx, float cy, float size) {
+        GenBlock image = GenCardLayout.firstImage(card);
+        GenImages images = image == null ? null : GenImages.peek();
+        Bitmap bitmap = images == null ? null : images.thumb(image.ref);
+        if (bitmap == null || bitmap.getWidth() <= 0 || bitmap.getHeight() <= 0) return false;
+        int bw = bitmap.getWidth();
+        int bh = bitmap.getHeight();
+        int side = Math.min(bw, bh);
+        int left = (bw - side) / 2;
+        int top = (bh - side) / 2;
+        src.set(left, top, left + side, top + side);
+        float half = size / 2f;
+        dst.set(cx - half, cy - half, cx + half, cy + half);
+        drawRounded(canvas, bitmap, src, dst, 12f);
+        paint.setStyle(Paint.Style.STROKE);
+        paint.setStrokeWidth(1.2f);
+        paint.setColor(GenColors.withAlpha(GenColors.ORB_PALE, 90));
+        canvas.drawRoundRect(dst, 12f, 12f, paint);
+        paint.setStyle(Paint.Style.FILL);
+        return true;
     }
 
     private void drawStat(Canvas canvas, GenCardLayout.Box box, GenBlock block, float x, float top) {
@@ -557,6 +631,8 @@ public final class GenCardRenderer {
             fonts.pillVerb.setTextAlign(Paint.Align.CENTER);
             canvas.drawText(l.verb, 14f + l.verbWidth / 2f, mid + 5.5f, fonts.pillVerb);
             fonts.pillVerb.setTextAlign(Paint.Align.LEFT);
+        } else if (drawPillThumb(canvas, card, 12f + 22f, mid, 46f)) {
+            // a picture card leads with its thumbnail
         } else {
             float cx = 12f + 22f;
             paint.setColor(GenColors.withAlpha(accent, 60));
