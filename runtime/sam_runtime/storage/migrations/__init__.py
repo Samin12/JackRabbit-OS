@@ -44,6 +44,7 @@ from .v041_goal_verification_contract import apply as apply_v041
 from .v042_domain_memory import apply as apply_v042
 from .v043_t3_and_announcements import apply as apply_v043
 from .v044_heptabase_journal import apply as apply_v044
+from .v045_conversation_sync import apply as apply_v045
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,5 +94,6 @@ MIGRATIONS = (
     Migration(42, apply_v042),
     Migration(43, apply_v043),
     Migration(44, apply_v044),
+    Migration(45, apply_v045),
 )
 LATEST_VERSION = MIGRATIONS[-1].version

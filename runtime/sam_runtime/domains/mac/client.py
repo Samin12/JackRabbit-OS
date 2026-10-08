@@ -144,8 +144,11 @@ class MacControlClient:
     def act(self, body: dict[str, object]) -> dict[str, object]:
         return self._request("POST", "/v1/mac/act", body=body, timeout=ACT_TIMEOUT_SECONDS)
 
-    def screenshot(self, app: str | None = None, max_side: int = 1024) -> dict[str, object]:
+    def screenshot(self, app: str | None = None, max_side: int = 1024, *,
+                   conversation_id: str | None = None) -> dict[str, object]:
         query = f"?max={int(max_side)}" + ("&app=" + quote(app, safe="") if app else "")
+        if conversation_id:
+            query += "&conversation=" + quote(conversation_id, safe="")
         value = self._request("GET", "/v1/mac/screenshot" + query, timeout=SCREENSHOT_TIMEOUT_SECONDS)
         if not isinstance(value.get("base64"), str) or not str(value.get("mime", "")).startswith("image/"):
             raise MacFailure("bad_screenshot", "The Mac sent an unreadable screenshot.")
@@ -190,6 +193,9 @@ class MacControlClient:
     def _result(self, response: HttpResponse) -> dict[str, object]:
         value = response.json()
         if 200 <= response.status < 300:
+            note = getattr(self._store, "note_reachable", None)
+            if callable(note):
+                note()  # e.g. conversation sync stops waiting out a backoff
             return value
         if response.status == 401:
             raise MacFailure("mac_unauthorized", _FRIENDLY["mac_unauthorized"], status=401)

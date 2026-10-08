@@ -13,6 +13,7 @@ from sam_runtime.agents import AgentAudience
 from sam_runtime.application import RuntimeApplication
 from sam_runtime.config import RuntimeConfig
 from sam_runtime.domains.heptabase_journal import JOURNAL_TOOL_SET
+from sam_runtime.storage.migrations import LATEST_VERSION
 
 TOKEN = "a" * 43
 
@@ -51,7 +52,8 @@ class HeptabaseApplicationWiringTest(unittest.TestCase):
             application = RuntimeApplication(config, credential_bridge=_Bridge())
             application.start()
             try:
-                self.assertEqual(44, application.health()["database"]["migrationVersion"])
+                self.assertEqual(LATEST_VERSION, application.health()["database"]["migrationVersion"])
+                self.assertGreaterEqual(LATEST_VERSION, 45)
                 binding = application._audience_router.binding_for(JOURNAL_TOOL_SET)  # noqa: SLF001
                 self.assertEqual(AgentAudience.VOICE, binding.audience)
                 names = {item["name"] for item in application._tools.realtime_definitions()}  # noqa: SLF001

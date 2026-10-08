@@ -94,6 +94,8 @@ from .domains.mac import MAC_TOOL_SET, MacControlClient, MacVoiceContext, regist
 from .api.mac_routes import MacRoutes
 from .domains.heptabase_journal import JOURNAL_TOOL_SET, HeptabaseJournalService, register_journal_tools
 from .api.heptabase_routes import HeptabaseRoutes
+from .domains.conversation_sync import ConversationSyncObserver, ConversationSyncService
+from .api.conversation_sync_routes import ConversationSyncRoutes
 
 
 class RuntimeApplication:
@@ -191,6 +193,10 @@ class RuntimeApplication:
             connections=self._connections,
         )
         self._heptabase_routes = HeptabaseRoutes(self._heptabase_journal)
+        # Conversation sync to the Mac app: same bridge pairing as the journal and Mac control.
+        self._conversation_sync = ConversationSyncService(self._database, self._heptabase_journal.bridge_store)
+        self._tools.add_invocation_observer(ConversationSyncObserver(self._conversation_sync))
+        self._conversation_sync_routes = ConversationSyncRoutes(self._conversation_sync)
         register_journal_tools(self._tools, self._heptabase_journal)
         register_mail_tools(self._tools, self._mail_repository, self._mail_service)
         register_web_search(self._tools, OpenAIWebSearch(credentials, provider_settings, self._subscription))
@@ -207,8 +213,9 @@ class RuntimeApplication:
         # Mac control from Voice: the journal's Mac bridge (same URL and sealed token) plus T3 for mac_task.
         self._mac = MacControlClient(self._heptabase_journal.bridge_store)
         self._mac_routes = MacRoutes(self._mac)
-        register_mac_tools(self._tools, self._mac, t3=self._t3, placement=self._t3_placement,
-                           owner_name=lambda: self._profile.profile().display_name)
+        mac_tools = register_mac_tools(self._tools, self._mac, t3=self._t3, placement=self._t3_placement,
+                                       owner_name=lambda: self._profile.profile().display_name)
+        mac_tools.set_screenshot_conversation(self._conversation_sync.screenshot_conversation)
         self._background_agent_runs = AgentRunRepository(self._database)
         self._background_agent_settings = BackgroundAgentSettingsRepository(self._database)
         self._run_workspaces = RunWorkspaceRegistry(config.background_runs_path)
@@ -500,6 +507,7 @@ class RuntimeApplication:
             announcements=self._announcement_routes,
             heptabase=self._heptabase_routes,
             mac=self._mac_routes,
+            conversation_sync=self._conversation_sync_routes,
         )
         self._server.start()
         self._background_agent.start()
@@ -507,6 +515,7 @@ class RuntimeApplication:
         self._calendar_scheduler.start()
         self._t3_sync.start()
         self._heptabase_journal.start()
+        self._conversation_sync.start()
         self._events.publish(
             "runtime.ready",
             {"status": "ready", "startCount": int(record.value)},
@@ -520,6 +529,7 @@ class RuntimeApplication:
         self._calendar_scheduler.stop()
         self._t3_sync.stop()
         self._heptabase_journal.stop()
+        self._conversation_sync.stop()
         if self._server is not None:
             self._server.stop()
             self._server = None

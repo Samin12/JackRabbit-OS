@@ -141,6 +141,28 @@ class BridgeStore:
         self._lock = threading.Lock()
         self._config: object = _UNSET
         self._token: tuple[str, str] | None = None
+        self._listeners: tuple[Callable[[], None], ...] = ()
+        self._generation = 0  # bumped by every save/clear: "the pairing changed"
+
+    @property
+    def generation(self) -> int:
+        with self._lock:
+            return self._generation
+
+    def add_listener(self, callback: Callable[[], None]) -> None:
+        """Called (on the caller's thread, errors swallowed) when the bridge is (re)configured or
+        answers a request: lets other bridge users (conversation sync) retry at once."""
+        with self._lock:
+            self._listeners = (*self._listeners, callback)
+
+    def note_reachable(self) -> None:
+        with self._lock:
+            listeners = self._listeners
+        for callback in listeners:
+            try:
+                callback()
+            except Exception:
+                _LOG.warning("heptabase.bridge.listener_failed")
 
     def config(self) -> BridgeConfig | None:
         with self._lock:
@@ -194,6 +216,8 @@ class BridgeStore:
         with self._lock:
             self._config = BridgeConfig(url, configured_at)
             self._token = (url, token)
+            self._generation += 1
+        self.note_reachable()
 
     def clear(self) -> None:
         self._credentials.delete(BRIDGE_CONNECTION_ID)
@@ -204,6 +228,7 @@ class BridgeStore:
         with self._lock:
             self._config = None
             self._token = None
+            self._generation += 1
 
     def status(self) -> dict[str, object]:
         raw = self._values().get(_STATUS_KEY)
@@ -220,6 +245,8 @@ class BridgeStore:
         always stamps ``checkedAt``."""
         if self.config() is None:
             return
+        if "lastOkAt" in changes or (changes.get("reachable") is True and changes.get("lastError", "") is None):
+            self.note_reachable()  # a real success only (a 401 or 5xx also says reachable=True)
         current = self.status()
         merged = {**current, **changes, "checkedAt": _now()}
         if not force and "lastOkAt" not in changes and \
