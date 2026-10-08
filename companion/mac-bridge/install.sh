@@ -15,11 +15,17 @@
 # CLI to record instead of searching PATH, ~/.local/bin, /opt/homebrew/bin and /usr/local/bin), SAMRABBIT_T3_CLI /
 # SAMRABBIT_T3_URL (a stand-in T3 CLI and server for the one-time T3 pairing; without SAMRABBIT_T3_CLI the pairing
 # is skipped whenever SAMRABBIT_SKIP_LAUNCHCTL=1, so a test install never pairs with the real T3 Code),
-# SAMRABBIT_SKIP_T3_PAIR=1.
+# SAMRABBIT_SKIP_T3_PAIR=1, SAMRABBIT_SKIP_TRANSCRIBE_BUILD=1 (keep whatever transcription helper is installed),
+# SAMRABBIT_SWIFTC (the Swift compiler for that helper; default xcrun's swiftc), SAMRABBIT_TRANSCRIBE_PREPARE=1 (a
+# test install downloads a missing speech model too; a real install always does).
 #
 # The iPhone / Apple Watch API (/v1/mobile/*) is part of the bridge. The bridge pairs with T3 Code by itself (its
 # own session, "SamRabbit bridge", token in ~/.config/samrabbit/t3-token); this script does that once. To pair a
 # phone: SamRabbit (desktop app) > Pair iPhone..., or companion/mac-bridge/pair-phone.sh.
+#
+# Speech to text for the watch and the phone (POST /v1/mobile/transcribe) uses a small Swift helper built here from
+# transcribe/ with Xcode or the Command Line Tools (macOS's on-device SpeechAnalyzer, macOS 26+). Without it that one
+# route answers transcribe_unavailable and everything else works; this script prints "transcription: on|off (...)".
 set -euo pipefail
 
 LABEL=com.samrabbit.bridge
@@ -111,11 +117,106 @@ install -m 0644 "$SOURCE_DIR/samrabbit_genui.py" "$APP_DIR/samrabbit_genui.py"
 install -m 0644 "$SOURCE_DIR/samrabbit_calendar.py" "$APP_DIR/samrabbit_calendar.py"
 install -m 0644 "$SOURCE_DIR/samrabbit_mobile.py" "$APP_DIR/samrabbit_mobile.py"  # iPhone / Apple Watch API
 install -m 0644 "$SOURCE_DIR/samrabbit_t3.py" "$APP_DIR/samrabbit_t3.py"          # its T3 Code client
+install -m 0644 "$SOURCE_DIR/samrabbit_transcribe.py" "$APP_DIR/samrabbit_transcribe.py"  # speech to text
 rm -rf "$APP_DIR/genui"; mkdir -p "$APP_DIR/genui"
 for asset in "$SOURCE_DIR"/genui/*; do install -m 0644 "$asset" "$APP_DIR/genui/"; done
 install -m 0644 "$SOURCE_DIR/samrabbit_app.py" "$APP_DIR/samrabbit_app.py"  # desktop web UI at /app/
 touch "$LOG_FILE"; chmod 600 "$LOG_FILE"
 if [ "$(stat -f %z "$LOG_FILE" 2>/dev/null || echo 0)" -gt 5242880 ]; then : > "$LOG_FILE"; fi
+
+# 2b. The speech-to-text helper (samrabbit-transcribe next to the bridge), rebuilt only when its source or the
+#     compiler changed. A failed build keeps the helper that is already there. Never fails the install.
+TRANSCRIBE_SRC="$SOURCE_DIR/transcribe"
+TRANSCRIBE_BIN="$APP_DIR/samrabbit-transcribe"
+TRANSCRIBE_OFF=""
+if [ "${SAMRABBIT_SKIP_TRANSCRIBE_BUILD:-0}" = 1 ]; then
+  [ -x "$TRANSCRIBE_BIN" ] || TRANSCRIBE_OFF="build skipped: SAMRABBIT_SKIP_TRANSCRIBE_BUILD=1"
+else
+  SWIFTC=()
+  if [ -n "${SAMRABBIT_SWIFTC:-}" ]; then
+    SWIFTC=("$SAMRABBIT_SWIFTC")
+  elif xcode-select -p >/dev/null 2>&1 && xcrun --sdk macosx --find swiftc >/dev/null 2>&1; then
+    SWIFTC=(xcrun --sdk macosx swiftc)  # xcode-select first: a bare xcrun would offer to install the tools
+  fi
+  if [ ${#SWIFTC[@]} -eq 0 ]; then
+    [ -x "$TRANSCRIBE_BIN" ] || TRANSCRIBE_OFF="no Swift compiler: install Xcode or the Command Line Tools, then run install.sh again"
+  else
+    STAMP=$({ cat "$TRANSCRIBE_SRC/samrabbit_transcribe.swift" "$TRANSCRIBE_SRC/Info.plist"; "${SWIFTC[@]}" --version 2>&1 || true; } \
+      | shasum -a 256 | cut -c1-64)
+    if [ -x "$TRANSCRIBE_BIN" ] && [ "$(cat "$TRANSCRIBE_BIN.build" 2>/dev/null || true)" = "$STAMP" ]; then
+      echo "transcription helper is up to date"
+    else
+      BUILD_DIR=$(mktemp -d "${TMPDIR:-/tmp}/samrabbit-transcribe.XXXXXX")
+      if "${SWIFTC[@]}" -O -parse-as-library "$TRANSCRIBE_SRC/samrabbit_transcribe.swift" -o "$BUILD_DIR/samrabbit-transcribe" \
+          -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker "$TRANSCRIBE_SRC/Info.plist" \
+          >"$BUILD_DIR/build.log" 2>&1 && [ -s "$BUILD_DIR/samrabbit-transcribe" ]; then
+        /usr/bin/codesign -s - -f -i com.samrabbit.transcribe "$BUILD_DIR/samrabbit-transcribe" >/dev/null 2>&1 \
+          || echo "install.sh: warning: could not sign the transcription helper" >&2
+        chmod 0755 "$BUILD_DIR/samrabbit-transcribe"
+        mv -f "$BUILD_DIR/samrabbit-transcribe" "$TRANSCRIBE_BIN.tmp"
+        mv -f "$TRANSCRIBE_BIN.tmp" "$TRANSCRIBE_BIN"  # a new file, never rewritten in place (code signing)
+        echo "$STAMP" > "$TRANSCRIBE_BIN.build"
+        echo "built the transcription helper"
+      else
+        echo "install.sh: warning: the transcription helper did not build (it needs the macOS 26 SDK or newer):" >&2
+        tail -n 5 "$BUILD_DIR/build.log" | sed 's/^/install.sh:   /' >&2
+        [ -x "$TRANSCRIBE_BIN" ] || TRANSCRIBE_OFF="the helper did not build; it needs the macOS 26 SDK or newer"
+      fi
+      rm -rf "$BUILD_DIR"
+    fi
+  fi
+fi
+# Is it usable? A real install downloads a missing language model (en-US) once; then one clip that `say -o` writes
+# to a file (nothing is played) is transcribed as a check. Prints "transcription: on (...)" or "off (reason)".
+if [ -n "$TRANSCRIBE_OFF" ]; then
+  echo "transcription: off ($TRANSCRIBE_OFF)"
+else
+  PREPARE=1
+  [ "${SAMRABBIT_SKIP_LAUNCHCTL:-0}" = 1 ] && PREPARE=${SAMRABBIT_TRANSCRIBE_PREPARE:-0}
+  "$PYTHON" -I - "$TRANSCRIBE_BIN" "$PREPARE" <<'EOF' || echo "transcription: off (the check failed)"
+import json, os, subprocess, sys, tempfile, time
+helper, prepare = sys.argv[1], sys.argv[2] == "1"
+def run(*args, timeout):
+    try:
+        done = subprocess.run([helper, *args], stdin=subprocess.DEVNULL, capture_output=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "code": "timeout"}
+    except OSError:
+        return {"ok": False, "code": "not_runnable"}
+    lines = [line for line in done.stdout.decode("utf-8", "replace").splitlines() if line.strip()]
+    try:
+        value = json.loads(lines[-1]) if lines else {}
+    except ValueError:
+        value = {}
+    return value if isinstance(value, dict) else {}
+check = run("--check", timeout=60)
+if check.get("reason") == "model_missing" and prepare:
+    print("downloading the speech model for en-US (once; it can take a few minutes)", flush=True)
+    if not run("--prepare", timeout=900).get("ok"):
+        print("install.sh: warning: the speech model did not download; the bridge tries again on the first recording",
+              file=sys.stderr)
+    check = run("--check", timeout=60)
+if not check.get("available"):
+    print(f"transcription: off ({check.get('reason') or check.get('code') or 'the helper did not answer'})")
+    sys.exit(0)
+detail = f"{check.get('engine')}, {check.get('locale')}"
+with tempfile.TemporaryDirectory() as folder:
+    clip = os.path.join(folder, "check.wav")
+    try:
+        subprocess.run(["/usr/bin/say", "-o", clip, "--data-format=LEI16@16000", "SamRabbit can hear you."],
+                       stdin=subprocess.DEVNULL, capture_output=True, timeout=60, check=True)
+    except (OSError, subprocess.SubprocessError):
+        clip = ""
+    if clip:
+        started = time.monotonic()
+        heard = run("--file", clip, "--locale", "en-US", timeout=45)
+        if not (heard.get("ok") and heard.get("text")):
+            print(f"transcription: off (a test clip failed: {heard.get('code') or 'no answer'})")
+            sys.exit(0)
+        detail += f", a test clip took {time.monotonic() - started:.1f} s"
+print(f"transcription: on ({detail})")
+EOF
+fi
 
 # 3. LaunchAgent plist (written with plistlib so every path is escaped correctly).
 "$PYTHON" - "$PLIST" "$LABEL" "$PYTHON" "$APP_DIR/samrabbit_bridge.py" "$HOST" "$PORT" "$TOKEN_FILE" "$LOG_FILE" \
@@ -236,9 +337,11 @@ print(f"calendar changes: {'on' if cal.get('available') else 'OFF'} (Composio CL
 phone = health.get("mobile") or {}
 t3_state = phone.get("t3") or {}
 devices = int(phone.get("devices") or 0)
+voice = phone.get("transcribe") or {}
 print(f"mobile: {'on' if phone.get('available') else 'OFF'} (T3 {'paired' if t3_state.get('paired') else 'not paired'}"
       f"{'' if t3_state.get('ok', True) or not t3_state.get('paired') else ', T3 not answering'}, "
-      f"{devices} device{'' if devices == 1 else 's'})")
+      f"{devices} device{'' if devices == 1 else 's'}, "
+      f"transcription {'on' if voice.get('available') else 'off: ' + str(voice.get('reason'))})")
 EOF
 IP=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || echo "<this Mac's IP>")
 echo "Bridge URL: http://$IP:$PORT"

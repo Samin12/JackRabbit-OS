@@ -34,6 +34,7 @@ import samrabbit_genui as genui  # noqa: E402
 import samrabbit_mac as mac  # noqa: E402
 import samrabbit_mobile as mobile  # noqa: E402
 import samrabbit_t3 as t3  # noqa: E402
+import samrabbit_transcribe as transcribe  # noqa: E402
 from fake_t3 import FakeT3  # noqa: E402
 from test_genui import FakeRenderer  # noqa: E402
 from test_mac_control import UID, _console_user, _ioreg_root, base_state  # noqa: E402
@@ -207,9 +208,11 @@ class MobileBase(unittest.TestCase):
                                    t3.T3Cli(str(self.t3_cli)), clock=self.clock.dt, monotonic=self.clock.monotonic)
             hub = t3.T3Hub(session, monotonic=self.clock.monotonic, clock=self.clock.dt)
         self.hub = hub
+        self.transcriber = self.make_transcriber(bin_dir)
         self.service = mobile.MobileService(devices_file=str(self.devices_file), t3_hub=hub,
                                             timezone_name="America/New_York", google_account="owner@example.com",
                                             hosts=["192.168.1.50"], bridge_version=bridge.VERSION,
+                                            transcriber=self.transcriber,
                                             clock=self.clock.time, monotonic=self.clock.monotonic)
         self.log = io.StringIO()
         handler = logging.StreamHandler(self.log)
@@ -225,6 +228,11 @@ class MobileBase(unittest.TestCase):
         self.addCleanup(self._stop)
         self.port = self.server.server_address[1]
         self.base = f"http://127.0.0.1:{self.port}"
+
+    def make_transcriber(self, bin_dir: Path) -> Any:
+        """Speech to text: no helper here (deterministic, whatever is built in the checkout); test_transcribe.py
+        gives its tests a fake one."""
+        return transcribe.Transcriber(str(bin_dir / "samrabbit-transcribe-not-built"))
 
     def _stop(self) -> None:
         self.server.shutdown()
@@ -466,6 +474,7 @@ class PairingTest(MobileBase):
                   ("POST", "/v1/mobile/journal", {"text": NOTE}), ("GET", "/v1/mobile/mac/state", None),
                   ("POST", "/v1/mobile/mac/open", {"app": "Calculator"}), ("GET", "/v1/mobile/mac/screenshot", None),
                   ("POST", "/v1/mobile/devices/child", {"name": "w"}), ("POST", "/v1/mobile/unpair", {}),
+                  ("POST", "/v1/mobile/transcribe", None),
                   ("GET", "/v1/mobile/nope", None), ("PUT", "/v1/mobile/summary", None)]
         before_t3 = len(self.fake_t3.requests)
         for method, path, body in routes:
@@ -484,12 +493,14 @@ class PairingTest(MobileBase):
     def test_health_reports_the_mobile_section(self) -> None:
         status, health = self.call("GET", "/health", token=TOKEN)
         self.assertEqual(200, status)
-        self.assertEqual({"available": True, "devices": 0, "t3": {"paired": False, "ok": False}}, health["mobile"])
+        self.assertEqual({"available": True, "devices": 0, "t3": {"paired": False, "ok": False},
+                          "transcribe": {"available": False, "reason": "helper_missing"}}, health["mobile"])
         phone = self.pair()["token"]
         self.call("GET", "/v1/mobile/t3/threads", token=phone)
         self.server._health = None  # noqa: SLF001
         health = self.call("GET", "/health", token=TOKEN)[1]
-        self.assertEqual({"available": True, "devices": 1, "t3": {"paired": True, "ok": True}}, health["mobile"])
+        self.assertEqual({"available": True, "devices": 1, "t3": {"paired": True, "ok": True},
+                          "transcribe": {"available": False, "reason": "helper_missing"}}, health["mobile"])
 
 
 # ====================================================================== summary

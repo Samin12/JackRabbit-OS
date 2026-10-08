@@ -24,6 +24,9 @@ Routes (CONTRACTS-WAVE4 "Mobile API"):
 * ``POST /v1/mobile/journal {text}``: ``**HH:MM** <text>`` appended to today's Heptabase journal (explicit notes only;
   codes, passwords and API keys in the words are redacted first, as on the R1).
 * Mac: ``GET /v1/mobile/mac/state``, ``POST /v1/mobile/mac/open {app|url}``, ``GET /v1/mobile/mac/screenshot`` (JPEG).
+* ``POST /v1/mobile/transcribe[?lang=en-US]``: a raw recording (``audio/mp4``, ``audio/x-m4a``, ``audio/wav`` or
+  ``audio/aac``; at most 2 MiB and 90 s) turned into words on the Mac (``samrabbit_transcribe``, on-device macOS
+  speech recognition) -> ``{text, durationMs, engine, locale}``. The audio and the words are never logged or kept.
 
 Errors are ``{"error": {"code", "message", "retryable"}}``. Times in the routes this module answers itself are ISO
 8601 (``...Z`` or with the calendar's offset); the reused sync routes keep their epoch milliseconds. Tokens, codes,
@@ -66,6 +69,11 @@ try:  # generated UIs (only its document policy is needed here)
     import samrabbit_genui as _genui  # type: ignore
 except Exception:  # noqa: BLE001
     _genui = None  # type: ignore[assignment]
+
+try:  # speech to text for the watch and the phone; mobile works without it (transcribe then answers 503)
+    import samrabbit_transcribe as _transcribe  # type: ignore
+except Exception:  # noqa: BLE001
+    _transcribe = None  # type: ignore[assignment]
 
 import samrabbit_t3 as t3  # noqa: E402
 
@@ -646,6 +654,7 @@ ROUTES: Tuple[_Route, ...] = (
     _Route(r"/v1/mobile/mac/state", "/v1/mobile/mac/state", {"GET": ("mac_state", DEVICE)}),
     _Route(r"/v1/mobile/mac/open", "/v1/mobile/mac/open", {"POST": ("mac_open", DEVICE)}),
     _Route(r"/v1/mobile/mac/screenshot", "/v1/mobile/mac/screenshot", {"GET": ("mac_screenshot", DEVICE)}),
+    _Route(r"/v1/mobile/transcribe", "/v1/mobile/transcribe", {"POST": ("transcribe", DEVICE)}),
 )
 
 
@@ -673,8 +682,12 @@ class MobileService:
                  desktop_token_file: Optional[str] = None,
                  timezone_name: Optional[str] = None, google_account: Optional[str] = None,
                  hosts: Optional[List[str]] = None, bridge_version: str = "",
+                 transcriber: Any = None, transcribe_helper: Optional[str] = None,
                  clock: Callable[[], float] = time.time, monotonic: Callable[[], float] = time.monotonic) -> None:
         self.devices = DeviceRegistry(devices_file, clock=clock)
+        # Speech to text (POST /v1/mobile/transcribe): the Swift helper install.sh builds next to the bridge.
+        self.transcriber = transcriber if transcriber is not None else (
+            _transcribe.Transcriber(transcribe_helper) if _transcribe is not None else None)
         # The desktop app's token, for pairing and the device list when the sync store is off (with it on, the
         # sync service's own token file is used, which the bridge configures the same way).
         self._desktop_token = _sync.DesktopToken(desktop_token_file or _sync.DEFAULT_DESKTOP_TOKEN_FILE) \
@@ -724,6 +737,8 @@ class MobileService:
         if self._worker is not None:
             self._worker.join(timeout=3.0)
             self._worker = None
+        if self.transcriber is not None:
+            self.transcriber.close()
 
     @staticmethod
     def handles(route: str) -> bool:
@@ -742,7 +757,18 @@ class MobileService:
         status = self.t3.status() if self.t3 is not None else {"paired": False, "ok": False}
         return {"available": True, "devices": self.devices.count(),
                 "t3": {"paired": bool(status.get("paired")), "ok": bool(status.get("ok")),
-                       **({"reason": status["lastError"]} if status.get("lastError") else {})}}
+                       **({"reason": status["lastError"]} if status.get("lastError") else {})},
+                "transcribe": self.transcribe_status()}
+
+    def transcribe_status(self) -> Dict[str, Any]:
+        """``{available, engine?, locale?, reason?}``: whether the Mac can turn a recording into words."""
+        if self.transcriber is None:
+            return {"available": False, "reason": "helper_missing"}
+        try:
+            return dict(self.transcriber.status())
+        except Exception:  # noqa: BLE001 - transcription must never break the health check
+            _LOG.warning("transcription status failed")
+            return {"available": False, "reason": "check_failed"}
 
     # ------------------------------------------------------------------ HTTP
     def serve(self, handler: Any, method: str, route: str) -> Tuple[int, Optional[str]]:
@@ -1461,6 +1487,29 @@ class MobileService:
         return 200, _Bytes(data, str(shot.get("mime") or "image/jpeg"),
                            {"X-Image-Width": str(shot.get("width") or 0), "X-Image-Height": str(shot.get("height") or 0)})
 
+    # ------------------------------------------------------------------ voice
+    def _r_transcribe(self, handler: Any, _params: Dict[str, str], _device: Any, _route: str) -> Tuple[int, Any]:
+        """A recording from the watch or the phone (the raw body) -> ``{text, durationMs, engine, locale}``. Checked
+        before anything runs: the Content-Type, ``?lang=``, the size (2 MiB), the container's own bytes and its
+        length (90 s). The audio lives only in a private temp file while the helper runs; nothing is logged."""
+        if self.transcriber is None or _transcribe is None:
+            raise MobileError(503, "transcribe_unavailable", "Transcription is not installed on the Mac bridge.")
+        declared = _transcribe.content_kind(handler.headers.get("Content-Type"))
+        language = _transcribe.normalize_language(_one(_query(handler), "lang"))
+        length = _length(handler, _transcribe.MAX_AUDIO_BYTES)
+        if not length:
+            raise _bad("invalid_audio", "Send the recording as the request body.")
+        try:
+            data = handler.rfile.read(length)
+        except OSError:  # includes the socket timeout
+            data = b""
+        if len(data) != length:
+            raise MobileError(400, "invalid_audio", "The recording did not arrive completely.", retryable=True)
+        kind, _seconds = _transcribe.check_audio(data, declared)
+        result = self.transcriber.transcribe(data, kind, language)
+        _LOG.info("mobile transcription done (%s, %d ms of audio)", result.get("engine"), result.get("durationMs", 0))
+        return 200, result
+
 
 # --------------------------------------------------------------------------- HTTP plumbing
 
@@ -1512,7 +1561,7 @@ def _int(query: Dict[str, List[str]], key: str, default: int, low: int, high: in
     return max(low, min(high, int(value)))
 
 
-def _length(handler: Any) -> int:
+def _length(handler: Any, limit: int = MAX_BODY_BYTES) -> int:
     if handler.headers.get("Transfer-Encoding"):
         raise MobileError(411, "length_required", "Send a Content-Length body.")
     raw = handler.headers.get("Content-Length")
@@ -1522,8 +1571,8 @@ def _length(handler: Any) -> int:
         length = int(raw)
     except ValueError:
         raise MobileError(411, "length_required", "Send a Content-Length body.") from None
-    if length < 0 or length > MAX_BODY_BYTES:
-        raise MobileError(413, "body_too_large", f"The body must be at most {MAX_BODY_BYTES} bytes.")
+    if length < 0 or length > limit:
+        raise MobileError(413, "body_too_large", f"The body must be at most {limit} bytes.")
     return length
 
 

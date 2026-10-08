@@ -16,6 +16,7 @@ android/local.properties
 *.img
 *.zip
 *.bin
+/companion/mac-bridge/samrabbit-transcribe*
 image/extracted/
 image/work/
 

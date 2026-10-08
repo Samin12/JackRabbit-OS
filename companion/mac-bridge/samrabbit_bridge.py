@@ -24,7 +24,8 @@ Google Calendar changes (``samrabbit_calendar.py``): the R1 adds, moves and canc
 signed-in Composio CLI: ``POST /v1/calendar/events`` (+ ``/update``, ``/delete``), ``GET /v1/calendar/status``.
 
 The iPhone app, its widgets and the Apple Watch (``samrabbit_mobile.py``, T3 through ``samrabbit_t3.py``) use
-``/v1/mobile/*`` with their own per-device tokens (see that module); ``/health`` reports ``mobile``.
+``/v1/mobile/*`` with their own per-device tokens (see that module; speech to text for them is
+``samrabbit_transcribe.py``); ``/health`` reports ``mobile``.
 
 Every route needs ``Authorization: Bearer <token>`` (the token lives in
 ``~/.config/samrabbit/bridge-token``, mode 0600). Journal text and the token are
@@ -845,11 +846,13 @@ def make_server(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, *, token_fil
                 mobile_devices_file: Optional[str] = None, t3_url: Optional[str] = None,
                 t3_cli: Optional[str] = None, t3_token_file: Optional[str] = None, t3_hub: Any = None,
                 mobile_timezone: Optional[str] = None, google_account: Optional[str] = None,
-                mobile_hosts: Optional[List[str]] = None, mobile_service: Any = None) -> BridgeServer:
+                mobile_hosts: Optional[List[str]] = None, mobile_service: Any = None,
+                transcribe_helper: Optional[str] = None) -> BridgeServer:
     """Conversation sync runs only with a ``sync_dir`` (the command line passes the default one). ``cli`` is a
     path, ``auto`` or ``dry-run``; without it only the installed copy uses the real CLI (``cli_for``). T3 for the
     mobile API: the installed copy (or one given ``t3_url``) pairs with T3 Code itself; a copy run from a checkout
-    answers ``t3_dev_copy`` and never reaches T3."""
+    answers ``t3_dev_copy`` and never reaches T3. ``transcribe_helper``: the speech-to-text helper for
+    ``/v1/mobile/transcribe`` (default: ``samrabbit-transcribe`` next to this script, which install.sh builds)."""
     if calendar_writer is None and gcal is not None and composio is None and default_cli_choice() == CLI_DRY_RUN:
         # A copy run from a checkout (tests, dev) never changes the real Google Calendar unless given --composio.
         calendar_writer = gcal.UnavailableWriter("calendar_dev_copy", "This copy of the Mac bridge is not the "
@@ -866,7 +869,7 @@ def make_server(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, *, token_fil
                                               t3_hub=t3_hub, desktop_token_file=desktop_token_file,
                                               timezone_name=mobile_timezone,
                                               google_account=google_account, hosts=mobile_hosts,
-                                              bridge_version=VERSION)
+                                              bridge_version=VERSION, transcribe_helper=transcribe_helper)
     return BridgeServer((host, port), token=TokenFile(token_file), cli=cli_for(cli),
                         cli_timeout=cli_timeout, allow_any_client=allow_any_client,
                         mac_control=mac_control or mac.MacControl(mac.CuaDriver(driver)),
@@ -917,6 +920,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                         help="the T3 CLI used to pair: 'auto' (inside the T3 Code app) or a path")
     parser.add_argument("--t3-token-file", default=os.environ.get("SAMRABBIT_T3_TOKEN_FILE") or None,
                         help="the bridge's own T3 token (default ~/.config/samrabbit/t3-token)")
+    parser.add_argument("--transcribe-helper", default=os.environ.get("SAMRABBIT_TRANSCRIBE_HELPER") or None,
+                        help="speech-to-text helper for the watch and the phone (default: samrabbit-transcribe next "
+                             "to this script, built by install.sh)")
     options = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stderr)
     try:
@@ -928,7 +934,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                              agent_browser=options.agent_browser, genui_model=options.genui_model,
                              composio=options.composio, calendar_id=options.calendar_id,
                              mobile_devices_file=options.mobile_devices_file, t3_url=options.t3_url,
-                             t3_cli=options.t3_cli, t3_token_file=options.t3_token_file)
+                             t3_cli=options.t3_cli, t3_token_file=options.t3_token_file,
+                             transcribe_helper=options.transcribe_helper)
     except (OSError, ValueError) as error:
         _LOG.error("cannot start: %s", error)
         return 2
@@ -950,7 +957,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     mobile_line = "off"
     if server.mobile is not None:
         mobile_health = server.mobile.health()
-        mobile_line = f"{mobile_health['devices']} devices, T3 {'paired' if mobile_health['t3']['paired'] else 'not paired'}"
+        voice = mobile_health.get("transcribe") or {}
+        mobile_line = f"{mobile_health['devices']} devices, T3 {'paired' if mobile_health['t3']['paired'] else 'not paired'}" \
+            f", transcription {'on' if voice.get('available') else 'off (' + str(voice.get('reason')) + ')'}"
     _LOG.info("%s %s listening on %s:%d (cli %s, cua-driver %s, sync %s, composio %s, mobile %s)", SERVICE, VERSION,
               options.host, server.server_address[1], cli_path or "missing",
               "found" if server.mac.driver.executable() else "missing", "on" if server.sync is not None else "off",

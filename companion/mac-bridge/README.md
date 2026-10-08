@@ -31,6 +31,8 @@ R1 runtime ──HTTP (LAN, bearer token)──▶ samrabbit_bridge.py on the Ma
   (newest version), or use `--cua-driver <path>` / `SAMRABBIT_CUA_DRIVER`.
 - For Google Calendar changes: the Composio CLI (`composio`), signed in, with Google Calendar linked
   (`composio link googlecalendar`). See "Google Calendar changes" below.
+- For speech to text from the Apple Watch and the iPhone: macOS 26 or newer and Xcode or the Command Line Tools
+  (to build the small helper once). See "Speech to text (watch and phone)" below.
 
 ## Install
 
@@ -45,8 +47,11 @@ You can run it again at any time. It:
    the same for `~/.config/samrabbit/desktop-token` (the desktop app's own token), and creates the conversation store
    folder `~/Library/Application Support/SamRabbit/sync/` (0700);
 2. copies the bridge (`samrabbit_bridge.py` and its modules: `samrabbit_mac.py`, `samrabbit_sync.py`, `samrabbit_genui.py`,
-   `samrabbit_calendar.py`, `samrabbit_app.py`, `samrabbit_mobile.py`, `samrabbit_t3.py`) to
-   `~/Library/Application Support/SamRabbit/bridge/`;
+   `samrabbit_calendar.py`, `samrabbit_app.py`, `samrabbit_mobile.py`, `samrabbit_t3.py`, `samrabbit_transcribe.py`) to
+   `~/Library/Application Support/SamRabbit/bridge/`, and builds the speech-to-text helper `samrabbit-transcribe` there
+   (only when its source or the compiler changed), downloads the en-US speech model if it is missing, transcribes one
+   clip that `say -o` writes to a file, and prints `transcription: on (SpeechTranscriber, en-US, a test clip took
+   0.2 s)` or `transcription: off (<reason>)`. A failed build never fails the install;
 3. writes `~/Library/LaunchAgents/com.samrabbit.bridge.plist` (RunAtLoad, KeepAlive, a PATH that includes
    `/opt/homebrew/bin`, `--sync-dir`, `--desktop-token-file` and `--cli auto` (the real Heptabase CLI; see "Which
    Heptabase CLI" below), the Composio CLI's absolute path as
@@ -57,7 +62,8 @@ You can run it again at any time. It:
 4. pairs the bridge with T3 Code once (`samrabbit_t3.py ensure-paired`: only when there is no good token yet; see
    "Mobile API" below), printing `T3 paired (expires …)` or a warning (the bridge then pairs by itself later);
 5. reloads the agent (`launchctl bootout`/`bootstrap`/`kickstart`), waits for `/health`, prints one status line per
-   feature (ending with `mobile: on (T3 paired, N devices)`), the bridge URL, and how to pair an iPhone.
+   feature (ending with `mobile: on (T3 paired, N devices, transcription on)`), the bridge URL, and how to pair an
+   iPhone.
 
 Then point the R1 at the bridge from the R1's management page (Connections > Heptabase journal >
 "Connect through your Mac"), and paste the URL and token.
@@ -324,9 +330,51 @@ sync routes, which keep epoch milliseconds):
 | `POST /v1/mobile/calendar/block {minutes, title?}` | an event from now (rounded down to the minute) for `minutes` (5–720), in `SAMRABBIT_TIMEZONE` (default America/New_York), default title "Focus" |
 | `POST /v1/mobile/calendar/events {title, startsAt, endsAt}` | the same writer as `/v1/calendar/events` |
 | `POST /v1/mobile/journal {text}` | appends `**HH:MM** <text>` (the words escaped, nothing added) to today's Heptabase journal; explicit notes only. As on the R1 (its "redact secrets" setting is on by default), API keys, tokens, private keys, "the code is 123456" and "password is …" are written as `[redacted]`, and the answer then says `redacted: true` |
+| `POST /v1/mobile/transcribe[?lang=en-US]` | a raw recording as the body → `{text, durationMs, engine, locale}`; see "Speech to text (watch and phone)" below |
 | `GET /v1/mobile/mac/state` · `POST /v1/mobile/mac/open {app\|url}` · `GET /v1/mobile/mac/screenshot?max=` | Mac control; the screenshot is a JPEG, or 409 `screen_locked` / `screen_recording_required`. `open` pins Google Calendar, Gmail, Drive, Docs and Meet links to one account with `authuser=`: `SAMRABBIT_GOOGLE_ACCOUNT` (`install.sh --google-account`), else the account on an event the bridge created, else the account the agenda shows (an event its owner created, the primary calendar's own name, or a calendar id that is an email), learned on every calendar refresh, so right after a restart too (a Google link with nothing known yet reads the agenda first) |
 
-`/health` adds `mobile: {available, devices, t3: {paired, ok}}`.
+`/health` adds `mobile: {available, devices, t3: {paired, ok}, transcribe: {available, engine?, locale?, reason?}}`.
+
+### Speech to text (watch and phone)
+
+watchOS has no speech recognizer an app can use, and the system text input can't be forced into dictation, so the
+watch records a clip itself and the Mac turns it into words. `samrabbit_transcribe.py` runs `samrabbit-transcribe`,
+a small Swift helper (`transcribe/samrabbit_transcribe.swift`, with `transcribe/Info.plist` embedded) that uses
+macOS's own on-device SpeechAnalyzer + SpeechTranscriber (macOS 26+; DictationTranscriber when this Mac has no
+SpeechTranscriber). Nothing leaves the Mac, no microphone is involved and there is no permission prompt: the input is
+a file. A 6 s clip takes about 0.2–0.3 s.
+
+`POST /v1/mobile/transcribe[?lang=en-US]` with the mobile token, from a LAN or Tailscale peer like every mobile route:
+
+- Body: the raw recording with `Content-Type: audio/mp4` / `audio/x-m4a` (an m4a, e.g. AAC 16 kHz mono from
+  `AVAudioRecorder`), `audio/wav` or `audio/aac` (ADTS), also spelled `audio/m4a`, `audio/x-wav`, `audio/wave`,
+  `audio/vnd.wave`, `audio/x-aac` or `audio/aacp`; `Content-Length` required; at most 2 MiB and 90 s. The
+  container is checked from the bytes (`ftyp` at offset 4, `RIFF…WAVE`, an ADTS frame) and its length read from the
+  header before anything runs; the helper checks the length again.
+- Answer: `{text, durationMs, engine: "SpeechTranscriber"|"DictationTranscriber", locale}`. `lang` is a BCP 47 tag
+  (default `en-US`); SpeechTranscriber knows about 45 locales, and a locale whose model is not on the Mac yet is
+  downloaded in the background on its first use.
+- The audio is written to a private temp file (0600 in its own 0700 folder) only while the helper runs (at most 45 s,
+  then it is killed), and deleted right after. At most 2 transcriptions run at once. Neither the audio nor the words
+  are logged or kept; the helper prints them only on its stdout, and its stderr is discarded.
+- Errors (`{error: {code, message, retryable, reason?}}`):
+
+| Status | Code | When |
+|---|---|---|
+| 503 | `transcribe_unavailable` | `reason`: `helper_missing` (not built: run `install.sh` with Xcode or the Command Line Tools), `speech_unavailable` (no on-device transcriber on this Mac), `model_downloading` (retryable: the language's model is downloading now), `model_missing` (its download failed; tried again after 30 minutes), `insufficient_resources` (retryable) |
+| 503 | `transcribe_permission` | Speech Recognition is turned off for it (System Settings > Privacy & Security > Speech Recognition) |
+| 502 / 504 | `transcribe_failed` | the helper failed or crashed (502) or took longer than 45 s (504); retryable |
+| 503 | `transcribe_busy` | two transcriptions were still running after a 10 s wait for a free slot (retryable) |
+| 415 | `unsupported_audio` | another Content-Type, or bytes that are not an m4a, WAV or ADTS AAC recording |
+| 413 | `body_too_large` / `audio_too_long` | over 2 MiB / over 90 s |
+| 422 | `no_speech` / `unsupported_language` | nothing was said / the Mac can't transcribe that language |
+| 400 | `invalid_lang` / `invalid_audio` | a bad `lang` / an empty or incomplete body |
+
+`/health` says `mobile.transcribe: {available: true, engine: "SpeechTranscriber", locale: "en-US"}` (checked with
+`samrabbit-transcribe --check` at most every 10 minutes; a transcription that worked counts as a check), or
+`{available: false, reason}`. The bridge finds the helper next to its script; `--transcribe-helper <path>`
+(`SAMRABBIT_TRANSCRIBE_HELPER`) points it elsewhere. By hand:
+`samrabbit-transcribe --check | --prepare | --file clip.m4a [--locale en-US]` prints one JSON object.
 
 **T3 Code.** The bridge has its own T3 session ("SamRabbit bridge", scopes `orchestration:read orchestration:operate`),
 separate from the R1's. It mints a pairing credential with the CLI inside the T3 Code app
@@ -383,7 +431,9 @@ names wins; the same coding and everyday word lists) with three differences:
   Calendar changes log only the route, the status and an error code: never a title, a time or Composio's output.
   Mobile routes are logged as templates (`/v1/mobile/t3/threads/{id}/respond`) with the status and an error code:
   never a mobile token, a pairing code, a device id, thread text, prompts, notes, events or images; T3 pairing logs
-  only "t3 paired (expires <date>)" and its back-off notices ("next pairing in N min").
+  only "t3 paired (expires <date>)" and its back-off notices ("next pairing in N min"). Transcriptions log only the
+  engine and the length of the audio (and, when the helper fails, its exit status or an error domain and number):
+  never the audio or the words.
 - Error replies never repeat the CLI's own messages, because they could quote journal content.
 - The token file is re-read when it changes. To rotate it, delete the file, run `install.sh`, and connect the R1
   again.
@@ -417,7 +467,11 @@ drives the mobile API against a fake T3 server and CLI (`tests/fake_t3.py`, `tes
 Composio, Heptabase and cua-driver above, temp tokens and a fake clock: pairing (single use, expiry, rate limit, peer
 check), auth on every route, the summary and its caches, T3 status mapping, dispatch payloads, placement and
 re-pairing, the block math across daylight-saving changes, the journal format, the reused conversation routes and
-the "Phone" conversation. `tests/test_t3.py` covers the T3 port and a Python 3.9 `-I` import check. `tests/test_sync.py`
+the "Phone" conversation. `tests/test_transcribe.py` drives `/v1/mobile/transcribe` with a fake helper
+(`tests/fake_transcribe.py`): the private temp file and its removal, the size, length, type and language checks,
+every helper failure, the timeout, the busy limit, the background model download and `/health`; it also builds the
+real helper and transcribes clips made with `say -o` (skipped without Xcode or the Command Line Tools).
+`tests/test_t3.py` covers the T3 port and a Python 3.9 `-I` import check. `tests/test_sync.py`
 covers the conversation store, dedupe, drafts, blobs, the auth matrix (R1 token vs desktop token, loopback vs a real
 LAN peer through this Mac's own address), SSE and screenshots.
 

@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import shutil
 import stat
 import subprocess
 import sys
@@ -20,13 +21,25 @@ sys.path.insert(0, str(HERE))
 
 DESKTOP = "desktop-token-" + "p" * 32
 BRIDGE = "bridge-token-" + "q" * 32
+# Installs skip the Swift build of the transcription helper (it has its own tests below).
+NO_BUILD = {"SAMRABBIT_SKIP_TRANSCRIBE_BUILD": "1"}
+
+
+def _swift_problem() -> str:
+    if sys.platform != "darwin" or not shutil.which("xcrun") or not os.path.exists("/usr/bin/say"):
+        return "needs macOS with Xcode or the Command Line Tools"
+    found = subprocess.run(["xcrun", "--sdk", "macosx", "--find", "swiftc"], capture_output=True, timeout=30)
+    return "" if found.returncode == 0 else "no Swift compiler"
+
+
+SWIFT_PROBLEM = _swift_problem()
 
 
 @unittest.skipUnless(sys.platform == "darwin", "the installer targets macOS")
 class InstallTest(unittest.TestCase):
     def run_script(self, name: str, *args: str, env: dict | None = None) -> str:
-        env = {**os.environ, "SAMRABBIT_HOME": self.home, "SAMRABBIT_SKIP_LAUNCHCTL": "1", **(env or {})}
-        done = subprocess.run([str(ROOT / name), *args], env=env, capture_output=True, text=True, timeout=60,
+        env = {**os.environ, "SAMRABBIT_HOME": self.home, "SAMRABBIT_SKIP_LAUNCHCTL": "1", **NO_BUILD, **(env or {})}
+        done = subprocess.run([str(ROOT / name), *args], env=env, capture_output=True, text=True, timeout=300,
                               check=True)
         return done.stdout + done.stderr
 
@@ -75,8 +88,9 @@ class InstallTest(unittest.TestCase):
                           "--cli", "auto", "--mobile-devices-file", str(config / "mobile-devices.json"),
                           "--t3-token-file", str(config / "t3-token")],
                          plist["ProgramArguments"][3:], "the installed bridge, and only it, uses the real CLI")
-        for module in ("samrabbit_mobile.py", "samrabbit_t3.py"):
+        for module in ("samrabbit_mobile.py", "samrabbit_t3.py", "samrabbit_transcribe.py"):
             self.assertTrue((script.parent / module).is_file(), module)
+        self.assertIn("transcription: off (build skipped: SAMRABBIT_SKIP_TRANSCRIBE_BUILD=1)", output)
         self.assertIn("skipping the T3 pairing (test install)", output, "a test install never pairs with T3")
         self.assertFalse((config / "t3-token").exists())
         self.assertTrue(plist["StandardErrorPath"].endswith("Library/Logs/samrabbit-bridge.log"))
@@ -130,7 +144,7 @@ class InstallTest(unittest.TestCase):
                 if key not in ("SAMRABBIT_GOOGLE_ACCOUNT", "SAMRABBIT_T3_ORCHESTRATION_PROJECT")}
 
         def install(*args: str, env: dict | None = None) -> str:
-            merged = {**base, "SAMRABBIT_HOME": self.home, "SAMRABBIT_SKIP_LAUNCHCTL": "1", **(env or {})}
+            merged = {**base, "SAMRABBIT_HOME": self.home, "SAMRABBIT_SKIP_LAUNCHCTL": "1", **NO_BUILD, **(env or {})}
             done = subprocess.run([str(ROOT / "install.sh"), *args], env=merged, capture_output=True, text=True,
                                   timeout=60, check=True)
             return done.stdout + done.stderr
@@ -210,6 +224,85 @@ class InstallTest(unittest.TestCase):
                               timeout=60)
         self.assertNotEqual(0, done.returncode)
         self.assertNotIn(DESKTOP, done.stdout + done.stderr)
+
+    # ------------------------------------------------------------------ the transcription helper
+    def helper_path(self) -> Path:
+        return Path(self.home, "Library/Application Support/SamRabbit/bridge/samrabbit-transcribe")
+
+    def fake_swiftc(self, *, builds: bool = True) -> Path:
+        """A stand-in compiler: writes a helper that is tests/fake_transcribe.py (state in <home>/voice)."""
+        state = Path(self.home, "voice")
+        state.mkdir(exist_ok=True)
+        compiler = Path(self.home, "fake-swiftc")
+        helper = f'#!/bin/sh\\nexec "{sys.executable}" "{HERE / "fake_transcribe.py"}" --state "{state}" "$@"\\n'
+        compiler.write_text("#!/bin/sh\n"
+                            "[ \"$1\" = --version ] && { echo 'fake swiftc 1.0'; exit 0; }\n"
+                            + ("" if builds else "echo 'error: no such module Speech' >&2; exit 1\n")
+                            + "out=''\nwhile [ $# -gt 0 ]; do\n"
+                            "  if [ \"$1\" = -o ]; then out=$2; shift 2; else shift; fi\ndone\n"
+                            f"printf '{helper}' > \"$out\"\nchmod 755 \"$out\"\n")
+        compiler.chmod(0o755)
+        return compiler
+
+    def voice_calls(self, flag: str) -> list:
+        path = Path(self.home, "voice", "calls.jsonl")
+        calls = [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+        return [call for call in calls if flag in call["args"]]
+
+    @unittest.skipIf(bool(SWIFT_PROBLEM), SWIFT_PROBLEM)
+    def test_install_builds_the_transcription_helper_once(self) -> None:
+        output = self.run_script("install.sh", env={"SAMRABBIT_SKIP_TRANSCRIBE_BUILD": "0"})
+        self.assertIn("built the transcription helper", output)
+        helper = self.helper_path()
+        self.assertEqual(0o755, stat.S_IMODE(helper.stat().st_mode))
+        line = next(line for line in output.splitlines() if line.startswith("transcription: "))
+        self.assertRegex(line, r"^transcription: (on \(SpeechTranscriber, en-US, a test clip took [0-9.]+ s\)|off \(.+\))$")
+        self.assertTrue(line.startswith("transcription: on"), "this Mac can transcribe: " + line)
+        version = subprocess.run([str(helper), "--version"], capture_output=True, text=True, timeout=30)
+        self.assertEqual({"ok": True, "version": "1"}, json.loads(version.stdout))
+        signature = subprocess.run(["codesign", "-dv", str(helper)], capture_output=True, text=True, timeout=30)
+        self.assertIn("Identifier=com.samrabbit.transcribe", signature.stderr)
+        self.assertIn("Info.plist entries=", signature.stderr, "the usage description is embedded")
+        inode = helper.stat().st_ino
+        output = self.run_script("install.sh", env={"SAMRABBIT_SKIP_TRANSCRIBE_BUILD": "0"})
+        self.assertIn("transcription helper is up to date", output)
+        self.assertEqual(inode, helper.stat().st_ino, "not rebuilt")
+        Path(str(helper) + ".build").unlink()  # as if the source had changed
+        output = self.run_script("install.sh", env={"SAMRABBIT_SKIP_TRANSCRIBE_BUILD": "0"})
+        self.assertIn("built the transcription helper", output)
+        self.assertNotEqual(inode, helper.stat().st_ino, "replaced by a new file, never rewritten in place")
+        self.run_script("uninstall.sh")
+        self.assertFalse(helper.exists())
+
+    def test_a_failed_helper_build_never_fails_the_install(self) -> None:
+        compiler = self.fake_swiftc(builds=False)
+        output = self.run_script("install.sh", env={"SAMRABBIT_SKIP_TRANSCRIBE_BUILD": "0",
+                                                    "SAMRABBIT_SWIFTC": str(compiler)})
+        self.assertIn("warning: the transcription helper did not build", output)
+        self.assertIn("error: no such module Speech", output, "the compiler's last lines are shown")
+        self.assertIn("transcription: off (the helper did not build; it needs the macOS 26 SDK or newer)", output)
+        self.assertFalse(self.helper_path().exists())
+        self.assertTrue(Path(self.home, "Library/LaunchAgents/com.samrabbit.bridge.plist").exists())
+
+    def test_install_reports_the_model_and_downloads_it_only_when_allowed(self) -> None:
+        compiler = self.fake_swiftc()
+        env = {"SAMRABBIT_SKIP_TRANSCRIBE_BUILD": "0", "SAMRABBIT_SWIFTC": str(compiler)}
+        Path(self.home, "voice", "check").write_text("model_missing")
+        output = self.run_script("install.sh", env=env)
+        self.assertIn("built the transcription helper", output)
+        self.assertIn("transcription: off (model_missing)", output)
+        self.assertEqual([], self.voice_calls("--prepare"), "a test install downloads nothing")
+        output = self.run_script("install.sh", env={**env, "SAMRABBIT_TRANSCRIBE_PREPARE": "1"})
+        self.assertIn("transcription helper is up to date", output)
+        self.assertIn("downloading the speech model for en-US", output)
+        self.assertEqual([["--prepare"]], [call["args"][:1] for call in self.voice_calls("--prepare")])
+        self.assertRegex(output, r"transcription: on \(SpeechTranscriber, en-US, a test clip took [0-9.]+ s\)")
+        [clip] = self.voice_calls("--file")
+        self.assertTrue(clip["file"].endswith("check.wav") and clip["size"] > 1000, "a real clip from say -o")
+        self.assertFalse(Path(clip["file"]).exists(), "the test clip is deleted")
+        Path(self.home, "voice", "mode").write_text("permission")
+        output = self.run_script("install.sh", env=env)
+        self.assertIn("transcription: off (a test clip failed: transcribe_permission)", output)
 
     def test_install_rejects_a_bad_port(self) -> None:
         env = {**os.environ, "SAMRABBIT_HOME": self.home, "SAMRABBIT_SKIP_LAUNCHCTL": "1"}
