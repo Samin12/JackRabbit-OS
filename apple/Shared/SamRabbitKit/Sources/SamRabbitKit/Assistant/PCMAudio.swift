@@ -121,12 +121,17 @@ public enum WAV {
     public static func decode(_ data: Data) throws -> Decoded {
         guard isWAV(data) else { throw Problem.notWAV }
         let bytes = [UInt8](data)
-        func u32(_ at: Int) -> Int { Int(bytes[at]) | Int(bytes[at + 1]) << 8 | Int(bytes[at + 2]) << 16 | Int(bytes[at + 3]) << 24 }
+        // 32-bit safe (Apple Watch is arm64_32): read as UInt32, clamp into Int.
+        func raw32(_ at: Int) -> UInt32 {
+            UInt32(bytes[at]) | UInt32(bytes[at + 1]) << 8 | UInt32(bytes[at + 2]) << 16 | UInt32(bytes[at + 3]) << 24
+        }
+        func u32(_ at: Int) -> Int { Int(clamping: raw32(at)) }
         func u16(_ at: Int) -> Int { Int(bytes[at]) | Int(bytes[at + 1]) << 8 }
         var offset = 12
         var format: (rate: Int, channels: Int, bits: Int, tag: Int)?
         while offset + 8 <= bytes.count {
             let id = String(decoding: bytes[offset..<(offset + 4)], as: UTF8.self)
+            let rawSize = raw32(offset + 4)
             let size = u32(offset + 4)
             let body = offset + 8
             switch id {
@@ -141,13 +146,14 @@ public enum WAV {
                 guard format.bits == 16 else { throw Problem.unsupported("\(format.bits)-bit") }
                 guard format.channels >= 1, format.rate > 0 else { throw Problem.unsupported("format") }
                 // A streamed WAV may say 0 or 0xFFFFFFFF: take what is there.
-                let end = size == 0 || size == 0xFFFF_FFFF ? bytes.count : min(bytes.count, body + size)
+                let end = rawSize == 0 || rawSize == UInt32.max || size > bytes.count - body ? bytes.count : body + size
                 let usable = (end - body) / (2 * format.channels) * (2 * format.channels)
                 return Decoded(sampleRate: format.rate, channels: format.channels,
                                pcm: Data(bytes[body..<(body + max(0, usable))]))
             default:
                 break
             }
+            guard size <= bytes.count - body else { break }
             offset = body + size + (size & 1)
         }
         throw format == nil ? Problem.notWAV : Problem.truncated
