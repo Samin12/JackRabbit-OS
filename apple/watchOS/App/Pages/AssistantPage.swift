@@ -36,6 +36,7 @@ struct AssistantPage: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
                     .accessibilityIdentifier("assistant-state")
+                    .accessibilityValue(audioValue)
                 if let detail = problemDetail {
                     Text(detail)
                         .font(.system(size: 11.5))
@@ -94,6 +95,15 @@ struct AssistantPage: View {
         case .thinking: return "Thinking…"
         case .speaking: return machine.live?.kind == .announcement ? "Heads up" : "Speaking…"
         }
+    }
+
+    /// Debug builds: whether the microphone is live ("audio on"/"audio off"), for the UI tests (nothing in release).
+    private var audioValue: String {
+        #if DEBUG
+        engine.audioRunning ? "audio on" : "audio off"
+        #else
+        ""
+        #endif
     }
 
     /// What to do about the problem that ended the last conversation.

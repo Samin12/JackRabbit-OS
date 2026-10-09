@@ -13,7 +13,8 @@ import Foundation
 ///   reopened after (auto-continue).
 /// * Barge-in: a tap while thinking or speaking cancels the turn on the Mac (`cancel`), stops playback and listens.
 /// * A reply without audio is spoken by the watch itself (`speak`); a Mac that can't be reached is said out loud
-///   ("I can't reach your Mac right now"), then the conversation ends.
+///   ("I can't reach your Mac right now"), then the conversation ends. A warm-up that fails before the audio runs
+///   (the microphone prompt, Siri still holding it) is said once it does (`audioReady`).
 /// * Announcements (T3 tasks that finished or need Samin) wait until the conversation is listening, then play:
 ///   their own clip if they have one, else as a `{"announce": id}` turn in the conversation's voice.
 /// * It ends on Stop, when the Mac says so (`endConversation`), after `idleTimeout` (about 2 minutes) without
@@ -145,7 +146,7 @@ public struct ConversationMachine: Sendable {
     public enum Event: Sendable, Equatable {
         /// Open a conversation (launch, Action Button, Siri, a complication, a tap on the idle orb).
         case start
-        /// The audio engine runs.
+        /// The audio engine runs (only ever after `startAudio`, never after the conversation ended).
         case audioReady
         /// The microphone or the engine couldn't start (the message is shown).
         case audioFailed(String)
@@ -230,6 +231,8 @@ public struct ConversationMachine: Sendable {
     private var playing = false
     private var endAfterPlayback = false
     private var reachable = true
+    /// A fatal warm-up failure that came while the audio was still starting: said at `audioReady`.
+    private var pendingFailure: Failure?
     /// The conversation stopped without being ended on purpose (background, interruption): `resume` continues it.
     private var resumable = false
     private var endedAt: Date?
@@ -259,6 +262,11 @@ public struct ConversationMachine: Sendable {
             guard phase == .starting else { return [] }
             phase = .listening
             lastActivity = now
+            if let failure = pendingFailure {
+                // The warm-up failed while the audio came up: say why now that it can be heard, then end.
+                pendingFailure = nil
+                return fail(failure, at: now)
+            }
             return [.openMic, .haptic(.start), .announcements(true)]
         case .audioFailed(let message):
             guard phase.inConversation else { return [] }
@@ -270,7 +278,12 @@ public struct ConversationMachine: Sendable {
         case .warmUpFailed(let failure):
             // Only matters while nobody spoke yet; a turn reports its own failure.
             guard failure.isFatal, current == nil, phase == .listening || phase == .starting else { return [] }
-            if phase == .starting { phase = .listening }
+            if phase == .starting {
+                // Nothing can be heard (or stopped) before the audio runs: said at `audioReady`.
+                if pendingFailure == nil { pendingFailure = failure }
+                if failure == .unreachable { reachable = false }
+                return []
+            }
             return fail(failure, at: now)
         case .speechStarted:
             guard phase == .listening else { return [] }
@@ -359,6 +372,7 @@ public struct ConversationMachine: Sendable {
         playing = false
         endAfterPlayback = false
         reachable = true
+        pendingFailure = nil
         resumable = false
         endedAt = nil
         expectReply = false
@@ -380,6 +394,7 @@ public struct ConversationMachine: Sendable {
         queue = []
         playing = false
         endAfterPlayback = false
+        pendingFailure = nil
         resumable = false
         endedAt = now
         self.problem = problem

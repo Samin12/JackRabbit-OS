@@ -179,6 +179,61 @@ struct ConversationMachineTests {
         #expect(m.problem == "Can't reach your Mac")
     }
 
+    /// The warm-up can fail while the audio is still coming up (the microphone prompt, Siri still holding it): it
+    /// waits for the audio, then is said (there is no player before), then the conversation ends.
+    @Test func aWarmUpThatFailsBeforeTheAudioRunsIsSaidOnceItDoes() {
+        var m = Self.machine()
+        _ = m.handle(.start, at: t0)
+        #expect(m.handle(.warmUpFailed(.unauthorized), at: t0).isEmpty)
+        #expect(m.handle(.warmUpFailed(.unreachable), at: t0).isEmpty) // the first one is said
+        #expect(m.phase == .starting)
+        #expect(m.exchanges.isEmpty)
+        #expect(m.handle(.audioReady, at: t0 + 3) ==
+                [.closeMic, .speak("Your watch needs to reconnect. Open SamRabbit on your iPhone."), .haptic(.failure)])
+        #expect(m.phase == .thinking)
+        #expect(m.exchanges.last?.say == "Your watch needs to reconnect. Open SamRabbit on your iPhone.")
+        _ = m.handle(.playing, at: t0 + 3)
+        #expect(m.phase == .speaking)
+        #expect(m.handle(.drained, at: t0 + 6) == [.stopPlayback, .closeMic, .stopAudio, .announcements(false)])
+        #expect(m.phase == .idle)
+        #expect(m.problem == "Reconnect through your iPhone")
+        #expect(m.handle(.audioReady, at: t0 + 7).isEmpty)
+    }
+
+    /// Stop (or the Crown) while the audio comes up, with a failed warm-up waiting: it ends at once, says nothing,
+    /// and the next conversation starts clean.
+    @Test func stoppedWhileTheAudioStartsNothingIsSaidLater() {
+        var m = Self.machine()
+        _ = m.handle(.start, at: t0)
+        #expect(m.handle(.warmUpFailed(.unavailable("chatgpt_not_connected")), at: t0).isEmpty)
+        #expect(m.handle(.stop, at: t0 + 1) == [.stopPlayback, .closeMic, .stopAudio, .announcements(false), .haptic(.stop)])
+        #expect(m.phase == .idle)
+        #expect(m.problem == nil)
+        // The audio that was coming up must not be taken as ready (the engine stops it; the machine ignores it).
+        #expect(m.handle(.audioReady, at: t0 + 2).isEmpty)
+        #expect(m.phase == .idle)
+        #expect(m.handle(.start, at: t0 + 3) == [.startAudio, .warmUp(conversationId: nil)])
+        #expect(m.handle(.audioReady, at: t0 + 3) == [.openMic, .haptic(.start), .announcements(true)])
+        #expect(m.phase == .listening)
+        #expect(m.exchanges.isEmpty)
+
+        // The Crown while starting: paused; back within the window it starts clean as well.
+        var crown = Self.machine()
+        _ = crown.handle(.start, at: t0)
+        _ = crown.handle(.warmUpFailed(.unreachable), at: t0)
+        #expect(crown.handle(.background, at: t0 + 1) == [.stopPlayback, .closeMic, .stopAudio, .announcements(false)])
+        #expect(crown.handle(.resume, at: t0 + 30) == [.startAudio, .warmUp(conversationId: nil)])
+        #expect(crown.handle(.audioReady, at: t0 + 31) == [.openMic, .haptic(.start), .announcements(true)])
+
+        // The microphone failing while a failed warm-up waits: ends with the microphone's problem, nothing said.
+        var denied = Self.machine()
+        _ = denied.handle(.start, at: t0)
+        _ = denied.handle(.warmUpFailed(.unreachable), at: t0)
+        #expect(denied.handle(.audioFailed("Microphone is off"), at: t0 + 1) ==
+                [.stopPlayback, .closeMic, .stopAudio, .announcements(false), .haptic(.failure)])
+        #expect(denied.problem == "Microphone is off")
+    }
+
     @Test func endsAfterTwoQuietMinutes() {
         var m = listening()
         #expect(m.handle(.tick, at: t0 + 119).isEmpty)

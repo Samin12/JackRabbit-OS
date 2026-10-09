@@ -79,7 +79,7 @@ with 409 `t3_request_not_pending`, exactly like the real bridge.
 ## Tests
 
 ```sh
-cd apple/Shared/SamRabbitKit && swift test          # 147 tests on macOS, including the client against the fake bridge
+cd apple/Shared/SamRabbitKit && swift test          # 149 tests on macOS, including the client against the fake bridge
 xcodebuild -project apple/SamRabbit.xcodeproj -scheme SamRabbit \
   -destination 'platform=iOS Simulator,name=iPhone 18 Pro' test   # the same suite minus the fake-bridge tests, on iOS
 curl -X POST 127.0.0.1:3799/__fake/reset             # then the watch walkthrough (real taps, screenshots attached):
@@ -123,7 +123,10 @@ adds Infograph, Modular and Activity Digital faces with the SamRabbit complicati
 (caption, the task it started) and listens again; tap to interrupt (the Mac is told to cancel); a reply without audio
 spoken by the watch; a Mac that can't be reached (said, then the end); an announcement between turns; the end after a
 quiet while and by the Mac; the buffered fallback with a clip; the Action Button's intent opening the conversation;
-the whole turn through the iPhone with the watch's own token; Stop.
+the whole turn through the iPhone with the watch's own token; Stop; Stop while the audio is still starting (the
+microphone stays off, and Stop then Talk inside that window runs one start); a warm-up refused while the audio starts
+(said once it runs, then the problem). In debug builds the state line's accessibility value says `audio on`/`audio off`
+(whether the microphone is live) for these checks.
 
 The Action Button tests press the simulator's real Action Button (`XCUIDevice.press(.action)`); both are opt-in:
 `ActionButtonUITests` (iPhone, `TEST_RUNNER_SAMRABBIT_ACTION_BUTTON=1`, after setting the simulator's Action Button to
@@ -385,8 +388,9 @@ instead of two minutes), `-SamRabbitStillOrb YES` (UI tests: no orb animation), 
 simulator is muted unless `on`). Debug builds only (not compiled into Release): `-SamRabbitVoiceFixture
 speech|hold|quiet` replaces the microphone with a made-up voice for the simulator and the UI tests (the voice capture:
 `VoiceFixtureSource`, real levels and a real AAC file; the conversation: `ConversationFixture`, which speaks
-`-SamRabbitFixtureTurns n` times, `-SamRabbitFixtureLead s` seconds after the microphone opens), and
-`-SamRabbitVoicePermission denied` acts as if the microphone was refused. The simulator never listens through the
+`-SamRabbitFixtureTurns n` times, `-SamRabbitFixtureLead s` seconds after the microphone opens;
+`-SamRabbitFixtureMicDelay s` allows the microphone only after s seconds, like the first launch's prompt or Siri still
+holding it), and `-SamRabbitVoicePermission denied` acts as if the microphone was refused. The simulator never listens through the
 Mac's own microphone: without a fixture the conversation hears silence there.
 
 **Kit additions for the watch**: `BridgeRelay` and `BridgeClient(relay:)`, `BridgeAccount(relay:)`,

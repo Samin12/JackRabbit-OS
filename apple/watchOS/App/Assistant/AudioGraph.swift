@@ -48,9 +48,20 @@ final class AudioGraph {
     var onPlaying: (@MainActor () -> Void)?
     var onDrained: (@MainActor () -> Void)?
     var onInterrupted: (@MainActor () -> Void)?
+    /// The engine started or stopped (the microphone is live while true).
+    var onRunning: (@MainActor (Bool) -> Void)?
 
     let input: ConversationInput
-    private(set) var running = false
+    private(set) var running = false {
+        didSet { if running != oldValue { onRunning?(running) } }
+    }
+    /// Bumped by every `start()` and `stop()`. A start that waited (the microphone prompt, the session, Siri's
+    /// retries) and was overtaken meanwhile, stopped or started again, gives up instead of opening the microphone.
+    private var startToken = 0
+    /// The start still on its way, if any (an overtaken start leaves the session to it).
+    private var pendingStart: Int?
+    /// The audio session was activated and not given back yet.
+    private var sessionActive = false
     private var engine: AVAudioEngine?
     private var player: AVAudioPlayerNode?
     private let playFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1,
@@ -76,9 +87,18 @@ final class AudioGraph {
 
     /// Asks for the microphone, sets up the audio session (play and record, AirPods allowed) and starts the engine.
     /// Siri may still hold the microphone right after "Talk to SamRabbit": retried for about 3 seconds.
+    ///
+    /// Throws `CancellationError` when `stop()` (or another `start()`) came while it waited: nothing is left
+    /// running, and whoever stopped it has already decided what the conversation does.
     func start() async throws {
         guard !running else { return }
-        guard await input.allowed() else { throw StartFailure.microphoneDenied }
+        startToken += 1
+        let token = startToken
+        pendingStart = token
+        defer { if pendingStart == token { pendingStart = nil } }
+        let permitted = await input.allowed()
+        try abandonIfOvertaken(token)
+        guard permitted else { throw StartFailure.microphoneDenied }
         let session = AVAudioSession.sharedInstance()
         do {
             if input.isFixture {
@@ -94,12 +114,25 @@ final class AudioGraph {
         }
         var lastError: Error?
         for delay in [0, 150, 300, 600, 1200] {
-            if delay > 0 { try? await Task.sleep(for: .milliseconds(delay)) }
+            if delay > 0 {
+                try? await Task.sleep(for: .milliseconds(delay))
+                try abandonIfOvertaken(token)
+            }
             do {
                 _ = try await session.activate(options: [])
+                sessionActive = true
+            } catch {
+                try abandonIfOvertaken(token)
+                lastError = error
+                continue
+            }
+            try abandonIfOvertaken(token)
+            // From here to `running` nothing waits: a stop can't come in between.
+            do {
                 try buildAndStart()
                 running = true
                 observe()
+                audioLog.notice("audio started")
                 return
             } catch {
                 lastError = error
@@ -107,7 +140,23 @@ final class AudioGraph {
             }
         }
         audioLog.error("audio did not start: \(String(describing: lastError), privacy: .public)")
+        releaseSession()
         throw StartFailure.engine("start")
+    }
+
+    /// After each wait in `start()`: gives up when a `stop()` or a newer `start()` came meanwhile. Nothing was built
+    /// yet; the session goes back unless a newer start is on its way (or running) and needs it.
+    private func abandonIfOvertaken(_ token: Int) throws {
+        guard token != startToken else { return }
+        audioLog.notice("audio start abandoned")
+        if pendingStart == nil, !running { releaseSession() }
+        throw CancellationError()
+    }
+
+    private func releaseSession() {
+        guard sessionActive else { return }
+        sessionActive = false
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
     private func buildAndStart() throws {
@@ -124,15 +173,19 @@ final class AudioGraph {
         player.play()
     }
 
-    /// Stops everything and gives the audio session back.
+    /// Stops everything and gives the audio session back. A start still on its way gives up (see `start()`).
     func stop() {
-        guard running || engine != nil else { return }
-        running = false
-        stopPlayback()
-        for observer in observers { NotificationCenter.default.removeObserver(observer) }
-        observers = []
-        teardown()
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        startToken += 1
+        pendingStart = nil
+        if running || engine != nil {
+            running = false
+            audioLog.notice("audio stopped")
+            stopPlayback()
+            for observer in observers { NotificationCenter.default.removeObserver(observer) }
+            observers = []
+            teardown()
+        }
+        releaseSession()
     }
 
     private func teardown() {

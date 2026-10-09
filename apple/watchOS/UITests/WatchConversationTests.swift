@@ -25,7 +25,8 @@ final class WatchConversationTests: XCTestCase {
     // MARK: - Helpers
 
     private func launch(turns: Int = 1, lead: Double = 1.2, voice: String = "speech", idle: Int? = nil,
-                        page: String? = nil, route: String? = nil, intent: String? = nil) throws -> XCUIApplication {
+                        page: String? = nil, route: String? = nil, intent: String? = nil,
+                        extra: [String] = []) throws -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["-SamRabbitVoiceFixture", voice, "-SamRabbitFixtureTurns", String(turns),
                                "-SamRabbitFixtureLead", String(lead), "-SamRabbitStillOrb", "YES"]
@@ -33,11 +34,28 @@ final class WatchConversationTests: XCTestCase {
         if let page { app.launchArguments += ["-SamRabbitPage", page] }
         if let route { app.launchArguments += ["-SamRabbitRoute", route] }
         if let intent { app.launchArguments += ["-SamRabbitIntent", intent] }
+        app.launchArguments += extra
         app.launch()
         if app.staticTexts["Pair on your iPhone"].waitForExistence(timeout: 3) {
             throw XCTSkip("The watch isn't paired (pair the iPhone simulator with the fake bridge first).")
         }
         return app
+    }
+
+    /// The microphone takes `seconds` to be allowed (the first launch's prompt, Siri still holding it), and the app
+    /// waits for Talk.
+    private func slowMicrophone(_ seconds: Double) -> [String] {
+        ["-SamRabbitConversation", "off", "-SamRabbitFixtureMicDelay", String(seconds)]
+    }
+
+    /// Debug builds: "audio on" while the microphone is live (the state line's accessibility value).
+    private func audio(_ app: XCUIApplication) -> String? { state(app).value as? String }
+
+    private func stop(_ app: XCUIApplication) {
+        let stops = app.buttons.matching(identifier: "assistant-stop")
+        XCTAssertTrue(stops.firstMatch.waitForExistence(timeout: 5))
+        let stop = (0..<stops.count).map { stops.element(boundBy: $0) }.first { $0.isHittable } ?? stops.firstMatch
+        stop.tap()
     }
 
     @discardableResult
@@ -256,5 +274,61 @@ final class WatchConversationTests: XCTestCase {
         waitFor(app, state: "Tap to talk", timeout: 5)
         let ends = assistant["ends"] as? [[String: Any]] ?? []
         XCTAssertEqual(ends.last?["ended"] as? Bool, true)
+        XCTAssertEqual(audio(app), "audio off")
+    }
+
+    /// Stop while the audio is still starting: the microphone never comes on behind "Tap to talk", not even once
+    /// the start it interrupted would have finished. Stop then Talk inside that window: the newer start listens.
+    func test12_StopWhileStarting() throws {
+        let app = try launch(turns: 0, extra: slowMicrophone(4))
+        app.buttons["assistant-talk"].tap()
+        waitFor(app, state: "Starting")
+        stop(app)
+        waitFor(app, state: "Tap to talk", timeout: 5)
+        pause(5) // past the microphone's delay
+        XCTAssertTrue(state(app).label.hasPrefix("Tap to talk"))
+        XCTAssertEqual(audio(app), "audio off", "the microphone stayed off")
+        snap("watch-15-stopped-while-starting")
+        // Stop, then Talk again while the first start still waits.
+        app.buttons["assistant-talk"].tap()
+        waitFor(app, state: "Starting")
+        stop(app)
+        waitFor(app, state: "Tap to talk", timeout: 5)
+        app.buttons["assistant-talk"].tap()
+        waitFor(app, state: "Listening", timeout: 12)
+        XCTAssertEqual(audio(app), "audio on")
+        stop(app)
+        waitFor(app, state: "Tap to talk", timeout: 5)
+        pause(4.5)
+        XCTAssertEqual(audio(app), "audio off")
+    }
+
+    /// The Mac refuses the warm-up while the audio is still starting: once the audio runs the watch says why (before,
+    /// nothing could play it), then the conversation ends with the problem shown and the microphone off.
+    func test13_AWarmUpFailingWhileStartingIsSaid() throws {
+        fake("assistant", ["mode": "unavailable"])
+        let app = try launch(turns: 0, extra: slowMicrophone(5)) // longer than the watch's voice waits for a player
+        app.buttons["assistant-talk"].tap()
+        waitFor(app, state: "Starting")
+        // "Speaking": it really plays (said into a player that isn't there yet, it would never get past "Thinking").
+        waitFor(app, state: "Speaking", timeout: 12)
+        XCTAssertEqual(app.staticTexts["assistant-say"].label, "The assistant isn't available on your Mac right now.")
+        snap("watch-16-warm-up-failure-said")
+        waitFor(app, state: "Assistant unavailable on the Mac", timeout: 15)
+        pause(1)
+        XCTAssertEqual(audio(app), "audio off")
+        XCTAssertTrue(app.buttons["assistant-talk"].exists)
+        snap("watch-17-warm-up-failure-shown")
+        // The Mac is back: once the watch has the fresh summary, the next launch talks by itself again (a cached
+        // "unavailable" from the last two minutes keeps it quiet on purpose).
+        fake("assistant", ["mode": "ok"])
+        app.terminate()
+        let again = try launch(turns: 0, extra: ["-SamRabbitConversation", "off"])
+        waitFor(again, state: "Tap to talk", timeout: 20)
+        again.buttons["assistant-talk"].tap()
+        waitFor(again, state: "Listening", timeout: 10)
+        XCTAssertEqual(audio(again), "audio on")
+        stop(again)
+        waitFor(again, state: "Tap to talk", timeout: 5)
     }
 }

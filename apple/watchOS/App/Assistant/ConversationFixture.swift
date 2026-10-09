@@ -25,6 +25,9 @@ final class SilentInput: ConversationInput {
 ///     -SamRabbitFixtureTurns 2           how many times it speaks (default 2)
 ///     -SamRabbitFixtureLead 0.8          seconds of quiet before it speaks
 ///     -SamRabbitVoicePermission denied   the microphone was refused
+///     -SamRabbitFixtureMicDelay 3        seconds before the microphone is allowed (the first launch's prompt,
+///                                        Siri still holding it): the window where Stop or a failed warm-up comes
+///                                        while the audio is still starting
 ///
 /// Everything after it is the real thing: the 16 kHz samples go through the same speech detector, become the same
 /// WAV and the same turns to the (fake) bridge.
@@ -34,6 +37,7 @@ final class ConversationFixture: ConversationInput {
     let permitted: Bool
     let turns: Int
     let lead: TimeInterval
+    let micDelay: TimeInterval
     let length: TimeInterval = 1.6
     private var timer: Task<Void, Never>?
     /// Samples since the microphone last opened.
@@ -45,11 +49,13 @@ final class ConversationFixture: ConversationInput {
 
     var isFixture: Bool { true }
 
-    init(mode: VoiceFixtureSource.Mode, permitted: Bool = true, turns: Int = 2, lead: TimeInterval = 0.8) {
+    init(mode: VoiceFixtureSource.Mode, permitted: Bool = true, turns: Int = 2, lead: TimeInterval = 0.8,
+         micDelay: TimeInterval = 0) {
         self.mode = mode
         self.permitted = permitted
         self.turns = turns
         self.lead = lead
+        self.micDelay = micDelay
     }
 
     static func fromLaunchArguments(_ defaults: UserDefaults = .standard) -> ConversationFixture? {
@@ -59,11 +65,15 @@ final class ConversationFixture: ConversationInput {
         }
         let turns = defaults.object(forKey: "SamRabbitFixtureTurns") == nil ? 2 : defaults.integer(forKey: "SamRabbitFixtureTurns")
         let lead = defaults.object(forKey: "SamRabbitFixtureLead") == nil ? 0.8 : defaults.double(forKey: "SamRabbitFixtureLead")
+        let micDelay = defaults.double(forKey: "SamRabbitFixtureMicDelay")
         return ConversationFixture(mode: VoiceFixtureSource.Mode(rawValue: raw) ?? .speech, permitted: !denied,
-                                   turns: max(0, turns), lead: max(0, lead))
+                                   turns: max(0, turns), lead: max(0, lead), micDelay: min(30, max(0, micDelay)))
     }
 
-    func allowed() async -> Bool { permitted }
+    func allowed() async -> Bool {
+        if micDelay > 0 { try? await Task.sleep(for: .seconds(micDelay)) }
+        return permitted
+    }
 
     func start(engine: AVAudioEngine, deliver: @escaping @MainActor ([Int16]) -> Void) throws {
         timer?.cancel()

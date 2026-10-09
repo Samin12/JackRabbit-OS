@@ -34,6 +34,8 @@ final class ConversationEngine {
     }
     @ObservationIgnored private var storedLevel: Double = 0
     @ObservationIgnored private static let stillOrb = UserDefaults.standard.bool(forKey: "SamRabbitStillOrb")
+    /// The audio engine runs (the microphone is live). Debug builds show it to the UI tests.
+    private(set) var audioRunning = false
 
     @ObservationIgnored private let account: BridgeAccount
     @ObservationIgnored private let link: PhoneLink
@@ -62,6 +64,7 @@ final class ConversationEngine {
         graph.onPlaying = { [weak self] in self?.handle(.playing) }
         graph.onDrained = { [weak self] in self?.handle(.drained) }
         graph.onInterrupted = { [weak self] in self?.handle(.interrupted) }
+        graph.onRunning = { [weak self] in self?.audioRunning = $0 }
     }
 
     /// The microphone; in the simulator never the Mac's own: a debug build's made-up voice
@@ -127,13 +130,25 @@ final class ConversationEngine {
             Task {
                 do {
                     try await graph.start()
-                    startTimers()
-                    handle(.audioReady)
+                } catch is CancellationError {
+                    // Stopped (Stop, the Crown, the conversation ended) or started again while it came up: the
+                    // graph left nothing running, and a newer start reports for itself.
+                    return
                 } catch let failure as AudioGraph.StartFailure {
                     handle(.audioFailed(failure.message))
+                    return
                 } catch {
                     handle(.audioFailed("The microphone didn't start"))
+                    return
                 }
+                // The graph gives up when stopped while it starts; should the conversation still be over, the
+                // microphone must not stay on behind "Tap to talk".
+                guard active else {
+                    graph.stop()
+                    return
+                }
+                startTimers()
+                handle(.audioReady)
             }
         case .stopAudio:
             micOpen = false
