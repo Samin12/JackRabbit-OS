@@ -22,6 +22,7 @@ final class AppModel: ObservableObject {
     let notifier = Notifier()
     private(set) var window: MainWindowController?
     private var pairing: PairingWindowController?
+    private var chatgpt: ChatGPTWindowController?
     private var listTimer: Timer?
     private var refreshPending = false
     private var firstListDone = false
@@ -68,6 +69,12 @@ final class AppModel: ObservableObject {
     func openPairing() {
         if pairing == nil { pairing = PairingWindowController() }
         pairing?.show()
+    }
+
+    /// "Connect ChatGPT…": the Mac's own ChatGPT login for the watch assistant's realtime voice.
+    func openChatGPT() {
+        if chatgpt == nil { chatgpt = ChatGPTWindowController() }
+        chatgpt?.show()
     }
 
     func reload() {
@@ -233,6 +240,7 @@ struct MenuContent: View {
         Button("Open SamRabbit") { model.openMainWindow() }
             .keyboardShortcut("o")
         Button("Pair iPhone…") { model.openPairing() }
+        Button("Connect ChatGPT…") { model.openChatGPT() }
         if !model.notificationsAllowed {
             Button("Turn On Notifications…") { model.openNotificationSettings() }
         }
@@ -288,6 +296,7 @@ struct SamRabbitApp: App {
                     .keyboardShortcut("0")
                 Button("Pair iPhone…") { model.openPairing() }
                     .keyboardShortcut("p", modifiers: [.command, .shift])
+                Button("Connect ChatGPT…") { model.openChatGPT() }
             }
             CommandGroup(after: .toolbar) {
                 Button("Reload") { model.reload() }

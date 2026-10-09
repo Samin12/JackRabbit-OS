@@ -84,6 +84,24 @@ window (`Sources/PairingWindow.swift`) that pairs the SamRabbit iPhone app with 
 The code is shown only in this window; the log says just "pairing code shown". Without the desktop app,
 `companion/mac-bridge/pair-phone.sh` prints a code and the link in the terminal.
 
+## Connect ChatGPT
+
+**Connect ChatGPT…** (menu bar extra and the app menu, next to Pair iPhone…) opens a native window
+(`Sources/ChatGPTWindow.swift`) that gives the Mac its own ChatGPT login, for the watch assistant's realtime voice
+(gpt-realtime on the ChatGPT subscription, like the R1):
+
+- **Get a Code** calls `POST /v1/assistant/chatgpt/start` (loopback + the desktop token) and shows the one-time code
+  and the login link; **Open Browser** opens it (https://auth.openai.com/codex/device), where Samin signs in and
+  types the code; **Copy Code** copies it;
+- the bridge finishes the login by itself; the window reads `GET /v1/assistant/chatgpt/status` every 2 s while the
+  code is on screen (every 30 s otherwise) and then shows "ChatGPT is connected" with the account and plan;
+- **Disconnect…** (`POST /v1/assistant/chatgpt/disconnect`) puts the watch back on the Claude brain; the R1 keeps its
+  own login.
+
+The code is shown only in this window and the tokens never reach the app; the log says just "chatgpt login started" /
+"chatgpt connected". Without the desktop app, `companion/mac-bridge/connect-chatgpt.sh` does the same in the
+terminal.
+
 ## Developing the UI
 
 `dev/fake_sync_server.py` is a stdlib stand-in for the bridge's sync API with realistic sample conversations
