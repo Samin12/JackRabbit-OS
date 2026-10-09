@@ -400,6 +400,32 @@ class InstallTest(unittest.TestCase):
         self.run_script("uninstall.sh")
         self.assertFalse(venv.exists(), "uninstall removes the venv")
 
+    def test_a_broken_venv_whose_stamp_matches_is_made_again_once(self) -> None:
+        # Review note: with the stamp unchanged, a venv whose packages broke was never remade, while the summary kept
+        # saying "run install.sh again".
+        uv = self.fake_uv()
+        env = {"SAMRABBIT_SKIP_REALTIME_VENV": "0", "SAMRABBIT_UV": str(uv)}
+        self.run_script("install.sh", env=env)
+        venv = Path(self.home, "Library/Application Support/SamRabbit/realtime-venv")
+        stamp = (venv / ".samrabbit-stamp").read_text()
+        (venv / "bin/python").write_text("#!/bin/sh\necho '{\"ok\":false,\"reason\":\"broken_packages\"}'\nexit 1\n")
+        output = self.run_script("install.sh", env=env)
+        self.assertIn("the realtime venv does not pass its check; making it again", output)
+        self.assertIn("made the realtime venv", output)
+        self.assertIn("realtime helper: ready (Python 3.12.15, aiortc 1.15.0, av 17.1.0)", output)
+        self.assertEqual(4, len(Path(self.home, "uv-calls.txt").read_text().splitlines()), "made again, once")
+        self.assertEqual(stamp, (venv / ".samrabbit-stamp").read_text())
+        output = self.run_script("install.sh", env=env)
+        self.assertIn("realtime venv is up to date", output)
+        self.assertEqual(4, len(Path(self.home, "uv-calls.txt").read_text().splitlines()), "a working venv is kept")
+        # A remake that fails too: once per run, never a loop, never a failed install.
+        (venv / "bin/python").write_text("#!/bin/sh\nexit 1\n")
+        output = self.run_script("install.sh", env={**env, "SAMRABBIT_UV": str(self.fake_uv(works=False))})
+        self.assertIn("making it again", output)
+        self.assertIn("install.sh: warning: the realtime venv was not made:", output)
+        self.assertEqual(1, output.count("making the realtime venv"))
+        self.assertIn("realtime helper: off (", output)
+
     def test_a_failed_venv_never_fails_the_install(self) -> None:
         output = self.run_script("install.sh", env={"SAMRABBIT_SKIP_REALTIME_VENV": "0",
                                                     "SAMRABBIT_UV": str(self.fake_uv(works=False))})

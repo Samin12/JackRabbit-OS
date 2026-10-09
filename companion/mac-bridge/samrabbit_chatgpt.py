@@ -233,7 +233,9 @@ class ChatGPTAuth:
         self._cache: Optional[Tuple[Tuple[int, int], Dict[str, Any]]] = None
         self._rejected_at = -1e12
         self.off: Optional[str] = None
-        self.on_change: Optional[Callable[[], None]] = None  # the realtime brain drops its sessions
+        # Called only when the login really changed: a new one is stored, a disconnect, or a refresh OpenAI refused
+        # (never for a login attempt that expired or failed). The realtime brain then retires its sessions.
+        self.on_change: Optional[Callable[[], None]] = None
 
     @property
     def verification_url(self) -> str:
@@ -415,7 +417,10 @@ class ChatGPTAuth:
             if login.state == "waiting":
                 login.state, login.reason = state, reason
         if state != "done":
+            # An expired code or a failed poll changed nothing: the stored login (and every live session made with
+            # it) is still the one there was, so nobody is told.
             _LOG.info("chatgpt login %s%s", state, f" ({reason})" if reason else "")
+            return
         self._changed()
 
     def _changed(self) -> None:

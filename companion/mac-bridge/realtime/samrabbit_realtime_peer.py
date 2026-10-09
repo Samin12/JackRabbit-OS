@@ -23,9 +23,18 @@ talks to it over stdin/stdout, one JSON object per line:
 
 The reply's audio arrives as the remote WebRTC track (Opus, real time). Only what the server marks as playing
 (``output_audio_buffer.started`` until ``.stopped`` / ``.cleared``, with a 300 ms pre-roll and a short tail) is
-forwarded, resampled to 16 kHz mono. Nothing is logged: no audio, no text, no events (stderr stays quiet; the
-bridge discards it anyway). The process ends when stdin closes. ``--check`` prints ``{"ok", "python", "aiortc",
-"av"}`` for install.sh and the bridge's health.
+forwarded, resampled to 16 kHz mono. The pre-roll only ever holds the last half second of the response being made:
+it is emptied when a response is created and when the buffer is cleared, and after ``drop_audio`` nothing is kept
+until the next response, so a cut-off or earlier reply is never replayed in front of the next one. Likewise, when the
+server sends no RTP between replies, aiortc's jitter buffer still holds the last four packets of the earlier reply
+and hands them over as the next one starts: those frames are dropped.
+
+The data channel advertises an SCTP max-message-size of 256 KiB (aiortc says 64 KiB; the R1's libwebrtc 256 KiB), so
+OpenAI may send events over 64 KiB (the echo of a screenshot item, a long session) instead of dropping them.
+
+Nothing is logged: no audio, no text, no events (stderr stays quiet; the bridge discards it anyway). The process ends
+when stdin closes. ``--check`` prints ``{"ok", "python", "aiortc", "av", "sctpMaxMessage"}`` for install.sh and the
+bridge's health.
 """
 
 from __future__ import annotations
@@ -39,12 +48,18 @@ import os
 import platform
 import sys
 import threading
-from typing import Any, Dict, Optional
+import time
+from collections import deque
+from typing import Any, Deque, Dict, Optional, Tuple
 
 MIN_PYTHON = (3, 12)
 OUT_RATE = 16_000
 FRAME_BYTES = 3_200  # 100 ms of 16 kHz mono PCM16
 PREROLL_BYTES = 9_600  # 300 ms kept while nothing is playing
+PREROLL_MAX_AGE = 0.5  # seconds: older pre-roll audio is never played (it belongs to an earlier reply)
+SCTP_MAX_MESSAGE = 262_144  # what the data channel advertises (libwebrtc's, the R1's; the bridge sends <= 240 KiB)
+JITTER_HELD_FRAMES = 4  # aiortc's audio jitter buffer (prefetch=4) keeps the last four packets when RTP stops
+RTP_PAUSE_SECONDS = 0.25  # no frame for this long: the sender paused (between replies)
 TAIL_SECONDS = 0.3  # RTP still in flight after output_audio_buffer.stopped
 QUIET_LEVEL = 200  # |sample| below this is silence (for trimming and the fallback end)
 QUIET_END_BYTES = 19_200  # 600 ms of silence ends a reply when the server sends no buffer events
@@ -54,6 +69,17 @@ MAX_LINE = 8 * 1024 * 1024
 def _write(value: Dict[str, Any]) -> None:
     sys.stdout.write(json.dumps(value, separators=(",", ":"), ensure_ascii=False) + "\n")
     sys.stdout.flush()
+
+
+def allow_large_messages() -> int:
+    """aiortc's SCTP transport takes messages of any size in (it reassembles them, with a 1 MiB window) but tells
+    the other side ``a=max-message-size:65536``, so a compliant peer drops (or refuses to send) any bigger event.
+    Advertise 256 KiB, like libwebrtc. Returns what is advertised now."""
+    from aiortc.rtcsctptransport import RTCSctpCapabilities, RTCSctpTransport  # noqa: PLC0415
+
+    RTCSctpTransport.getCapabilities = classmethod(  # type: ignore[method-assign]
+        lambda cls: RTCSctpCapabilities(maxMessageSize=SCTP_MAX_MESSAGE))
+    return int(RTCSctpTransport.getCapabilities().maxMessageSize)
 
 
 def check() -> int:
@@ -67,6 +93,7 @@ def check() -> int:
         import av  # noqa: PLC0415
         from aiortc import RTCConfiguration, RTCPeerConnection  # noqa: PLC0415,F401
 
+        value["sctpMaxMessage"] = allow_large_messages()
         frame = av.AudioFrame(format="s16", layout="stereo", samples=960)
         for plane in frame.planes:
             plane.update(bytes(plane.buffer_size))
@@ -107,7 +134,13 @@ class Peer:
         self.speaking = False
         self.buffer_events = False  # the server sends output_audio_buffer.* (WebRTC GA does)
         self.response_done = True
-        self.preroll = bytearray()
+        self.preroll: Deque[Tuple[float, bytes]] = deque()  # (arrived, PCM) while nothing is playing
+        self.preroll_bytes = 0
+        self.muted = False  # after drop_audio: keep nothing until the next response is created
+        self.epoch = 0  # response.created count: which response the audio belongs to
+        self.frame_at: Optional[float] = None  # when the last frame came, and in which epoch
+        self.frame_epoch = 0
+        self.skip = 0  # frames still to drop: an earlier response's, held by the jitter buffer over a pause
         self.pending = bytearray()
         self.quiet = 0
         self.stop_handle: Optional[asyncio.TimerHandle] = None
@@ -120,6 +153,7 @@ class Peer:
 
         if self.pc is not None:
             raise RuntimeError("offer twice")
+        allow_large_messages()
         self.pc = RTCPeerConnection(RTCConfiguration(iceServers=[]))  # like the R1: host candidates only
         self.pc.addTrack(AudioStreamTrack())  # silence: turns are sent as text
         self.dc = self.pc.createDataChannel("oai-events", ordered=True)
@@ -185,8 +219,13 @@ class Peer:
         elif kind == "output_audio_buffer.cleared":
             self.buffer_events = True
             self.stop_speaking(0.0)
+            self.clear_preroll()  # what was cleared never plays
         elif kind == "response.created":
             self.response_done = False
+            self.muted = False
+            self.epoch += 1
+            if not self.speaking:  # anything kept so far came before this response: never its start
+                self.clear_preroll()
         elif kind == "response.output_audio_transcript.delta" and not self.buffer_events:
             self.start_speaking()  # a server without buffer events: the transcript says the reply has begun
         elif kind == "response.done":
@@ -208,6 +247,16 @@ class Peer:
                 return
             except Exception:  # noqa: BLE001
                 return
+            now = time.monotonic()
+            if self.frame_at is not None and now - self.frame_at >= RTP_PAUSE_SECONDS and \
+                    self.frame_epoch != self.epoch:
+                # RTP paused and a new response began meanwhile: the first frames now are what aiortc's jitter
+                # buffer kept from before the pause (the earlier reply), never this one's.
+                self.skip = JITTER_HELD_FRAMES
+            self.frame_at, self.frame_epoch = now, self.epoch
+            if self.skip:
+                self.skip -= 1
+                continue
             try:
                 frames = resampler.resample(frame)
             except Exception:  # noqa: BLE001 - one bad frame never stops the reply
@@ -219,9 +268,12 @@ class Peer:
         if not data:
             return
         if not self.speaking:
-            self.preroll += data
-            if len(self.preroll) > PREROLL_BYTES:
-                del self.preroll[: len(self.preroll) - PREROLL_BYTES]
+            if self.muted:
+                return
+            self.preroll.append((time.monotonic(), data))
+            self.preroll_bytes += len(data)
+            while self.preroll and self.preroll_bytes - len(self.preroll[0][1]) >= PREROLL_BYTES:
+                self.preroll_bytes -= len(self.preroll.popleft()[1])
             return
         self.pending += data
         if not self.buffer_events and self.response_done:
@@ -245,9 +297,15 @@ class Peer:
             return
         self.speaking = True
         self.quiet = 0
-        self.pending = bytearray(_trim_leading_silence(bytes(self.preroll)))
-        self.preroll = bytearray()
+        fresh = time.monotonic() - PREROLL_MAX_AGE
+        kept = b"".join(data for arrived, data in self.preroll if arrived >= fresh)[-PREROLL_BYTES:]
+        self.pending = bytearray(_trim_leading_silence(kept[len(kept) % 2:]))
+        self.clear_preroll()
         self._flush(full_only=True)
+
+    def clear_preroll(self) -> None:
+        self.preroll.clear()
+        self.preroll_bytes = 0
 
     def stop_speaking(self, tail: float) -> None:
         if not self.speaking:
@@ -281,7 +339,8 @@ class Peer:
         was = self.speaking
         self.speaking = False
         self.pending = bytearray()
-        self.preroll = bytearray()
+        self.clear_preroll()
+        self.muted = True  # the cut-off reply's audio still in flight is never kept for the next one
         if was:
             _write({"ev": "audio_end"})
 

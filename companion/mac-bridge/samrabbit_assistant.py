@@ -19,8 +19,11 @@ byte, a 4-byte big-endian length and the payload: ``J`` = one UTF-8 JSON event (
 ``{"type": "say.delta", "text"}``, ``{"type": "say.done", "text"}``, ``{"type": "action", kind, title, threadId?,
 artifactId?}``, ``{"type": "card", title, body}``, ``{"type": "done", conversationId, turnId, expectReply,
 endConversation, interrupted?, brain, timings: {stt, firstAudio, total}}``, ``{"type": "error", code, message}``
-(always followed by ``done``)), ``A`` = PCM16LE mono 16 kHz audio, 100 ms per frame. Without that header a turn
-answers the buffered JSON below (a realtime turn's audio as ``audio/wav``, Claude's as ``audio/mpeg``).
+(always followed by ``done``), ``{"type": "ping"}``), ``A`` = PCM16LE mono 16 kHz audio, up to 100 ms per frame.
+Keep-alive: while a turn is open (or a retry waits for it), a stream that wrote nothing for 10 s writes a ping (the
+watch gives up on 40 s of silence; a long tool call writes nothing); a ping may start the stream, and a failure after
+that comes as ``error`` + ``done`` in it. Without that header a turn answers the buffered JSON below (a realtime
+turn's audio as ``audio/wav``, Claude's as ``audio/mpeg``).
 
 Routes (through ``samrabbit_mobile``: a paired device's token and the LAN / Tailscale peer check):
 
@@ -145,10 +148,14 @@ END_ROUTE = "/v1/mobile/assistant/end"
 SESSION_ROUTE = "/v1/mobile/assistant/session"
 CANCEL_ROUTE = "/v1/mobile/assistant/cancel"
 STREAM_TYPE = "application/x-samrabbit-stream"
+PING_EVENT = b'{"type":"ping"}'
 STREAM_FRAME_BYTES = 3200  # 100 ms of PCM16LE mono 16 kHz
 BRAINS = ("auto", "realtime", "claude")
 DEFAULT_BRAIN = "auto"
 REALTIME_OPEN_WAIT = 20.0  # a turn waits this long for its session to open
+MAX_SESSIONS_PER_DEVICE = 2  # live realtime sessions (each an OpenAI WebRTC call and a helper process) per device
+MAX_SESSIONS = 4  # and on the Mac; the least recently used idle one closes to make room
+STREAM_PING_SECONDS = 10.0  # a stream that wrote nothing for this long writes {"type": "ping"} (the watch's limit: 40 s)
 REALTIME_TTS_FORMAT = "pcm_16000"
 MAX_CACHED_AUDIO = 4  # turns whose audio a retry can replay (the rest replay without it)
 HISTORY_TURNS = 8
@@ -1349,13 +1356,23 @@ class Streamed:
 class StreamWriter:
     """The streaming turn protocol on one HTTP response: HTTP/1.1, chunked; each frame = 1 type byte (``J`` JSON,
     ``A`` audio), a 4-byte big-endian length, the payload. Starts the response with its first frame, so anything
-    that fails before that answers as a normal JSON error. A client that went away just stops the writing."""
+    that fails before that answers as a normal JSON error. A client that went away just stops the writing.
 
-    def __init__(self, handler: Any) -> None:
+    ``keep_alive()``: while the turn is open, a ``{"type": "ping"}`` event whenever nothing was written for
+    ``ping_every`` seconds (a long tool call writes nothing, and the watch gives up on a silent stream after 40 s). A
+    ping may be the first frame: the stream has then started, and a later failure comes as ``error`` + ``done`` in
+    it. ``stop_pings()`` (``finish()`` does it too) returns once no other ping can be written."""
+
+    def __init__(self, handler: Any, *, ping_every: float = STREAM_PING_SECONDS) -> None:
         self.handler = handler
         self.started = False
         self.broken = False
         self._audio = bytearray()
+        self._lock = threading.Lock()  # the turn's frames and the pings, one at a time
+        self._ping_every = ping_every
+        self._last = time.monotonic()
+        self._stop = threading.Event()
+        self._pinger: Optional[threading.Thread] = None
 
     def _start(self) -> None:
         handler = self.handler
@@ -1369,7 +1386,8 @@ class StreamWriter:
         handler.end_headers()
         self.started = True
 
-    def frame(self, kind: bytes, payload: bytes) -> None:
+    def _write(self, kind: bytes, payload: bytes) -> None:
+        """One frame (``self._lock`` held)."""
         if self.broken:
             return
         try:
@@ -1378,8 +1396,35 @@ class StreamWriter:
             data = kind + struct.pack(">I", len(payload)) + payload
             self.handler.wfile.write(b"%X\r\n" % len(data) + data + b"\r\n")
             self.handler.wfile.flush()
+            self._last = time.monotonic()
         except (OSError, ValueError):
             self.broken = True
+
+    def frame(self, kind: bytes, payload: bytes) -> None:
+        with self._lock:
+            self._write(kind, payload)
+
+    def keep_alive(self) -> None:
+        if self._ping_every <= 0 or self._pinger is not None or self._stop.is_set():
+            return
+        self._pinger = threading.Thread(target=self._ping, name="samrabbit-stream-ping", daemon=True)
+        self._pinger.start()
+
+    def _ping(self) -> None:
+        while True:
+            with self._lock:
+                if self._stop.is_set() or self.broken:
+                    return
+                due = self._last + self._ping_every - time.monotonic()
+                if due <= 0:
+                    self._write(b"J", PING_EVENT)
+                    due = self._ping_every
+            if self._stop.wait(timeout=due):
+                return
+
+    def stop_pings(self) -> None:
+        with self._lock:  # a ping being written finishes first; none starts after this
+            self._stop.set()
 
     def event(self, value: Dict[str, Any]) -> None:
         self.flush_audio()
@@ -1399,12 +1444,14 @@ class StreamWriter:
 
     def finish(self) -> None:
         self.flush_audio()
-        if self.started and not self.broken:
-            try:
-                self.handler.wfile.write(b"0\r\n\r\n")
-                self.handler.wfile.flush()
-            except (OSError, ValueError):
-                self.broken = True
+        self.stop_pings()
+        with self._lock:
+            if self.started and not self.broken:
+                try:
+                    self.handler.wfile.write(b"0\r\n\r\n")
+                    self.handler.wfile.flush()
+                except (OSError, ValueError):
+                    self.broken = True
 
 
 class TurnSink:
@@ -1602,6 +1649,7 @@ class AssistantService:
         self._saved: Dict[str, Dict[str, Any]] = {}
         self._turns: "OrderedDict[Tuple[str, str], _TurnEntry]" = OrderedDict()
         self._agents = threading.BoundedSemaphore(MAX_CONCURRENT_AGENTS)
+        self.stream_ping = STREAM_PING_SECONDS  # seconds without a frame before a ping (tests shorten it)
         self._last_turn: Optional[Dict[str, Any]] = None
         self._worker: Optional[threading.Thread] = None
         self._stopping = threading.Event()
@@ -1837,13 +1885,15 @@ class AssistantService:
             raise
 
     def _chatgpt_changed(self) -> None:
-        """A new login or a disconnect: every session was made with the old token."""
+        """A new login, a disconnect or a refused refresh (``samrabbit_chatgpt`` calls this only then): every session
+        was made with the old login. None is cut off mid-turn: each is retired (no new turn uses it), and the sweep
+        (within a second, once its turn is over) or the next turn closes it."""
         if self.realtime is not None:
             self.realtime.resume()
         with self._lock:
-            conversations = list(self._conversations.values())
-        for conversation in conversations:
-            self._close_session(conversation)
+            sessions = [item.realtime for item in self._conversations.values() if item.realtime is not None]
+        for session in sessions:
+            session.retire()
 
     # ------------------------------------------------------------------ conversations
     def _load(self) -> None:
@@ -1947,14 +1997,18 @@ class AssistantService:
         with self._lock:
             idle = [item for item in self._conversations.values()
                     if not item.ended and now - item.last_at >= self.idle_end and not item.lock.locked()]
-            for item in [item for item in self._conversations.values()
-                         if now - item.last_at >= ANNOUNCE_KEEP_SECONDS and not item.lock.locked()]:
+            forgotten = [item for item in self._conversations.values()
+                         if now - item.last_at >= ANNOUNCE_KEEP_SECONDS and not item.lock.locked()]
+            for item in forgotten:
                 self._saved[item.id] = item.record()
                 self._conversations.pop(item.id, None)
-                self._close_session(item)
             for key in [key for key, entry in self._turns.items()
                         if entry.event.is_set() and self._monotonic() - entry.at > TURN_CACHE_SECONDS]:
                 self._turns.pop(key, None)
+        # Outside self._lock: _close_session takes a conversation's realtime_lock, and _session() takes self._lock
+        # with one held (the session cap), so the two locks are only ever taken in that order.
+        for item in forgotten:
+            self._close_session(item)
         for item in idle:
             self._end(item)
             self._close_session(item)
@@ -1982,25 +2036,33 @@ class AssistantService:
 
     # ------------------------------------------------------------------ realtime sessions
     def _session(self, conversation: _Conversation, *, wait: bool) -> Any:
-        """This conversation's realtime session, opened in the background when there is none (or it is too old or
-        broken); ``wait``: until it is open (or why it could not)."""
+        """This conversation's realtime session, opened in the background when there is none (or it is too old,
+        retired, or its helper or connection ended); ``wait``: until it is open (or why it could not). A new one first
+        makes room under the cap (``_make_room``): at most ``MAX_SESSIONS_PER_DEVICE`` per device and
+        ``MAX_SESSIONS`` on the Mac; the least recently used idle sessions close for it."""
         assert _realtime is not None and self.realtime is not None
         stale = None
-        with conversation.realtime_lock:
-            session = conversation.realtime
-            if session is not None and session.state == "open" and (session.expired() or not session.usable()):
-                # Too old, or its helper died: detached here, closed below. Never _close_session() here: it takes
-                # this same (non-reentrant) lock.
-                stale, conversation.realtime, session = session, None, None
-            if session is not None and session.state in ("failed", "closed"):
-                conversation.realtime = session = None
-            if session is None:
-                session = _realtime.RealtimeSession(self.realtime, self._realtime_config(conversation))
-                conversation.realtime = session
-                threading.Thread(target=self._open_session, args=(session,), name="samrabbit-realtime-open",
-                                 daemon=True).start()
-        if stale is not None:
-            self._dispose_session(stale)
+        victims: List[Tuple[_Conversation, Any]] = []
+        try:
+            with conversation.realtime_lock:
+                session = conversation.realtime
+                if session is not None and (session.state in ("failed", "closed") or (session.state == "open" and (
+                        session.expired() or not session.usable()))):
+                    # Too old, retired, or it died: detached here, closed below. Never _close_session() here: it
+                    # takes this same (non-reentrant) lock.
+                    stale, conversation.realtime, session = session, None, None
+                if session is None:
+                    victims = self._make_room(conversation)  # raises when every other session is mid-turn
+                    session = _realtime.RealtimeSession(self.realtime, self._realtime_config(conversation))
+                    conversation.realtime = session
+                    threading.Thread(target=self._open_session, args=(session,), name="samrabbit-realtime-open",
+                                     daemon=True).start()
+        finally:
+            if stale is not None:
+                self._dispose_session(stale)
+        for other, old in victims:
+            _LOG.info("realtime session closed to make room")
+            self._close_session(other, old)
         if not wait:
             return session
         if not session.ready.wait(REALTIME_OPEN_WAIT):
@@ -2009,6 +2071,42 @@ class AssistantService:
         if session.state != "open":
             raise session.error or _realtime.RealtimeError("realtime_failed", "The realtime voice failed.")
         return session
+
+    def _make_room(self, conversation: _Conversation) -> List[Tuple[_Conversation, Any]]:
+        """The sessions to close before ``conversation`` gets a new one, so that its device keeps at most
+        ``MAX_SESSIONS_PER_DEVICE`` and the Mac at most ``MAX_SESSIONS`` (each is an OpenAI call on the subscription
+        and a helper process): the least recently used first, never one whose conversation is mid-turn. Raises
+        ``realtime_sessions_full`` (no pause: the turn goes to Claude) when that is not enough. Called with
+        ``conversation.realtime_lock`` held; takes ``self._lock`` (never the other way round)."""
+        assert _realtime is not None
+        with self._lock:
+            live = [(item, item.realtime) for item in self._conversations.values()
+                    if item is not conversation and item.realtime is not None and
+                    item.realtime.state in ("new", "opening", "open") and not item.realtime.closing]
+
+        def last_used(pair: Tuple[_Conversation, Any]) -> float:
+            return max(float(pair[1].used_at or 0.0), float(pair[1].created_at or 0.0))
+
+        def idle(pairs: List[Tuple[_Conversation, Any]]) -> List[Tuple[_Conversation, Any]]:
+            return sorted((pair for pair in pairs if not pair[0].lock.locked()), key=last_used)
+
+        victims: List[Tuple[_Conversation, Any]] = []
+        mine = [pair for pair in live if pair[0].device_id == conversation.device_id]
+        over = len(mine) + 1 - MAX_SESSIONS_PER_DEVICE
+        if over > 0:
+            candidates = idle(mine)
+            if len(candidates) < over:
+                raise _realtime.RealtimeError("realtime_sessions_full", "This device already has its voice sessions "
+                                              "open.")
+            victims += candidates[:over]
+        rest = [pair for pair in live if pair not in victims]
+        over = len(rest) + 1 - MAX_SESSIONS
+        if over > 0:
+            candidates = idle(rest)
+            if len(candidates) < over:
+                raise _realtime.RealtimeError("realtime_sessions_full", "The Mac already has its voice sessions open.")
+            victims += candidates[:over]
+        return victims
 
     def _open_session(self, session: Any) -> None:
         try:
@@ -2090,25 +2188,41 @@ class AssistantService:
                         break
                     self._turns.pop(oldest)
         assert entry is not None
+        writer = StreamWriter(handler, ping_every=self.stream_ping) if streaming else None
+        if writer is not None:
+            writer.keep_alive()  # pings while the turn is open (and while a retry waits for it)
         if not owner:
             # A retry of a turn: the same answer (the brain runs once). Still running: wait for it.
-            if not entry.event.wait(timeout=TURN_WAIT_SECONDS) or (entry.response is None and entry.result is None):
-                raise AssistantError(409, "assistant_busy", "Still answering that.", retryable=True)
+            finished = entry.event.wait(timeout=TURN_WAIT_SECONDS)
+            if writer is not None:
+                writer.stop_pings()
+            if not finished or (entry.response is None and entry.result is None):
+                busy = AssistantError(409, "assistant_busy", "Still answering that.", retryable=True)
+                if writer is not None and writer.started:
+                    self._stream_error(writer, request, brain, busy.code, busy.message)
+                    return Streamed(200)
+                raise busy
             if entry.result is not None:
-                if streaming:
-                    self._replay(handler, entry.result)
+                if writer is not None:
+                    self._replay(writer, entry.result)
                     return Streamed(200)
                 return 200, entry.result.json()
+            if writer is not None and writer.started:  # the pings started the stream: the error goes in it
+                error_body = (entry.response[1] or {}).get("error") or {}
+                self._stream_error(writer, request, brain, str(error_body.get("code") or "assistant_failed"),
+                                   str(error_body.get("message") or "That did not work on the Mac."))
+                return Streamed(200)
             return entry.response
         result = _TurnResult(request.conversation_id or "", request.turn_id)
-        sink = TurnSink(result, StreamWriter(handler) if streaming else None, monotonic=self._monotonic,
-                        started=started, keep_audio=not streaming)
+        sink = TurnSink(result, writer, monotonic=self._monotonic, started=started, keep_audio=not streaming)
         try:
             self._turn(request, device, sink, brain)
             entry.result, entry.keep = result, True
             self._trim_cached_audio()
         except AssistantError as error:
             entry.response, entry.keep = (error.status, error.payload()), error.cache
+            if writer is not None:
+                writer.stop_pings()  # before looking at ``started``: a ping may just have started the stream
             if sink.started:
                 sink.finish(error)
                 return Streamed(200)
@@ -2119,6 +2233,8 @@ class AssistantService:
             entry.response = (status, payload()) if isinstance(status, int) and callable(payload) else \
                 (500, {"error": {"code": "internal_error", "message": "The bridge failed unexpectedly.",
                                  "retryable": True}})
+            if writer is not None:
+                writer.stop_pings()
             if sink.started:
                 code = str(getattr(error, "code", "") or "internal_error")
                 sink.finish(AssistantError(int(status) if isinstance(status, int) else 500, code,
@@ -2145,9 +2261,17 @@ class AssistantService:
                     if kept > MAX_CACHED_AUDIO:
                         entry.result.audio = None
 
-    def _replay(self, handler: Any, result: _TurnResult) -> None:
+    @staticmethod
+    def _stream_error(writer: StreamWriter, request: _TurnRequest, brain: str, code: str, message: str) -> None:
+        """A failure after pings started the stream: ``error`` then ``done``, like any turn that failed midway."""
+        result = _TurnResult(request.conversation_id or "", request.turn_id)
+        result.brain = brain
+        writer.event({"type": "error", "code": code, "message": message})
+        writer.event(result.done_event())
+        writer.finish()
+
+    def _replay(self, writer: StreamWriter, result: _TurnResult) -> None:
         """A retried streamed turn: what it said and did again (its audio only while it is still cached)."""
-        writer = StreamWriter(handler)
         if result.heard_sent:
             writer.event({"type": "heard", "text": result.heard})
         if result.say:
@@ -2392,11 +2516,23 @@ class AssistantService:
         result = sink.result
         result.brain = "realtime"
         started = time.monotonic()
+        with self._lock:
+            notes, conversation.notes = conversation.notes[-MAX_NOTES:], []
         try:
-            session = self._session(conversation, wait=True)
-            message = self._realtime_message(conversation, session, heard)
-            outcome = _realtime.converse(session, [_realtime.user_item(message)], None, sink,
-                                         self._runner(conversation), sink.cancel)
+            for attempt in (1, 2):
+                session = self._session(conversation, wait=True)
+                message = self._realtime_message(conversation, session, heard, notes)
+                try:
+                    outcome = _realtime.converse(session, [_realtime.user_item(message)], None, sink,
+                                                 self._runner(conversation), sink.cancel)
+                    break
+                except _realtime.RealtimeError as error:
+                    # The session had died while idle (ICE consent, OpenAI closed it) and nothing of this turn
+                    # reached OpenAI: a new session answers, without pausing the brain or handing over to Claude.
+                    if not error.stale or attempt == 2 or sink.committed or sink.cancel.is_set():
+                        raise
+                    _LOG.info("assistant: the realtime session had ended; a new one answers")
+                    self._close_session(conversation, session)
         finally:
             result.timings["agent"] = _ms(started)
             # What ran is in the timeline also when the turn failed after it (the sink has it as it happened).
@@ -2418,14 +2554,12 @@ class AssistantService:
                 result.audio, result.audio_mime = _realtime.pcm_to_wav(pcm), "audio/wav"
         return run
 
-    def _realtime_message(self, conversation: _Conversation, session: Any, heard: str) -> str:
+    def _realtime_message(self, conversation: _Conversation, session: Any, heard: str, notes: List[str]) -> str:
         line = self._now_line(conversation)
         lines = []
         if session.now_minute != line:
             lines.append(line)
             session.now_minute = line
-        with self._lock:
-            notes, conversation.notes = conversation.notes[-MAX_NOTES:], []
         lines += [f"[T3 update] {note}" for note in notes]
         lines.append(heard)
         return "\n".join(lines)
@@ -2657,8 +2791,9 @@ class AssistantService:
         return 200, {"items": items, "cursor": cursor}
 
     def session(self, handler: Any, device: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
-        """Warm-up: the conversation (new when no id is given) and, for the realtime brain, its session opening in
-        the background."""
+        """Warm-up: the conversation and, for the realtime brain, its session opening in the background. Without an
+        id it is the device's latest conversation that is still going (not ended, a turn within the last five
+        minutes: an app relaunch keeps its warm session instead of stacking another), else a new one."""
         if device.get("internal"):
             raise AssistantError(403, "forbidden", "Not for the assistant itself.")
         body = _optional_json(handler)
@@ -2670,13 +2805,28 @@ class AssistantService:
         brain, reason = self.brain()
         if brain is None:
             raise unavailable(reason or "assistant_unavailable")
-        conversation = self._conversation((conversation_id or "").strip() or None, device)
+        wanted = (conversation_id or "").strip() or None
+        conversation = (self._latest_conversation(device) if wanted is None else None) or \
+            self._conversation(wanted, device)
         conversation.last_at = self._clock()
         ready = True
         if brain == "realtime":
-            session = self._session(conversation, wait=False)
-            ready = session.state == "open"
+            try:
+                session = self._session(conversation, wait=False)
+                ready = session.state == "open"
+            except Exception as error:  # noqa: BLE001 - RealtimeError (the cap): the first turn decides
+                if _realtime is None or not isinstance(error, _realtime.RealtimeError):
+                    raise
+                ready = False
         return 200, {"conversationId": conversation.id, "brain": brain, "ready": ready}
+
+    def _latest_conversation(self, device: Dict[str, Any]) -> Optional[_Conversation]:
+        device_id = str(device.get("deviceId") or "")
+        now = self._clock()
+        with self._lock:
+            going = [item for item in self._conversations.values()
+                     if item.device_id == device_id and not item.ended and now - item.last_at < self.idle_end]
+        return max(going, key=lambda item: item.last_at) if going else None
 
     def cancel(self, handler: Any, device: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
         if device.get("internal"):

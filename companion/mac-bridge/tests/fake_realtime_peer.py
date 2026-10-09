@@ -15,11 +15,19 @@ It speaks the helper's protocol (JSON lines on stdin/stdout: ``offer``, ``answer
   ``response.done`` with the call in its output);
 * ``{"fail": "rate_limit_exceeded"}``: ``response.done`` with status failed;
 * ``{"die": true}``: the process exits at once (a crashed helper); with ``say``/``verbatim``, ``"die_after":
-  "words"`` exits after the transcript deltas, before ``response.done`` and any audio.
+  "words"`` exits after the transcript deltas, before ``response.done`` and any audio;
+* ``{"active": true | "no_done", "old_call": name}``: an earlier response is still active: a transcript delta of that
+  response (``resp_old``), the ``conversation_already_has_active_response`` error, then (unless ``"no_done"``) after
+  0.2 s that response's ``response.done`` with a function call ``call_old`` (``old_call``) in its output;
+* ``"call_on_cancel": name`` with ``say``: the cancelled ``response.done`` has a function call ``call_cancel_<n>``;
+* ``{"big": n}``: a ``session.updated`` event whose instructions are ``n`` characters, then the next step at once.
 
 ``response.cancel`` stops a reply (``response.done`` cancelled), ``output_audio_buffer.clear`` answers
-``output_audio_buffer.cleared``. Every client event it got is appended to ``<dir>/received.jsonl`` and every op to
-``<dir>/ops.jsonl``; ``--check`` answers ``<dir>/check.json`` (default: ready).
+``output_audio_buffer.cleared``. The op ``lose`` makes it report ``{"ev": "state", "state": "failed"}`` (the peer
+connection ended); ``lose_quietly`` reports nothing; after either, every ``send`` answers ``{"ev": "error", "code":
+"not_open"}`` like the real helper with a closed data channel. ``<dir>/open_delay`` (seconds) delays ``open`` after
+the answer. Every client event it got is appended to ``<dir>/received.jsonl`` and every op to ``<dir>/ops.jsonl``;
+``--check`` answers ``<dir>/check.json`` (default: ready).
 """
 
 from __future__ import annotations
@@ -83,6 +91,14 @@ class Fake:
             self.responses += 1
             if step.get("die"):
                 os._exit(3)
+            if step.get("big"):
+                out({"ev": "event", "event": {"type": "session.updated", "session": {
+                    "instructions": "x" * int(step["big"])}}})
+                step = steps[min(self.responses, len(steps) - 1)]
+                self.responses += 1
+            if step.get("active"):
+                threading.Thread(target=self.still_active, args=(step,), daemon=True).start()
+                return
             self.cancelled.clear()
             self.dropped.clear()
             self.speaking = threading.Thread(target=self.respond, args=(self.responses, step, event), daemon=True)
@@ -91,6 +107,21 @@ class Fake:
             self.cancelled.set()
         elif kind == "output_audio_buffer.clear":
             out({"ev": "event", "event": {"type": "output_audio_buffer.cleared"}})
+
+    def still_active(self, step: Dict[str, Any]) -> None:
+        out({"ev": "event", "event": {"type": "response.output_audio_transcript.delta", "response_id": "resp_old",
+                                      "delta": "Old words"}})
+        out({"ev": "event", "event": {"type": "error", "error": {
+            "type": "invalid_request_error", "code": "conversation_already_has_active_response",
+            "message": "Conversation already has an active response in progress: resp_old."}}})
+        if step.get("active") == "no_done":
+            return
+        time.sleep(0.2)
+        call = step.get("old_call") or "t3_new_thread"
+        out({"ev": "event", "event": {"type": "response.done", "response": {
+            "id": "resp_old", "status": "cancelled",
+            "output": [{"type": "function_call", "call_id": "call_old", "name": call,
+                        "arguments": json.dumps({"prompt": "an old request"})}]}}})
 
     def respond(self, number: int, step: Dict[str, Any], request: Dict[str, Any]) -> None:
         response_id = f"resp_{number}"
@@ -128,6 +159,18 @@ class Fake:
             out({"ev": "event", "event": {"type": "response.done", "response": {"id": response_id,
                                                                                 "status": "cancelled"}}})
             return
+        if step.get("call_on_cancel"):  # speaks until cancelled; the cancelled response.done names a call
+            for frame in tone(int(step.get("ms") or 300)):
+                if self.cancelled.is_set():
+                    break
+                out({"ev": "audio", "pcm": base64.b64encode(frame).decode("ascii")})
+                time.sleep(float(step.get("pace") or 0.05))
+            self.cancelled.wait(10.0)
+            out({"ev": "event", "event": {"type": "response.done", "response": {
+                "id": response_id, "status": "cancelled",
+                "output": [{"type": "function_call", "call_id": f"call_cancel_{number}",
+                            "name": step["call_on_cancel"], "arguments": "{}"}]}}})
+            return
         out({"ev": "event", "event": {"type": "response.output_audio_transcript.done", "transcript": text}})
         out({"ev": "event", "event": {"type": "response.done", "response": {
             "id": response_id, "status": "completed",
@@ -159,6 +202,7 @@ def main() -> int:
     with (state / "pids.txt").open("a") as handle:
         handle.write(f"{os.getpid()}\n")
     out({"ev": "ready"})
+    lost = False
     for raw in sys.stdin:
         try:
             message = json.loads(raw)
@@ -169,8 +213,18 @@ def main() -> int:
         if op == "offer":
             out({"ev": "offer", "sdp": "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=fake offer\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n"})
         elif op == "answer":
+            try:
+                time.sleep(float((state / "open_delay").read_text()))
+            except (OSError, ValueError):
+                pass
             out({"ev": "open"})
             out({"ev": "event", "event": {"type": "session.created", "session": {"id": "sess_fake"}}})
+        elif op in ("lose", "lose_quietly"):
+            lost = True
+            if op == "lose":
+                out({"ev": "state", "state": "failed"})
+        elif op == "send" and lost:
+            out({"ev": "error", "code": "not_open"})
         elif op == "send":
             fake.handle(message.get("event") or {})
         elif op == "drop_audio":

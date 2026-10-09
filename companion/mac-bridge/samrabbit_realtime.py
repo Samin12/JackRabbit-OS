@@ -82,6 +82,8 @@ TURN_SECONDS = 150.0
 AUDIO_WAIT_SECONDS = 2.0  # after the last response.done, how long to wait for its audio to start
 IDLE_CLOSE_SECONDS = 180.0
 MAX_SESSION_SECONDS = 55 * 60.0
+ACTIVE_RETRY_SECONDS = 3.0  # an earlier response still active: ask again after its response.done, or after this
+LOST_STATES = ("failed", "closed", "channel_closed")  # the helper's {"ev": "state"} values that end a session
 MAX_TOOL_ROUNDS = 6
 MAX_OUTPUT_CHARS = 12_000
 MAX_EVENT_BYTES = 240 * 1024  # libwebrtc refuses data-channel messages over 256 KiB (the R1 caps at 240 KiB)
@@ -100,14 +102,25 @@ _WORD = re.compile(r"[a-z0-9']+")
 
 class RealtimeError(Exception):
     """A realtime turn that could not go on. ``pause``: seconds the brain stays off (a refused token, a busy
-    account); ``reason``: the brain's off reason meanwhile."""
+    account); ``reason``: the brain's off reason meanwhile; ``stale``: the session had already ended before this turn
+    reached OpenAI (it died while idle): open a new one and go on, nothing is wrong with the brain."""
 
-    def __init__(self, code: str, message: str, *, pause: float = 0.0, reason: Optional[str] = None) -> None:
+    def __init__(self, code: str, message: str, *, pause: float = 0.0, reason: Optional[str] = None,
+                 stale: bool = False) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.pause = pause
         self.reason = reason or code
+        self.stale = stale
+
+
+def _stale() -> RealtimeError:
+    return RealtimeError("realtime_session_lost", "The realtime connection had already ended.", stale=True)
+
+
+def _closed() -> RealtimeError:
+    return RealtimeError("realtime_closed", "The realtime session was closed on the Mac.")
 
 
 # --------------------------------------------------------------------------- the helper process
@@ -202,6 +215,9 @@ class Helper:
         self._backlog: Deque[Dict[str, Any]] = deque()
         self._send_lock = threading.Lock()
         self.ended = False
+        # The peer connection or the data channel ended (the helper said so). Set by the reader as the message comes
+        # in, so a session that died between turns is never reused, even when nobody reads its queue (``drain``).
+        self.lost = False
         threading.Thread(target=self._read, name="samrabbit-realtime-read", daemon=True).start()
 
     def _read(self) -> None:
@@ -213,6 +229,9 @@ class Helper:
                 except (UnicodeDecodeError, ValueError):
                     continue
                 if isinstance(value, dict):
+                    if (value.get("ev") == "state" and value.get("state") in LOST_STATES) or \
+                            (value.get("ev") == "error" and value.get("code") == "not_open"):
+                        self.lost = True
                     self._messages.put(value)
         except (OSError, ValueError):
             pass
@@ -269,7 +288,8 @@ class Helper:
             self._backlog.extend(kept)
 
     def drain(self) -> None:
-        """Drop what is left from the last turn (late audio, stale events)."""
+        """Drop what is left from the last turn (late audio, stale events). A "connection ended" message among them
+        has already marked the helper ``lost`` (the reader does that), so nothing that matters is thrown away."""
         self._backlog.clear()
         while True:
             try:
@@ -281,7 +301,7 @@ class Helper:
                 return
 
     def alive(self) -> bool:
-        return not self.ended and self.process.poll() is None
+        return not self.ended and not self.lost and self.process.poll() is None
 
     def close(self) -> None:
         try:
@@ -377,34 +397,53 @@ class RealtimeSession:
         self.helper: Optional[Helper] = None
         self.state = "new"  # new -> opening -> open -> closed | failed
         self.error: Optional[RealtimeError] = None
+        self.created_at = time.monotonic()
         self.opened_at = 0.0
         self.used_at = 0.0
         self.ready = threading.Event()
         self.lock = threading.Lock()  # one turn at a time
         self.now_minute: Optional[str] = None
+        # Closed on the Mac (an end, a goodbye, the session cap, the bridge stopping), maybe while it was opening:
+        # whatever open() was waiting for then fails as ``realtime_closed``, which never pauses the brain.
+        self.closing = False
+        self.retired = False  # made with a ChatGPT login that changed: finishes its turn, then closes (not usable)
+        self.answered: set = set()  # the function calls that have their function_call_output (never two)
 
     def open(self) -> None:
         """Start the helper, make the offer, sign it with OpenAI, wait for the data channel (about a second)."""
         self.state = "opening"
         try:
+            if self.closing:
+                raise _closed()
             helper = Helper(self.brain.python(), self.brain.script)
             self.helper = helper
+            if self.closing:  # closed while the helper started: close() may have missed it
+                raise _closed()
             helper.wait("ready", READY_TIMEOUT_SECONDS)
             helper.send({"op": "offer"})
             offer = str(helper.wait("offer", OFFER_TIMEOUT_SECONDS).get("sdp") or "")
             if not offer.startswith("v=0") or len(offer) > MAX_SDP_BYTES:
                 raise RealtimeError("realtime_helper_failed", "The realtime helper made a bad offer.",
                                     pause=PAUSE_FAILED_SECONDS)
+            if self.closing:
+                raise _closed()
             answer = self.brain.signal(offer, self.config)
+            if self.closing:
+                raise _closed()
             helper.send({"op": "answer", "sdp": answer})
             helper.wait("open", CHANNEL_TIMEOUT_SECONDS)
+            if self.closing:
+                raise _closed()
         except RealtimeError as error:
-            self.state, self.error = "failed", error
+            if self.closing:  # the helper stopped because the Mac closed it: not the brain's fault
+                error = _closed()
+            self.state, self.error = ("closed" if self.closing else "failed"), error
             self.close()
-            raise
+            raise error from None
         except Exception:  # noqa: BLE001
-            self.state = "failed"
-            self.error = RealtimeError("realtime_failed", "The realtime connection failed.", pause=PAUSE_FAILED_SECONDS)
+            self.state = "closed" if self.closing else "failed"
+            self.error = _closed() if self.closing else \
+                RealtimeError("realtime_failed", "The realtime connection failed.", pause=PAUSE_FAILED_SECONDS)
             self.close()
             raise self.error from None
         finally:
@@ -414,7 +453,12 @@ class RealtimeSession:
         _LOG.info("realtime session open")
 
     def usable(self) -> bool:
-        return self.state == "open" and self.helper is not None and self.helper.alive()
+        return self.state == "open" and not self.closing and not self.retired and self.helper is not None and \
+            self.helper.alive()
+
+    def retire(self) -> None:
+        """No new turn may use it (its turn in progress goes on); the sweep or the next turn closes it."""
+        self.retired = True
 
     def expired(self) -> bool:
         return self.state == "open" and time.monotonic() - self.opened_at >= MAX_SESSION_SECONDS
@@ -435,10 +479,11 @@ class RealtimeSession:
                 pass
 
     def close(self) -> None:
-        if self.state in ("open", "opening", "new"):
-            self.state = "closed" if self.state == "open" else self.state
+        """Idempotent. While it is still opening, open() sees ``closing`` and ends it (``realtime_closed``)."""
+        self.brain.discard(self)  # sets ``closing`` (under the brain's lock: it never lands in the live set after)
+        if self.state in ("open", "new"):
+            self.state = "closed"
         helper, self.helper = self.helper, None
-        self.brain.discard(self)
         if helper is not None:
             helper.close()
             if self.state == "closed":
@@ -471,20 +516,30 @@ def converse(session: RealtimeSession, items: List[Dict[str, Any]], response: Op
     ``audio(pcm)``, ``action(dict)``, ``card(dict)``, ``tool(record)`` as soon as a function call has run), run the
     function calls one at a time, end when the last response is done and its audio has been forwarded. ``cancel``:
     barge-in. A ``RealtimeError`` can still come after a tool ran (a lost connection, the deadline): the sink has the
-    record of what ran."""
+    record of what ran. A session found dead before anything of this turn reached OpenAI raises a ``stale`` error
+    (no pause: the caller opens a new session).
+
+    An earlier response that is still active (a cancel OpenAI had not finished, a turn that gave up) makes OpenAI
+    refuse ``response.create`` (``conversation_already_has_active_response``): that response is cancelled, its words,
+    audio and function calls are not this turn's (each of its calls gets a "cancelled" output), and the
+    ``response.create`` is sent again once its ``response.done`` came."""
     helper = session.helper
     if helper is None or not session.usable():
-        raise RealtimeError("realtime_connection_lost", "The realtime connection on the Mac ended.")
+        raise _stale()
     helper.drain()
+    if not session.usable():  # its end was among what the drain dropped (the reader had marked it already)
+        raise _stale()
     outcome = TurnOutcome()
     started = time.monotonic()
     deadline = started + timeout
+    create = {"type": "response.create", **({"response": response} if response else {})}
     # Manual turns (no server VAD): the silent outbound track only fills the input buffer, so empty it first; nothing
     # from it is ever committed.
     session.send({"type": "input_audio_buffer.clear"})
     for item in items:
         session.send(item)
-    session.send({"type": "response.create", **({"response": response} if response else {})})
+    session.send(create)
+    last_create = create  # what to send again when OpenAI refuses it
     responding = True  # a response is requested or running
     any_event = False
     calls: List[Dict[str, Any]] = []
@@ -497,6 +552,25 @@ def converse(session: RealtimeSession, items: List[Dict[str, Any]], response: Op
     cancelled_at: Optional[float] = None
     texts: List[str] = []
     current = ""
+    created: set = set()  # this turn's responses (the ids of their response.created)
+    others: set = set()  # earlier responses still going in this turn (never this turn's words, audio or calls)
+    waiting = False  # OpenAI refused response.create: until this turn's own response.created
+    resent = False  # the response.create is sent again (after the refusal)
+    retry_at: Optional[float] = None  # when to send it again if the earlier response.done never comes
+
+    def send_output(call_id: str, output: str) -> None:
+        session.send({"type": "conversation.item.create", "item": {
+            "type": "function_call_output", "call_id": call_id, "output": output}})
+        session.answered.add(call_id)
+
+    def foreign(event: Dict[str, Any]) -> bool:
+        """An event of a response this turn did not ask for (OpenAI's events carry their response id)."""
+        response_id = event.get("response_id")
+        if response_id is None and isinstance(event.get("response"), dict):
+            response_id = event["response"].get("id")
+        if isinstance(response_id, str) and response_id:
+            return response_id in others or response_id not in created
+        return waiting  # no id: while refused, nothing is this turn's yet
 
     def spoken_delta(delta: str) -> None:
         nonlocal current
@@ -521,12 +595,14 @@ def converse(session: RealtimeSession, items: List[Dict[str, Any]], response: Op
             session.send({"type": "output_audio_buffer.clear"})
             if calls:  # never leave a call without its output: the next response would trip on it
                 for call in calls:
-                    session.send({"type": "conversation.item.create", "item": {
-                        "type": "function_call_output", "call_id": call["call_id"],
-                        "output": json.dumps({"isError": True, "error": "cancelled", "message": "Samin interrupted."})}})
+                    send_output(call["call_id"], json.dumps({"isError": True, "error": "cancelled",
+                                                             "message": "Samin interrupted."}))
                 calls = []
         if cancelled_at is not None and (not responding or now - cancelled_at > 2.0):
             break
+        if retry_at is not None and now >= retry_at and cancelled_at is None:
+            retry_at, resent = None, True  # the earlier response.done never came: ask again
+            session.send(last_create)
         if final_at is not None and not audio_active and (saw_audio or not expects_audio or
                                                           now - final_at > AUDIO_WAIT_SECONDS):
             break
@@ -546,7 +622,7 @@ def converse(session: RealtimeSession, items: List[Dict[str, Any]], response: Op
             continue
         ev = message.get("ev")
         if ev == "audio":
-            if cancelled_at is None:
+            if cancelled_at is None and not waiting:
                 try:
                     pcm = base64.b64decode(str(message.get("pcm") or ""), validate=False)
                 except (ValueError, TypeError):
@@ -561,16 +637,20 @@ def converse(session: RealtimeSession, items: List[Dict[str, Any]], response: Op
             audio_active = False
             continue
         if ev == "state":
-            if message.get("state") in ("failed", "closed", "channel_closed"):
+            if message.get("state") in LOST_STATES:
                 session.state = "failed"
                 if cancelled_at is not None:
                     break
+                if not any_event:  # it ended before OpenAI answered anything of this turn: nothing happened
+                    raise _stale()
                 raise RealtimeError("realtime_connection_lost", "The realtime connection dropped.",
                                     pause=PAUSE_FAILED_SECONDS)
             continue
         if ev == "error":
             if message.get("code") == "not_open":
                 session.state = "failed"
+                if not any_event:  # the data channel was already closed: nothing reached OpenAI
+                    raise _stale()
                 raise RealtimeError("realtime_connection_lost", "The realtime connection dropped.",
                                     pause=PAUSE_FAILED_SECONDS)
             continue
@@ -580,23 +660,46 @@ def converse(session: RealtimeSession, items: List[Dict[str, Any]], response: Op
         kind = str(event.get("type") or "")
         any_event = True
         if kind == "response.created":
+            body = event.get("response") if isinstance(event.get("response"), dict) else {}
+            response_id = body.get("id")
+            if waiting and not resent:  # not this turn's: it never asked again yet
+                if isinstance(response_id, str) and response_id:
+                    others.add(response_id)
+                continue
+            if isinstance(response_id, str) and response_id:
+                created.add(response_id)
+            waiting = False
             responding = True
             saw_audio = False
             expects_audio = False
             current = ""
         elif kind == "output_audio_buffer.started":
-            audio_active = saw_audio = True
+            if not waiting:
+                audio_active = saw_audio = True
         elif kind == "response.output_audio_transcript.delta":
-            spoken_delta(str(event.get("delta") or ""))
+            if not foreign(event):
+                spoken_delta(str(event.get("delta") or ""))
         elif kind == "response.output_audio_transcript.done":
             transcript = str(event.get("transcript") or "")
-            if transcript and not current:
+            if transcript and not current and not foreign(event):
                 spoken_delta(transcript)
         elif kind == "response.function_call_arguments.done":
-            _add_call(calls, seen_calls, event)
+            if not foreign(event):
+                _add_call(calls, seen_calls, event)
         elif kind == "response.done":
-            responding = False
             body = event.get("response") if isinstance(event.get("response"), dict) else {}
+            if foreign(event):
+                # An earlier response ended: its calls never run (each gets an output, so no response trips on a
+                # call without one), and this turn's response.create goes again if OpenAI refused it.
+                for item in body.get("output") or []:
+                    if isinstance(item, dict) and item.get("type") == "function_call" and \
+                            isinstance(item.get("call_id"), str) and item["call_id"] not in session.answered:
+                        send_output(item["call_id"], json.dumps({"isError": True, "error": "cancelled"}))
+                if waiting and not resent and cancelled_at is None:
+                    retry_at, resent = None, True
+                    session.send(last_create)
+                continue
+            responding = False
             for item in body.get("output") or []:
                 if isinstance(item, dict) and item.get("type") == "function_call":
                     _add_call(calls, seen_calls, item)
@@ -610,6 +713,10 @@ def converse(session: RealtimeSession, items: List[Dict[str, Any]], response: Op
                 texts.append(current.strip())
                 current = ""
             if cancelled_at is not None:
+                for call in calls:  # a call only in the cancelled response's response.done: answered too
+                    send_output(call["call_id"], json.dumps({"isError": True, "error": "cancelled",
+                                                             "message": "Samin interrupted."}))
+                calls = []
                 break
             status = body.get("status")
             if status == "failed":
@@ -626,9 +733,7 @@ def converse(session: RealtimeSession, items: List[Dict[str, Any]], response: Op
                 if outcome.rounds >= MAX_TOOL_ROUNDS or runner is None:
                     outcome.max_rounds = True
                     for call in calls:
-                        session.send({"type": "conversation.item.create", "item": {
-                            "type": "function_call_output", "call_id": call["call_id"],
-                            "output": json.dumps({"isError": True, "error": "too_many_steps"})}})
+                        send_output(call["call_id"], json.dumps({"isError": True, "error": "too_many_steps"}))
                     calls = []
                     final_at = time.monotonic()
                     continue
@@ -637,9 +742,7 @@ def converse(session: RealtimeSession, items: List[Dict[str, Any]], response: Op
                 images: List[Dict[str, Any]] = []
                 for call in pending:
                     if cancel.is_set():
-                        session.send({"type": "conversation.item.create", "item": {
-                            "type": "function_call_output", "call_id": call["call_id"],
-                            "output": json.dumps({"isError": True, "error": "cancelled"})}})
+                        send_output(call["call_id"], json.dumps({"isError": True, "error": "cancelled"}))
                         continue
                     result = runner.run(call["name"], call["arguments"])
                     record = {"id": call["call_id"], "name": call["name"], "input": result.arguments,
@@ -652,8 +755,7 @@ def converse(session: RealtimeSession, items: List[Dict[str, Any]], response: Op
                     if result.card is not None and not result.is_error:
                         outcome.cards.append(result.card)
                         sink.card(result.card)
-                    session.send({"type": "conversation.item.create", "item": {
-                        "type": "function_call_output", "call_id": call["call_id"], "output": result.text}})
+                    send_output(call["call_id"], result.text)
                     for mime, data in result.images:
                         images.append(_image_item(mime, data))
                 if cancel.is_set():
@@ -664,7 +766,8 @@ def converse(session: RealtimeSession, items: List[Dict[str, Any]], response: Op
                     except RealtimeError as error:
                         if error.code != "realtime_event_too_large":
                             raise
-                session.send({"type": "response.create"})
+                last_create = {"type": "response.create"}
+                session.send(last_create)
                 responding = True
             else:
                 final_at = time.monotonic()
@@ -673,7 +776,16 @@ def converse(session: RealtimeSession, items: List[Dict[str, Any]], response: Op
             error = event.get("error") if isinstance(event.get("error"), dict) else {}
             code = str(error.get("code") or error.get("type") or "error")
             if code == "conversation_already_has_active_response":
-                continue  # the earlier response finishes first; its response.done comes
+                # An earlier response is still going (a cancel OpenAI had not finished yet, a turn that gave up):
+                # it is stale, so cancel it (and what it still plays) and ask again once its response.done came.
+                others.update(created)
+                created.clear()
+                waiting, resent = True, False
+                retry_at = time.monotonic() + ACTIVE_RETRY_SECONDS
+                if cancelled_at is None:
+                    session.send({"type": "response.cancel"})
+                    session.send({"type": "output_audio_buffer.clear"})
+                continue
             if code in ("response_cancel_not_active",):
                 continue
             _LOG.warning("realtime error event (%s)", re.sub(r"[^a-z_]", "", code.lower())[:40])
@@ -1504,14 +1616,24 @@ class RealtimeBrain:
         try:
             session.open()
         except RealtimeError as error:
-            if error.pause:
+            if error.pause and not session.closing:
                 self.pause(error.pause, error.reason)
             raise
         with self._lock:
-            self._live.add(session)
+            # Closed while it opened (an end, the cap): it is not live, whatever the helper managed meanwhile.
+            if session.closing or session.state != "open":
+                closed = True
+            else:
+                closed = False
+                self._live.add(session)
+        if closed:
+            session.error = _closed()
+            session.close()
+            raise session.error
 
     def discard(self, session: RealtimeSession) -> None:
         with self._lock:
+            session.closing = True
             self._live.discard(session)
 
     @property

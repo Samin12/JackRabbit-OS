@@ -802,6 +802,238 @@ class HalfwayTest(RealtimeBase):
         self.assertEqual({"ok": True, "ended": True}, value, "end() does not block either")
 
 
+# ====================================================================== second review round: dead sessions, a
+#                                                                         response still active, the cap, pings
+
+
+class PolishTest(RealtimeBase):
+    """Review notes (round two): a session that died between turns is replaced without a pause or Claude; a refused
+    ``response.create`` waits for the active response; a cancelled response's calls get outputs; live sessions are
+    capped and a warm-up reuses the device's conversation; closing a session while it opens never pauses the brain;
+    a new login never cuts a turn off; a silent stream pings."""
+
+    def conversation_of(self, turn: Dict[str, Any]) -> Any:
+        return self.assistant._conversations[self.done(turn)["conversationId"]]  # noqa: SLF001
+
+    def said(self, turn: Dict[str, Any]) -> str:
+        return "".join(event["text"] for event in turn["events"] if event["type"] == "say.delta")
+
+    def outputs(self) -> Dict[str, str]:
+        return {event["item"]["call_id"]: event["item"]["output"] for event in self.received()
+                if event.get("type") == "conversation.item.create" and
+                event["item"]["type"] == "function_call_output"}
+
+    def creates(self) -> List[Dict[str, Any]]:
+        return [item for item in self.fake_t3.dispatched if item["type"] == "thread.create"]
+
+    def test_a_session_that_died_between_turns_is_replaced_without_a_pause(self) -> None:
+        self.rt_script({"say": ANSWER, "ms": 200})
+        # "lose": the helper says the peer connection failed (the reader marks the session at once, even though the
+        # next turn's drain drops that message); "lose_quietly": nothing is said, the data channel is just closed, so
+        # the turn finds out from its first send.
+        for op in ("lose", "lose_quietly"):
+            with self.subTest(op=op):
+                conversation = self.conversation_of(self.say_turn("hello"))
+                old = conversation.realtime
+                old.helper.send({"op": op})
+                if op == "lose":
+                    self.wait_for(lambda: old.helper is None or old.helper.lost)
+                    self.assertFalse(old.usable())
+                started = self.helpers_started()
+                turn = self.say_turn("are you there?", conversationId=conversation.id)
+                done = self.done(turn)
+                self.assertEqual(("realtime", None), (done["brain"], done.get("interrupted")))
+                self.assertEqual(ANSWER, self.said(turn))
+                self.assertNotIn("error", [event["type"] for event in turn["events"]])
+                self.assertEqual(started + 1, self.helpers_started(), "a new session answered")
+                self.assertIsNot(old, conversation.realtime)
+                self.wait_for(lambda: old.helper is None)
+                self.assertIsNone(self.assistant.realtime.paused(), "a session that died idle never pauses the brain")
+                self.assertEqual([], self.claude_calls())
+                self.assertEqual([], self.eleven.requests)
+
+    def test_a_refused_response_create_waits_for_the_active_response(self) -> None:
+        # OpenAI refuses response.create while an earlier response is still active: that one is cancelled, its words
+        # and its function call are not this turn's (the call gets a "cancelled" output and never runs), and this
+        # turn's response.create goes again after its response.done.
+        self.rt_script({"active": True, "old_call": "t3_new_thread"}, {"say": ANSWER, "ms": 200})
+        turn = self.say_turn("what needs me")
+        self.assertEqual(ANSWER, self.said(turn), "not the earlier response's words")
+        done = self.done(turn)
+        self.assertEqual("realtime", done["brain"])
+        self.assertEqual(["conversation.item.create", "response.create", "response.cancel", "output_audio_buffer.clear",
+                          "conversation.item.create", "response.create"],
+                         [event["type"] for event in self.received()])
+        self.assertEqual({"call_old": json.dumps({"isError": True, "error": "cancelled"})}, self.outputs())
+        self.assertEqual([], self.creates(), "the earlier response's call never ran")
+        self.assertEqual([], self.claude_calls())
+        self.assertEqual([], [event["tool"] for event in self.events(done["conversationId"])
+                              if event["type"] == "tool.completed"])
+
+    def test_a_refused_response_create_is_sent_again_when_no_response_done_comes(self) -> None:
+        self.addCleanup(setattr, realtime, "ACTIVE_RETRY_SECONDS", realtime.ACTIVE_RETRY_SECONDS)
+        realtime.ACTIVE_RETRY_SECONDS = 0.5
+        self.rt_script({"active": "no_done"}, {"say": ANSWER, "ms": 200})
+        turn = self.say_turn("what needs me")
+        self.assertEqual((ANSWER, "realtime"), (self.said(turn), self.done(turn)["brain"]))
+        self.assertEqual(2, [event["type"] for event in self.received()].count("response.create"))
+
+    def test_a_call_only_in_a_cancelled_response_still_gets_its_output(self) -> None:
+        self.rt_script({"say": "Hi.", "ms": 100},
+                       {"say": "Let me look that up", "ms": 3000, "call_on_cancel": "t3_list_threads"})
+        conversation = self.done(self.say_turn("hi"))["conversationId"]
+        cancelled: List[Any] = []
+
+        def on_frame(kind: str, _payload: bytes) -> None:
+            if kind == "A" and not cancelled:
+                cancelled.append(self.call("POST", "/v1/mobile/assistant/cancel", {"conversationId": conversation},
+                                           token=self.watch)[1])
+
+        status, _headers, items = self.stream({"text": "what is running", "turnId": str(uuid.uuid4()),
+                                               "conversationId": conversation}, on_frame=on_frame)
+        self.assertEqual(200, status, items)
+        self.assertTrue(self.events_of(items)[-1].get("interrupted"))
+        self.assertEqual({"call_cancel_2": json.dumps({"isError": True, "error": "cancelled",
+                                                       "message": "Samin interrupted."})}, self.outputs())
+
+    # ------------------------------------------------------------------ the cap, the warm-up
+    def live(self) -> List[Any]:
+        return [item for item in self.assistant._conversations.values()  # noqa: SLF001
+                if item.realtime is not None and item.realtime.state in ("new", "opening", "open")]
+
+    def test_live_sessions_are_capped_per_device_and_on_the_mac(self) -> None:
+        self.rt_script({"say": "Okay.", "ms": 100})
+        watch = [self.done(self.say_turn(f"watch {number}"))["conversationId"] for number in range(3)]
+        self.assertIsNone(self.assistant._conversations[watch[0]].realtime,  # noqa: SLF001
+                          "the watch's least recently used session closed for its third")
+        self.assertEqual(3, self.helpers_started())
+        self.wait_for(lambda: self.assistant.realtime.sessions == 2 and self.ops().count("close") == 1)
+        phone = [self.done(self.turn_as(self.phone, f"phone {number}"))["conversationId"] for number in range(2)]
+        self.assertEqual(4, len(self.live()))
+        other = self.pair("watchos", "Second Watch")["token"]
+        third = self.done(self.turn_as(other, "another watch"))["conversationId"]
+        self.assertIsNone(self.assistant._conversations[watch[1]].realtime,  # noqa: SLF001
+                          "the Mac's least recently used session closed for a fifth")
+        self.assertEqual({watch[2], *phone, third}, {item.id for item in self.live()})
+        self.wait_for(lambda: self.assistant.realtime.sessions == 4 and self.ops().count("close") == 2)
+        self.assertEqual(6, self.helpers_started())
+
+    def turn_as(self, token: str, text: str) -> Dict[str, Any]:
+        status, _headers, items = self.stream({"text": text, "turnId": str(uuid.uuid4())}, token=token)
+        self.assertEqual(200, status, items)
+        return {"events": self.events_of(items), "audio": self.audio_of(items)}
+
+    def test_when_every_session_is_mid_turn_claude_answers(self) -> None:
+        self.script({"reply": "Claude here."})
+        first = self.conversation_of(self.say_turn("one"))
+        second = self.conversation_of(self.say_turn("two"))
+        busy = [first.lock, second.lock]  # as if both were mid-turn: neither may be closed for a third
+        for lock in busy:
+            lock.acquire()
+        try:
+            turn = self.say_turn("three")
+        finally:
+            for lock in busy:
+                lock.release()
+        self.assertEqual("claude", self.done(turn)["brain"])
+        self.assertEqual(2, self.helpers_started(), "no third OpenAI call")
+        self.assertIsNone(self.assistant.realtime.paused(), "the cap never pauses the brain")
+        self.assertIsNotNone(first.realtime)
+        self.assertIsNotNone(second.realtime)
+
+    def test_a_warm_up_without_an_id_reuses_the_devices_conversation(self) -> None:
+        status, first = self.call("POST", "/v1/mobile/assistant/session", {}, token=self.watch)
+        self.assertEqual(200, status, first)
+        self.wait_for(lambda: "answer" in self.ops())
+        for _ in range(3):  # an app relaunched again and again keeps one conversation and one OpenAI call
+            status, again = self.call("POST", "/v1/mobile/assistant/session", {}, token=self.watch)
+            self.assertEqual((200, first["conversationId"]), (status, again["conversationId"]))
+        self.assertEqual(1, len(self.signaling.requests))
+        status, phone = self.call("POST", "/v1/mobile/assistant/session", {}, token=self.phone)
+        self.assertNotEqual(first["conversationId"], phone["conversationId"], "another device: its own")
+        self.call("POST", "/v1/mobile/assistant/end", {"conversationId": first["conversationId"]}, token=self.watch)
+        status, fresh = self.call("POST", "/v1/mobile/assistant/session", {}, token=self.watch)
+        self.assertNotEqual(first["conversationId"], fresh["conversationId"], "an ended conversation is not reused")
+        self.clock.now += assistant.IDLE_END_SECONDS + 1
+        status, later = self.call("POST", "/v1/mobile/assistant/session", {}, token=self.watch)
+        self.assertNotIn(later["conversationId"], (first["conversationId"], fresh["conversationId"]),
+                         "nor one nobody spoke in for five minutes")
+
+    def test_closing_a_session_while_it_opens_never_pauses_the_brain(self) -> None:
+        (self.rt_state / "open_delay").write_text("1.0")
+        status, value = self.call("POST", "/v1/mobile/assistant/session", {}, token=self.watch)
+        self.assertEqual(200, status, value)
+        session = self.assistant._conversations[value["conversationId"]].realtime  # noqa: SLF001
+        self.wait_for(lambda: "answer" in self.ops())
+        self.assertEqual("opening", session.state)
+        status, ended = self.call("POST", "/v1/mobile/assistant/end", {"conversationId": value["conversationId"]},
+                                  token=self.watch)
+        self.assertEqual({"ok": True, "ended": True}, ended)
+        self.wait_for(lambda: session.ready.is_set() and session.helper is None)
+        self.assertEqual(("closed", "realtime_closed"), (session.state, session.error.code))
+        self.assertIsNone(self.assistant.realtime.paused(), "a local close is not OpenAI's fault")
+        time.sleep(0.3)
+        self.assertEqual(0, self.assistant.realtime.sessions, "never counted as live")
+        (self.rt_state / "open_delay").unlink()
+        self.assertEqual("realtime", self.done(self.say_turn("hello"))["brain"])
+
+    def test_a_new_login_never_cuts_a_turn_off(self) -> None:
+        self.rt_script({"say": "Hi.", "ms": 100}, {"say": ANSWER, "ms": 300, "delay": 1.0}, {"say": "Again.", "ms": 100})
+        conversation = self.conversation_of(self.say_turn("hello"))
+        old = conversation.realtime
+        out: Dict[str, Any] = {}
+        worker = threading.Thread(target=lambda: out.update(turn=self.say_turn("what needs me",
+                                                                               conversationId=conversation.id)),
+                                  daemon=True)
+        worker.start()
+        self.wait_for(lambda: conversation.lock.locked() and any(
+            event.get("type") == "response.create" for event in self.received()[2:]))
+        self.assistant._chatgpt_changed()  # noqa: SLF001 - what a new login, a disconnect or a refused refresh does
+        worker.join(30.0)
+        turn = out["turn"]
+        self.assertEqual(("realtime", ANSWER), (self.done(turn)["brain"], self.said(turn)), "the turn finished")
+        self.assertTrue(old.retired)
+        self.assertIs(old, conversation.realtime)
+        self.assistant.sweep_sessions()  # the worker's once-a-second sweep: the turn is over, so it closes now
+        self.assertIsNone(conversation.realtime)
+        self.wait_for(lambda: old.helper is None, 10.0)
+        again = self.say_turn("still there?", conversationId=conversation.id)
+        self.assertEqual("realtime", self.done(again)["brain"])
+        self.assertEqual(2, self.helpers_started(), "the next turn made a new session")
+        self.assertEqual([], self.claude_calls())
+
+    # ------------------------------------------------------------------ pings
+    def test_a_silent_stream_pings_until_the_answer(self) -> None:
+        self.assistant.stream_ping = 0.2
+        self.rt_script({"say": ANSWER, "ms": 200, "delay": 1.2})
+        turn = self.say_turn("what needs me")
+        kinds = [event["type"] for event in turn["events"]]
+        self.assertEqual("heard", kinds[0])
+        first_words = kinds.index("say.delta")
+        self.assertGreaterEqual(kinds[:first_words].count("ping"), 3, kinds)
+        self.assertTrue(all(event == {"type": "ping"} for event in turn["events"] if event["type"] == "ping"))
+        self.assertEqual(("done", ANSWER), (kinds[-1], self.said(turn)))
+
+    def test_a_retry_waiting_for_its_turn_pings_then_replays(self) -> None:
+        self.assistant.stream_ping = 0.2
+        self.rt_script({"say": ANSWER, "ms": 200, "delay": 1.5})
+        body = {"text": "what needs me", "turnId": str(uuid.uuid4())}
+        out: Dict[str, Any] = {}
+        worker = threading.Thread(target=lambda: out.update(first=self.stream(body)), daemon=True)
+        worker.start()
+        self.wait_for(lambda: any(event.get("type") == "response.create" for event in self.received()))
+        status, _headers, items = self.stream(body)  # the watch retried: it waits for the same turn
+        worker.join(30.0)
+        self.assertEqual(200, status, items)
+        events = self.events_of(items)
+        kinds = [event["type"] for event in events]
+        self.assertEqual("ping", kinds[0], "the waiting retry pinged first")
+        self.assertEqual(["heard", "say.delta", "say.done", "done"], [kind for kind in kinds if kind != "ping"])
+        first = self.events_of(out["first"][2])
+        self.assertEqual(first[-1], events[-1], "the same answer")
+        self.assertEqual(1, [event["type"] for event in self.received()].count("response.create"), "it ran once")
+
+
 # ====================================================================== the ChatGPT login
 
 
@@ -900,6 +1132,39 @@ class ChatGPTAuthTest(unittest.TestCase):
         self.auth.start()
         self.now += 901
         self.assertEqual("expired", self.auth.status()["login"]["state"])
+
+    def test_only_a_real_change_tells_the_brain(self) -> None:
+        # Review note: an expired code or a failed poll used to call on_change, which closed every live session.
+        changes: List[str] = []
+        self.auth.on_change = lambda: changes.append("changed")
+        self.issuer.pending = 10_000
+        self.auth.start()
+        self.now += 901  # nobody approved the code in time
+        self.auth._thread.join(10.0)  # noqa: SLF001
+        self.assertEqual("expired", self.auth.status()["login"]["state"])
+        self.issuer.fail_poll = True
+        self.auth.start()
+        self.auth._thread.join(10.0)  # noqa: SLF001
+        self.assertEqual(("failed", "http_500"), (self.auth.status()["login"]["state"],
+                                                  self.auth.status()["login"]["reason"]))
+        self.assertEqual([], changes, "nothing changed: the stored login is the one there was")
+        self.issuer.fail_poll, self.issuer.pending, self.issuer.polls = False, 0, 0
+        self.auth.start()
+        self.auth._thread.join(10.0)  # noqa: SLF001
+        self.assertTrue(self.auth.connected())
+        self.assertEqual(["changed"], changes, "a new login")
+        self.auth.disconnect()
+        self.assertEqual(["changed"] * 2, changes, "a disconnect")
+        write_auth(self.path, auth_record(expires_in=60, now=self.now))
+        self.issuer.refuse_refresh = True
+        with self.assertRaises(chatgpt.ChatGPTError):
+            self.auth.access_token()
+        self.assertEqual(["changed"] * 3, changes, "a refused refresh")
+        self.issuer.refuse_refresh, self.issuer.fail_refresh = False, True
+        write_auth(self.path, auth_record(expires_in=60, now=self.now))
+        with self.assertRaises(chatgpt.ChatGPTError):
+            self.auth.access_token()
+        self.assertEqual(["changed"] * 3, changes, "a refresh that merely failed (OpenAI busy) changes nothing")
 
     def test_a_dev_copy_never_uses_the_real_login(self) -> None:
         dev = chatgpt.make_auth(installed=False)

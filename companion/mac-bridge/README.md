@@ -62,9 +62,10 @@ You can run it again at any time. It:
    (SpeechTranscriber, en-US, a test clip took 0.2 s)` or `transcription: off (<reason>)`. A failed build never fails
    the install. It also makes the realtime voice's venv (`~/Library/Application Support/SamRabbit/realtime-venv`,
    Python 3.12 via `uv`, `aiortc` and `av` from `realtime/requirements.txt`: pinned with hashes, wheels only; made in a
-   temp folder and swapped in only when the helper's `--check` passes; remade only when the requirements change) and
-   prints `realtime helper: ready (Python 3.12.x, aiortc 1.15.0, av 17.1.0)` or `realtime helper: off (<reason>)`
-   (no `uv`: `brew install uv`). It never fails the install either;
+   temp folder and swapped in only when the helper's `--check` passes; remade when the requirements change, and once
+   per run when the venv's stamp matches but its `--check` fails: `the realtime venv does not pass its check; making
+   it again`) and prints `realtime helper: ready (Python 3.12.x, aiortc 1.15.0, av 17.1.0)` or `realtime helper: off
+   (<reason>)` (no `uv`: `brew install uv`). It never fails the install either;
 3. writes `~/Library/LaunchAgents/com.samrabbit.bridge.plist` (RunAtLoad, KeepAlive, a PATH that includes
    `/opt/homebrew/bin`, `--sync-dir`, `--desktop-token-file` (no `--cli`: the install marker makes the installed copy
    use the real Heptabase CLI; see "Which Heptabase CLI" below), the Composio CLI's absolute path as
@@ -478,7 +479,9 @@ interrupted, never answered by Claude. The summary says `assistant: {available, 
   `https://auth.openai.com`: `deviceauth/usercode`, `deviceauth/token`, `oauth/token`), but the Mac's own login, so
   it never rotates the R1's refresh token, and it never reads or writes `~/.codex`. Tokens live in
   `~/.config/samrabbit/chatgpt-auth.json` (0600) and are refreshed five minutes before they expire (and once when
-  OpenAI refuses one); a refused refresh means connect again. Routes for the desktop app (loopback + desktop token):
+  OpenAI refuses one); a refused refresh means connect again. Only a real change (a new login stored, a disconnect,
+  a refused refresh; never a code that expired or a poll that failed) retires the live sessions: each finishes the
+  turn it is in, then closes (the next turn opens a new one). Routes for the desktop app (loopback + desktop token):
   `POST /v1/assistant/chatgpt/start` → `{userCode, verificationUrl, expiresAt}` (the bridge then polls by itself),
   `GET /v1/assistant/chatgpt/status` → `{connected, plan?, email?, login: {state, …}}`,
   `POST /v1/assistant/chatgpt/disconnect`. A dev copy uses a login only with an explicit `--chatgpt-auth-file`.
@@ -489,7 +492,12 @@ interrupted, never answered by Claude. The summary says `assistant: {available, 
   signaling itself, exactly like the R1's `platform.py` (`POST https://api.openai.com/v1/realtime/calls`, multipart
   `sdp` + `session`, headers `Authorization: Bearer <access token>`, `Accept`, `OpenAI-Safety-Identifier`,
   `Content-Type`), so the token never reaches the helper (never on argv, never logged). Helper protocol: JSON lines
-  on stdin/stdout (see the helper's docstring); it never logs anything.
+  on stdin/stdout (see the helper's docstring); it never logs anything. Its data channel advertises an SCTP
+  `max-message-size` of 256 KiB like libwebrtc (aiortc's default says 64 KiB, so OpenAI would drop a bigger event,
+  such as the echo of a `mac_look` screenshot); events the bridge sends stay under 240 KiB. A reply's audio never
+  starts with an earlier one's: the pre-roll holds only the response being made (emptied on `response.created` and
+  on a cleared buffer, nothing kept after a barge-in), and the packets aiortc's jitter buffer held over a pause in
+  RTP are dropped when a new response began meanwhile.
 - **The session**: the R1's `_realtime_session` shape with manual turns: `{type: realtime, model: gpt-realtime-2.1,
   output_modalities: [audio], audio: {input: {format: audio/pcm 24 kHz, turn_detection: null}, output: {format,
   voice: marin}}, tools, tool_choice: auto}`. Instructions: `PRIMARY_VOICE_INSTRUCTION` (verbatim from
@@ -502,9 +510,21 @@ interrupted, never answered by Claude. The summary says `assistant: {available, 
   through the same mobile API calls as the Claude path's tools (loopback, never through a system proxy).
 - **A conversation's session** opens with `POST /v1/mobile/assistant/session` (or the first turn) and closes on
   `/end`, a goodbye, three idle minutes, or after 55 minutes (the next turn opens a new one with a short summary).
+  A warm-up without a `conversationId` reuses the device's latest conversation that is still going (not ended, a
+  turn in the last five minutes), so relaunching the watch app keeps one warm session instead of stacking calls. At
+  most 2 sessions live per device and 4 on the Mac (each is an OpenAI call on the subscription and a helper
+  process): a new one closes the least recently used idle one; when every other one is mid-turn, that turn is
+  answered by Claude (no pause). A session whose connection ended while idle (the helper reported it, or the data
+  channel was already closed when the turn sent its words) is never reused: the turn opens a new one and goes on,
+  without pausing the brain or handing over to Claude. Closing a session while it is still opening (an end, the cap)
+  never pauses the brain or counts it as live.
   Per turn: `conversation.item.create` (the words, with `[Now: …]` when the minute changed) and `response.create`;
   the transcript deltas and the audio stream to the watch as they come; a function call runs on the Mac, then
-  `function_call_output` and `response.create` after `response.done`. `POST /v1/mobile/assistant/cancel` sends
+  `function_call_output` and `response.create` after `response.done`; every function call gets an output, also one
+  that only appears in a cancelled response's `response.done`. When OpenAI refuses `response.create` because an
+  earlier response is still active (`conversation_already_has_active_response`), the bridge cancels that stale
+  response, ignores its words, audio and calls (each call gets a "cancelled" output and never runs), and sends
+  `response.create` again after its `response.done` (or after 3 s). `POST /v1/mobile/assistant/cancel` sends
   `response.cancel` and `output_audio_buffer.clear` (the stream ends with `done {interrupted: true}`). Announcements
   are said by the session itself (`{"announce": id}` turns: a `[T3 update]` item and `response.create` with
   instructions to say the line verbatim).
@@ -518,10 +538,19 @@ interrupted, never answered by Claude. The summary says `assistant: {available, 
 application/x-samrabbit-stream` answers `200`, `Content-Type: application/x-samrabbit-stream`, `Transfer-Encoding:
 chunked` (HTTP/1.1), as frames of 1 type byte, a 4-byte big-endian length and the payload: `J` = a UTF-8 JSON event
 (`heard`, `say.delta`, `say.done`, `action`, `card`, `done {conversationId, turnId, expectReply, endConversation,
-interrupted?, brain, timings: {stt, firstAudio, total}}`, `error {code, message}` (then `done`)), `A` = PCM16LE mono
-16 kHz audio, 100 ms per frame. The Claude brain streams the same way (ElevenLabs `pcm_16000`). Without that header the
-answer is the buffered JSON above (a realtime turn's audio as `audio/wav`), so old clients keep working. A retried
-turn id replays the same answer without running again.
+interrupted?, brain, timings: {stt, firstAudio, total}}`, `error {code, message}` (then `done`), `ping`), `A` =
+PCM16LE mono 16 kHz audio, up to 100 ms per frame (often shorter: buffered audio is flushed before each `J` event). The
+Claude brain streams the same way (ElevenLabs `pcm_16000`). Without that header the answer is the buffered JSON above
+(a realtime turn's audio as `audio/wav`), so old clients keep working. A retried turn id replays the same answer
+without running again (text, actions and cards; audio only while it is still cached).
+
+- **Keep-alive:** while a turn is open (also while a retry of the same turn id waits for it), a stream that wrote no
+  frame for 10 s writes `J {"type":"ping"}`, so a long tool call (`ui_generate`, `mac_look`, T3) never looks like a
+  dead connection (the watch gives up after 40 s of silence). Clients ignore it (and any other unknown event type).
+  A ping can be the stream's first frame: then the response is already `200`, and a failure after it comes as
+  `error` + `done` in the stream instead of a JSON error envelope.
+- Failures before the first frame (`409 assistant_busy`, `503 assistant_unavailable`, `transcribe_*`, `invalid_*`)
+  answer the normal JSON error envelope with that status, even with the stream's `Accept`.
 
 **T3 Code.** The bridge has its own T3 session ("SamRabbit bridge", scopes `orchestration:read orchestration:operate`),
 separate from the R1's. It mints a pairing credential with the CLI inside the T3 Code app
@@ -654,12 +683,17 @@ helper (`tests/fake_realtime_peer.py`: the helper protocol plus OpenAI's data-ch
 signaling server and a fake ChatGPT login (`tests/fake_openai.py`): the session's exact shape and headers, the
 stream's frames, the `[Now: …]` line, tools and cards, the journal's verbatim check, cancel, warm-up, idle and 55-minute
 sessions (a stale one replaced without a deadlock), announcements, the fallback to Claude (never after a tool ran or a
-cancel), the token refresh, brain settings, the device login and its routes,
+cancel), a session that died between turns (replaced, no pause), a refused `response.create` while another response
+is active, outputs for a cancelled response's calls, the session cap and the warm-up's reuse, a close while opening, a
+login change mid-turn and which login events count as a change, pings (also while a retry waits), the token refresh,
+brain settings, the device login and its routes,
 and that the token, words and audio never reach the log. `tests/test_realtime_profile.py` checks the vendored R1
 text and tools against `runtime/sam_runtime`. The helper itself (real WebRTC with aiortc) is tested in the realtime
 venv: `<venv>/bin/python -m unittest discover -s companion/mac-bridge/realtime -p 'test_*.py'`
-(`realtime/test_realtime_peer.py`: the helper against a local aiortc peer standing in for OpenAI, and the real bridge
-end to end with it). `tests/test_sync.py` covers the conversation store, dedupe, drafts, blobs, the auth matrix (R1 token vs desktop token, loopback vs a real
+(`realtime/test_realtime_peer.py`: the helper against a local aiortc peer standing in for OpenAI, which like
+libwebrtc never sends an event over the advertised max-message-size: a 100 KB event arrives whole, a cut-off reply's
+audio never plays in front of the next one when the server sends no RTP between replies, and the real bridge end to
+end with it). `tests/test_sync.py` covers the conversation store, dedupe, drafts, blobs, the auth matrix (R1 token vs desktop token, loopback vs a real
 LAN peer through this Mac's own address), SSE and screenshots.
 
 ## Troubleshooting

@@ -356,9 +356,10 @@ EOF
 fi
 
 # 2c. The realtime voice's helper venv (Python 3.12+, aiortc and av pinned with hashes, wheels only), made with uv in
-#     a temp folder and swapped in only when it works; remade only when requirements.txt or the Python version
-#     changed. Without uv, a Python or the wheels, the realtime voice stays off (the Claude brain answers). Never fails
-#     the install.
+#     a temp folder and swapped in only when it works; remade when requirements.txt or the Python version changed,
+#     or (once per run) when the helper's --check fails in a venv whose stamp still matches (damaged packages).
+#     Without uv, a Python or the wheels, the realtime voice stays off (the Claude brain answers). Never fails the
+#     install.
 REALTIME_VENV="$HOME_DIR/Library/Application Support/SamRabbit/realtime-venv"
 REALTIME_PEER="$APP_DIR/realtime/samrabbit_realtime_peer.py"
 REALTIME_VERSION=${SAMRABBIT_REALTIME_PYTHON_VERSION:-3.12}
@@ -379,9 +380,16 @@ else
     [ -x "$REALTIME_VENV/bin/python" ] || REALTIME_OFF="uv is not installed: brew install uv, then run install.sh again"
   else
     STAMP=$({ cat "$SOURCE_DIR/realtime/requirements.txt"; echo "python $REALTIME_VERSION"; } | shasum -a 256 | cut -c1-64)
+    REALTIME_BUILD=1
     if [ -x "$REALTIME_VENV/bin/python" ] && [ "$(cat "$REALTIME_VENV/.samrabbit-stamp" 2>/dev/null || true)" = "$STAMP" ]; then
-      echo "realtime venv is up to date"
-    else
+      if "$REALTIME_VENV/bin/python" -I "$REALTIME_PEER" --check >/dev/null 2>&1; then
+        echo "realtime venv is up to date"
+        REALTIME_BUILD=0
+      else
+        echo "the realtime venv does not pass its check; making it again"
+      fi
+    fi
+    if [ "$REALTIME_BUILD" = 1 ]; then
       mkdir -p "$(dirname "$REALTIME_VENV")"
       BUILD_VENV="$REALTIME_VENV.new"
       BUILD_LOG=$(mktemp "${TMPDIR:-/tmp}/samrabbit-realtime-venv.XXXXXX")

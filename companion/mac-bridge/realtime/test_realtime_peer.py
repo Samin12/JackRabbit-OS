@@ -25,6 +25,7 @@ import math
 import os
 from pathlib import Path
 import queue
+import re
 import shutil
 import socket
 import struct
@@ -52,17 +53,31 @@ TONE_LEVEL = 9000
 
 
 class ToneTrack(AudioStreamTrack):
-    """48 kHz mono: a 440 Hz tone while ``on`` (the fake model is speaking), silence otherwise; real-time paced."""
+    """48 kHz mono: a 440 Hz tone at ``level`` while ``on`` (the fake model is speaking), silence otherwise;
+    real-time paced. ``silent_rtp = False``: no RTP at all while not speaking (a server that sends nothing between
+    replies)."""
 
     def __init__(self) -> None:
         super().__init__()
         self.on = False
+        self.level = TONE_LEVEL
+        self.silent_rtp = True
+        self._tail = 0
         self._phase = 0
         self._start: Optional[float] = None
         self._timestamp = 0
 
     async def recv(self) -> Any:
         rate, samples = 48_000, 960
+        if not self.on and not self.silent_rtp:
+            if self._tail > 0:  # a few silent frames first, as speech ends (and so the encoder holds no tone)
+                self._tail -= 1
+            else:
+                while not self.on:
+                    await asyncio.sleep(0.005)
+                self._start = time.time() - (self._timestamp + samples) / rate  # paced again from now
+        if self.on:
+            self._tail = 3
         if self._start is None:
             self._start = time.time()
         else:
@@ -73,7 +88,7 @@ class ToneTrack(AudioStreamTrack):
         values = array("h", [0] * samples)
         if self.on:
             for index in range(samples):
-                values[index] = int(TONE_LEVEL * math.sin(2 * math.pi * TONE_HZ * (self._phase + index) / rate))
+                values[index] = int(self.level * math.sin(2 * math.pi * TONE_HZ * (self._phase + index) / rate))
         self._phase += samples
         frame = av.AudioFrame(format="s16", layout="mono", samples=samples)
         frame.planes[0].update(values.tobytes())
@@ -87,7 +102,10 @@ class FakeOpenAI:
     """An aiortc answerer standing in for OpenAI Realtime's WebRTC side. ``script``: what each ``response.create``
     does, in order (the last repeats): ``{"say": str, "ms": int}`` speaks (transcript deltas + the tone for ``ms``),
     ``{"call": name, "arguments": {...}}`` asks for a function call, ``{"say": str, "ms": int, "verbatim": True}``
-    speaks the ``instructions`` it was given (announcements). Everything the client sent is in ``received``."""
+    speaks the ``instructions`` it was given (announcements), ``{"big": n}`` sends a ``session.updated`` whose
+    instructions are ``n`` characters (and no response); ``"level"`` sets a reply's tone level. Everything the client
+    sent is in ``received``. Like libwebrtc, it never sends an event over the ``a=max-message-size`` the offer
+    advertised (64 KiB when it says nothing): those are in ``refused``."""
 
     def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
         self.loop = loop
@@ -99,9 +117,13 @@ class FakeOpenAI:
         self.responses = 0
         self.speaking_task: Optional[asyncio.Task] = None
         self.offers: List[str] = []
+        self.max_message = 65_536
+        self.refused: List[str] = []
 
     async def answer(self, offer: str) -> str:
         self.offers.append(offer)
+        found = re.search(r"a=max-message-size:(\d+)", offer)
+        self.max_message = int(found.group(1)) if found else 65_536
         pc = RTCPeerConnection(RTCConfiguration(iceServers=[]))
         self.pcs.append(pc)
         self.track = ToneTrack()
@@ -124,13 +146,20 @@ class FakeOpenAI:
 
     def emit(self, event: Dict[str, Any]) -> None:
         if self.dc is not None and self.dc.readyState == "open":
-            self.dc.send(json.dumps(event))
+            data = json.dumps(event)
+            if len(data.encode("utf-8")) > self.max_message:
+                self.refused.append(str(event.get("type")))
+                return
+            self.dc.send(data)
 
     async def handle(self, event: Dict[str, Any]) -> None:
         kind = event.get("type")
         if kind == "response.create":
             step = self.script[min(self.responses, len(self.script) - 1)]
             self.responses += 1
+            if step.get("big"):
+                self.emit({"type": "session.updated", "session": {"instructions": "x" * int(step["big"])}})
+                return
             response_id = f"resp_{self.responses}"
             self.emit({"type": "response.created", "response": {"id": response_id, "status": "in_progress"}})
             if "call" in step:
@@ -145,6 +174,8 @@ class FakeOpenAI:
             if step.get("verbatim"):
                 instructions = str((event.get("response") or {}).get("instructions") or "")
                 text = instructions.split("“", 1)[-1].rsplit("”", 1)[0] if "“" in instructions else text
+            if self.track is not None:
+                self.track.level = int(step.get("level") or TONE_LEVEL)
             self.speaking_task = self.loop.create_task(self.speak(response_id, text, int(step.get("ms") or 800)))
         elif kind == "response.cancel":
             if self.speaking_task is not None and not self.speaking_task.done():
@@ -364,6 +395,61 @@ class HelperTest(unittest.TestCase):
         self.assertEqual([], [item for item in after_end if item.get("ev") == "audio"], "nothing after the drop")
         self.assertIn("output_audio_buffer.cleared", [item["event"]["type"] for item in collected
                                                       if item.get("ev") == "event"])
+
+    def wait_event(self, kind: str, timeout: float = 20.0) -> Dict[str, Any]:
+        deadline = time.monotonic() + timeout
+        while True:
+            message = self.helper.wait_for("event", timeout=max(0.1, deadline - time.monotonic()))
+            if message["event"].get("type") == kind:
+                return message["event"]
+
+    def drain(self) -> List[Dict[str, Any]]:
+        out = []
+        while not self.helper.messages.empty():
+            out.append(self.helper.messages.get())
+        return out
+
+    def test_events_over_64_kib_arrive_whole(self) -> None:
+        # Review note: aiortc advertised a=max-message-size:65536, so OpenAI (libwebrtc: 256 KiB) would drop a bigger
+        # event, like the echo of a screenshot item or a long session.updated.
+        self.connect()
+        self.assertIn("a=max-message-size:262144", self.fake.offers[-1])
+        self.fake.script = [{"big": 100_000}]
+        self.helper.send({"op": "send", "event": {"type": "response.create"}})
+        event = self.wait_event("session.updated", timeout=20)
+        self.assertEqual(100_000, len(event["session"]["instructions"]))
+        self.assertEqual([], self.fake.refused)
+        done = subprocess.run([sys.executable, "-I", str(HELPER), "--check"], capture_output=True, text=True,
+                              timeout=60)
+        self.assertEqual(262_144, json.loads(done.stdout)["sctpMaxMessage"])
+
+    def test_no_stale_audio_is_replayed_in_front_of_the_next_reply(self) -> None:
+        # Review note: the pre-roll kept the cut-off reply's last 300 ms; when the server sent no RTP until the next
+        # reply, that audio played first.
+        self.connect()
+        assert self.fake.track is not None
+        self.fake.track.silent_rtp = False
+        self.fake.script = [{"say": "A long first answer that keeps going.", "ms": 1500, "level": 9000},
+                            {"say": "Second.", "ms": 900, "level": 2500}]
+        self.helper.send({"op": "send", "event": {"type": "response.create"}})
+        self.helper.wait_for("audio", timeout=15)
+        self.helper.send({"op": "drop_audio"})  # tapped on the watch; that reply's audio keeps coming a while
+        self.wait_event("output_audio_buffer.stopped", timeout=15)
+        time.sleep(0.6)  # nothing on the track now
+        self.drain()
+        self.helper.send({"op": "send", "event": {"type": "response.create"}})
+        rest: List[Dict[str, Any]] = []
+        self.helper.wait_for("audio_end", timeout=20, collect=rest)
+        pcm = pcm_of(rest)
+        self.assertGreater(len(pcm) / 32000, 0.5, "the second reply played")
+        self.assertGreater(loudest(pcm), 1500)
+        # Nothing of the cut-off (louder) reply: neither the old pre-roll (300 ms) nor what aiortc's jitter buffer held
+        # over the pause (four 20 ms packets). One 20 ms frame of it is 320 samples at 16 kHz; a few loud samples are
+        # only Opus's onset transient.
+        samples = array("h")
+        samples.frombytes(pcm)
+        loud = sum(1 for value in samples if abs(value) > 6000)
+        self.assertLess(loud, 40, f"{loud} samples of the cut-off reply's tone came first")
 
     def test_close_and_end_of_input_end_the_helper(self) -> None:
         self.connect()

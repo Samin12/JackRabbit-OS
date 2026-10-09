@@ -1,7 +1,7 @@
 """Stand-ins for OpenAI's side of the realtime voice (tests only, loopback HTTP):
 
 * ``FakeIssuer``: the ChatGPT device login (``auth.openai.com``): ``/api/accounts/deviceauth/usercode``,
-  ``/api/accounts/deviceauth/token`` (403 for the first ``pending`` polls), ``/oauth/token`` (the authorization code
+  ``/api/accounts/deviceauth/token`` (403 for the first ``pending`` polls; 500 with ``fail_poll``), ``/oauth/token`` (the authorization code
   exchange, form-encoded, and refreshes, JSON; ``refuse_refresh`` answers 400 ``invalid_grant``);
 * ``FakeSignaling``: ``POST /v1/realtime/calls`` (multipart ``sdp`` + ``session``) answering a fake SDP, or the
   statuses queued in ``statuses``.
@@ -46,6 +46,7 @@ class FakeIssuer(_Server):
         self.issued = 0
         self.refuse_refresh = False
         self.fail_refresh = False
+        self.fail_poll = False
         self.expires_in = 3600
         self.plan = "pro"
         self.email = "samin@example.com"
@@ -86,6 +87,8 @@ class FakeIssuer(_Server):
             return 200, {"device_auth_id": "device-auth-1", "user_code": "WXYZ-12345", "interval": 1}
         if path == "/api/accounts/deviceauth/token":
             self.polls += 1
+            if self.fail_poll:
+                return 500, {"error": "server_error"}
             if self.polls <= self.pending:
                 return 403, {"error": "authorization_pending"}
             return 200, {"authorization_code": "auth-code-1", "code_verifier": "verifier-1"}
