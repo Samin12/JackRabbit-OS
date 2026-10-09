@@ -465,9 +465,14 @@ answer with ElevenLabs (the Jarvis voice). Every route takes the mobile token, f
 The watch assistant answers like the R1 (`samrabbit_realtime.py`): **gpt-realtime-2.1** on Samin's ChatGPT
 subscription, the voice **marin**, the R1's own instructions and tool names. Setting `assistant.brain` (in
 `assistant.json`, or `--assistant-brain`): `auto` (default: realtime when ChatGPT is connected and the helper is
-ready, else Claude), `realtime` or `claude`. A realtime turn that fails before it said anything (OpenAI refused, the
+ready, else Claude), `realtime` or `claude`. A realtime turn that fails before anything happened (OpenAI refused, the
 network, the helper) is answered by Claude instead, and a refusal pauses realtime for a while (`401/403`: 10 minutes,
-`429`: 1 minute). The summary says `assistant: {available, brain, reason?, model, chatgpt: {connected}}`.
+`429`: 1 minute). Once a tool ran, or words, audio, an action or a card went out, nobody answers that turn again
+(that would create the T3 task, the event or the note twice): a failed response ends it with what it has ("Sorry, I
+got cut off partway through that."), a lost connection with `error {assistant_interrupted}` (a retry of the same turn
+gets the same answer); the tools that ran are in the timeline either way. A turn Samin stopped (`cancel`) ends
+interrupted, never answered by Claude. The summary says `assistant: {available, brain, reason?, model, chatgpt:
+{connected}}`.
 
 - **The login** (`samrabbit_chatgpt.py`): the R1's Codex device flow (`app_EMoamEEZ73f0CkXaXp7hrann`,
   `https://auth.openai.com`: `deviceauth/usercode`, `deviceauth/token`, `oauth/token`), but the Mac's own login, so
@@ -648,7 +653,8 @@ no real Claude, ElevenLabs, T3, journal or calendar. `tests/test_realtime.py` dr
 helper (`tests/fake_realtime_peer.py`: the helper protocol plus OpenAI's data-channel events from a script), a fake
 signaling server and a fake ChatGPT login (`tests/fake_openai.py`): the session's exact shape and headers, the
 stream's frames, the `[Now: …]` line, tools and cards, the journal's verbatim check, cancel, warm-up, idle and 55-minute
-sessions, announcements, the fallback to Claude, the token refresh, brain settings, the device login and its routes,
+sessions (a stale one replaced without a deadlock), announcements, the fallback to Claude (never after a tool ran or a
+cancel), the token refresh, brain settings, the device login and its routes,
 and that the token, words and audio never reach the log. `tests/test_realtime_profile.py` checks the vendored R1
 text and tools against `runtime/sam_runtime`. The helper itself (real WebRTC with aiortc) is tested in the realtime
 venv: `<venv>/bin/python -m unittest discover -s companion/mac-bridge/realtime -p 'test_*.py'`

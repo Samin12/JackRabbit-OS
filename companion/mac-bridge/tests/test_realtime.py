@@ -638,6 +638,170 @@ class BrainTest(RealtimeBase):
         self.assertEqual("claude", self.done(self.say_turn("hi"))["brain"])
 
 
+# ====================================================================== a turn that fails halfway, a stale session
+
+
+class HalfwayTest(RealtimeBase):
+    """Review fixes: a turn whose realtime tools already acted, or that Samin stopped, is never answered again by
+    Claude; a session that is too old or whose helper died is replaced without a deadlock."""
+
+    def creates(self) -> List[Dict[str, Any]]:
+        return [item for item in self.fake_t3.dispatched if item["type"] == "thread.create"]
+
+    def tools_recorded(self, conversation: str) -> List[str]:
+        return [event["tool"] for event in self.events(conversation) if event["type"] == "tool.completed"]
+
+    def test_a_failed_response_after_a_tool_ends_the_turn_without_claude(self) -> None:
+        self.rt_script({"call": "t3_new_thread", "arguments": {"prompt": "fix the login bug"}},
+                       {"fail": "server_error"})
+        turn = self.say_turn("have T3 fix the login bug")
+        events = turn["events"]
+        self.assertEqual(["heard", "action", "say.done", "done"], [event["type"] for event in events])
+        self.assertEqual("task_started", events[1]["kind"])
+        self.assertEqual("Sorry, I got cut off partway through that.", events[2]["text"], "the watch says it")
+        done = self.done(turn)
+        self.assertEqual(("realtime", None), (done["brain"], done.get("interrupted")))
+        self.assertEqual(1, len(self.creates()), "the T3 task was made once")
+        self.assertEqual([], self.claude_calls(), "Claude never answered the same words again")
+        self.assertEqual(["t3_new_thread"], self.tools_recorded(done["conversationId"]))
+        self.assertIsNone(self.assistant.realtime.paused(), "a server error does not pause the brain")
+
+    def test_a_rate_limited_response_after_a_tool_still_pauses_the_brain(self) -> None:
+        self.rt_script({"call": "get_status", "arguments": {}}, {"fail": "rate_limit_exceeded"})
+        done = self.done(self.say_turn("how are things"))
+        self.assertEqual("realtime", done["brain"])
+        self.assertEqual([], self.claude_calls())
+        self.assertEqual("realtime_response_failed", self.assistant.realtime.paused())
+
+    def test_a_lost_connection_after_a_tool_is_not_answered_again(self) -> None:
+        self.rt_script({"call": "t3_new_thread", "arguments": {"prompt": "fix the login bug"}}, {"die": True})
+        body = {"text": "have T3 fix the login bug", "turnId": str(uuid.uuid4())}
+        status, _headers, items = self.stream(body)
+        self.assertEqual(200, status, items)
+        events = self.events_of(items)
+        self.assertEqual(["heard", "action", "error", "done"], [event["type"] for event in events])
+        self.assertEqual("assistant_interrupted", events[2]["code"])
+        done = events[-1]
+        self.assertEqual("realtime", done["brain"])
+        self.assertEqual([], self.claude_calls())
+        self.assertEqual(1, len(self.creates()))
+        conversation = done["conversationId"]
+        self.assertEqual(["t3_new_thread"], self.tools_recorded(conversation), "in the timeline all the same")
+        heard, said = self.assistant._conversations[conversation].history[-1]  # noqa: SLF001
+        self.assertEqual("have T3 fix the login bug", heard)
+        self.assertIn("task_started", said, "the next session's summary knows the task was started")
+        # The watch retrying the same turn gets the same answer: nothing runs again.
+        status, _headers, value = self.stream(body)
+        self.assertEqual((502, "assistant_interrupted"), (status, value["error"]["code"]))
+        self.assertEqual((1, []), (len(self.creates()), self.claude_calls()))
+
+    def test_a_stopped_turn_whose_session_fails_is_not_answered_by_claude(self) -> None:
+        conversation = self.done(self.say_turn("hi"))["conversationId"]
+        found = self.assistant._conversations[conversation]  # noqa: SLF001
+        found.realtime.helper.process.kill()  # the next turn needs a new session
+        found.realtime.helper.process.wait()
+        self.assistant.sweep_sessions()
+        self.assertIsNone(found.realtime)
+        brain = self.assistant.realtime
+
+        def refused(_offer: str, _config: Dict[str, Any]) -> str:
+            time.sleep(1.0)  # Samin taps stop meanwhile
+            raise realtime.RealtimeError("realtime_unavailable", "OpenAI could not start the session.")
+
+        brain.signal = refused
+        self.addCleanup(vars(brain).pop, "signal", None)
+        out: Dict[str, Any] = {}
+        worker = threading.Thread(target=lambda: out.update(turn=self.stream(
+            {"text": "what's next", "turnId": str(uuid.uuid4()), "conversationId": conversation})), daemon=True)
+        worker.start()
+        self.wait_for(lambda: found.cancel is not None)
+        status, value = self.call("POST", "/v1/mobile/assistant/cancel", {"conversationId": conversation},
+                                  token=self.watch)
+        self.assertEqual({"ok": True, "cancelled": True}, value)
+        worker.join(30.0)
+        status, _headers, items = out["turn"]
+        self.assertEqual(200, status, items)
+        events = self.events_of(items)
+        self.assertEqual(["heard", "done"], [event["type"] for event in events])
+        self.assertEqual((True, False, "realtime"), (events[-1].get("interrupted"), events[-1]["expectReply"],
+                                                     events[-1]["brain"]))
+        self.assertEqual([], self.claude_calls(), "a stopped turn is not answered by anyone")
+        self.assertEqual([], self.eleven.requests)
+
+    def test_claude_never_starts_a_turn_that_was_already_stopped(self) -> None:
+        conversation = self.assistant._conversations[self.done(self.say_turn("hi"))["conversationId"]]  # noqa: SLF001
+        result = assistant._TurnResult(conversation.id, str(uuid.uuid4()))  # noqa: SLF001
+        sink = assistant.TurnSink(result, None, monotonic=time.monotonic, started=time.monotonic(), keep_audio=True)
+        sink.cancel.set()
+        request = assistant._TurnRequest(conversation_id=conversation.id, turn_id=result.turn_id,  # noqa: SLF001
+                                         text="start a task")
+        run = self.assistant._claude_turn(conversation, request, "start a task", sink)  # noqa: SLF001
+        self.assertEqual(({}, True, False), (dict(run.tools), result.interrupted, result.expect_reply))
+        self.assertEqual([], self.claude_calls())
+
+    def test_an_announcement_whose_session_dies_mid_words_is_said_once(self) -> None:
+        conversation = self.done(self.say_turn("hello"))["conversationId"]
+        self.poll(conversation)  # the announcer's baseline
+        with self.fake_t3.lock:
+            thread = self.fake_t3.get_thread("t-new")
+            thread["hasPendingApprovals"] = True
+            thread["session"] = {"threadId": "t-new", "status": "running", "activeTurnId": "turn-x", "lastError": None}
+            thread["latestTurn"] = {"turnId": "turn-x", "state": "running", "requestedAt": "2026-10-08T13:11:00.000Z"}
+            thread["updatedAt"] = "2026-10-08T13:11:00.000Z"
+        self.hub.invalidate()
+        [item] = self.poll(conversation)["items"]
+        self.rt_script({"verbatim": True, "die_after": "words"})
+        status, _headers, items = self.stream({"announce": str(item["id"]), "conversationId": conversation,
+                                               "turnId": str(uuid.uuid4())})
+        self.assertEqual(200, status, items)
+        events = self.events_of(items)
+        line = "“Draft for later” in Hermes needs your approval."
+        self.assertEqual(line, "".join(event["text"] for event in events if event["type"] == "say.delta"),
+                         "the words once, not the session's and then ElevenLabs' again")
+        self.assertEqual(line, [event for event in events if event["type"] == "say.done"][0]["text"])
+        self.assertGreater(len(self.audio_of(items)), 0, "ElevenLabs said it")
+        self.assertTrue(self.eleven.requests[-1]["path"].endswith("/stream"))
+
+    def test_a_stale_session_is_replaced_without_a_deadlock(self) -> None:
+        # Review repro: _session() closed a stale session with the (non-reentrant) realtime_lock held.
+        conversation = self.done(self.say_turn("hi"))["conversationId"]
+        found = self.assistant._conversations[conversation]  # noqa: SLF001
+
+        def helper_died(session: Any) -> None:
+            session.helper.process.kill()
+            session.helper.process.wait()
+
+        def fifty_five_minutes(session: Any) -> None:
+            session.opened_at -= realtime.MAX_SESSION_SECONDS + 1
+
+        for make_stale in (helper_died, fifty_five_minutes):
+            old = found.realtime
+            # Like a turn (or an announcement turn) of this conversation: it holds the conversation's lock, so the
+            # 1 s sweep leaves the stale session to it.
+            with found.lock:
+                make_stale(old)
+                self.assistant.sweep_sessions()
+                self.assertIs(old, found.realtime)
+                self.assertEqual("open", old.state, "the sweep has not closed it")
+                worker = threading.Thread(target=self.assistant._session, args=(found,),  # noqa: SLF001
+                                          kwargs={"wait": True}, daemon=True)
+                worker.start()
+                worker.join(10.0)
+                if worker.is_alive():
+                    found.realtime_lock.release()  # so the bridge can still shut down
+                    self.fail(f"_session() deadlocked on a stale session ({make_stale.__name__})")
+            self.assertFalse(found.realtime_lock.locked())
+            self.assertIsNot(old, found.realtime)
+            self.assertEqual("open", found.realtime.state)
+            self.wait_for(lambda: old.state == "closed" and old.helper is None)
+        self.assertEqual(3, self.helpers_started())
+        again = self.say_turn("still there?", conversationId=conversation)
+        self.assertEqual("realtime", self.done(again)["brain"])
+        status, value = self.call("POST", "/v1/mobile/assistant/end", {"conversationId": conversation},
+                                  token=self.watch)
+        self.assertEqual({"ok": True, "ended": True}, value, "end() does not block either")
+
+
 # ====================================================================== the ChatGPT login
 
 

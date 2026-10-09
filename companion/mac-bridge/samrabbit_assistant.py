@@ -1408,7 +1408,9 @@ class StreamWriter:
 
 
 class TurnSink:
-    """Where a turn's output goes: the stream (when the watch asked for one) and the result (always)."""
+    """Where a turn's output goes: the stream (when the watch asked for one) and the result (always). It also keeps,
+    as they happen, the words, actions and cards that went out and the realtime function calls that ran, so a turn
+    that fails halfway knows it must not be answered again (``committed``)."""
 
     def __init__(self, result: _TurnResult, stream: Optional[StreamWriter], *, monotonic: Callable[[], float],
                  started: float, keep_audio: bool) -> None:
@@ -1419,10 +1421,20 @@ class TurnSink:
         self._keep_audio = keep_audio
         self._pcm = bytearray()
         self.cancel = threading.Event()
+        self.said = ""  # every say.delta so far
+        self.actions: List[Dict[str, Any]] = []  # every action so far
+        self.tools: List[Dict[str, Any]] = []  # the realtime function calls that ran: {id, name, input, result, ...}
 
     @property
     def started(self) -> bool:
         return self.stream is not None and self.stream.started
+
+    @property
+    def committed(self) -> bool:
+        """A tool already ran, or words, audio, an action or a card went out: another brain answering this turn again
+        would do or say it twice."""
+        return bool(self.tools or self.said or self.actions or self.result.cards or
+                    self.result.timings.get("firstAudio") is not None)
 
     def heard(self, text: str) -> None:
         self.result.heard = text
@@ -1431,7 +1443,10 @@ class TurnSink:
             self.stream.event({"type": "heard", "text": text})
 
     def say_delta(self, text: str) -> None:
-        if self.stream is not None and text:
+        if not text:
+            return
+        self.said += text
+        if self.stream is not None:
             self.stream.event({"type": "say.delta", "text": text})
 
     def audio(self, pcm: bytes) -> None:
@@ -1443,10 +1458,15 @@ class TurnSink:
             self.stream.audio(pcm)
 
     def action(self, value: Dict[str, Any]) -> None:
+        self.actions.append(value)
         if self.stream is not None:
             self.stream.event({"type": "action", **{key: value[key] for key in ("kind", "title", "threadId",
                                                                                  "artifactId")
                                                      if value.get(key) not in (None, "")}})
+
+    def tool(self, record: Dict[str, Any]) -> None:
+        """A realtime function call ran (its effect happened, whatever the turn does next)."""
+        self.tools.append(record)
 
     def card(self, value: Dict[str, Any]) -> None:
         self.result.cards.append(value)
@@ -1514,6 +1534,16 @@ def actions_from(run: AgentRun) -> List[Dict[str, Any]]:
             action.update(title=_clip(arguments.get("prompt"), 80) or "Visual", artifactId=result.get("artifactId"))
         actions.append({key: value for key, value in action.items() if value not in (None, "")})
     return actions
+
+
+def _tool_run(tools: List[Dict[str, Any]]) -> AgentRun:
+    """The realtime function calls that ran (``TurnSink.tools``) as an ``AgentRun``: for the timeline and the log."""
+    run = AgentRun()
+    for item in tools:
+        run.tools[str(item["id"])] = {"id": item["id"], "name": item["name"], "input": item.get("input") or {},
+                                      "result": item.get("result"), "isError": bool(item.get("isError")),
+                                      "images": list(item.get("images") or [])}
+    return run
 
 
 def _clip(value: Any, limit: int) -> str:
@@ -1955,11 +1985,13 @@ class AssistantService:
         """This conversation's realtime session, opened in the background when there is none (or it is too old or
         broken); ``wait``: until it is open (or why it could not)."""
         assert _realtime is not None and self.realtime is not None
+        stale = None
         with conversation.realtime_lock:
             session = conversation.realtime
             if session is not None and session.state == "open" and (session.expired() or not session.usable()):
-                self._close_session(conversation, session)
-                session = None
+                # Too old, or its helper died: detached here, closed below. Never _close_session() here: it takes
+                # this same (non-reentrant) lock.
+                stale, conversation.realtime, session = session, None, None
             if session is not None and session.state in ("failed", "closed"):
                 conversation.realtime = session = None
             if session is None:
@@ -1967,6 +1999,8 @@ class AssistantService:
                 conversation.realtime = session
                 threading.Thread(target=self._open_session, args=(session,), name="samrabbit-realtime-open",
                                  daemon=True).start()
+        if stale is not None:
+            self._dispose_session(stale)
         if not wait:
             return session
         if not session.ready.wait(REALTIME_OPEN_WAIT):
@@ -1984,17 +2018,23 @@ class AssistantService:
                 session.ready.set()
 
     def _close_session(self, conversation: _Conversation, session: Any = None, *, background: bool = True) -> None:
+        """Detach the conversation's session (only ``session``, when given) and close it. Takes
+        ``conversation.realtime_lock``: never call it with that lock held."""
         with conversation.realtime_lock:
             current = conversation.realtime
             if session is not None and current is not session:
                 return
             conversation.realtime = None
-        if current is None:
-            return
+        if current is not None:
+            self._dispose_session(current, background=background)
+
+    @staticmethod
+    def _dispose_session(session: Any, *, background: bool = True) -> None:
+        """Close a session that no conversation holds any more (outside every lock)."""
         if background:
-            threading.Thread(target=current.close, name="samrabbit-realtime-close", daemon=True).start()
+            threading.Thread(target=session.close, name="samrabbit-realtime-close", daemon=True).start()
         else:
-            current.close()
+            session.close()
 
     def _realtime_config(self, conversation: _Conversation) -> Dict[str, Any]:
         assert _profile is not None
@@ -2234,14 +2274,26 @@ class AssistantService:
             if brain == "realtime":
                 try:
                     run = self._realtime_turn(conversation, request, heard, sink)
-                except Exception as error:  # noqa: BLE001 - RealtimeError: Claude answers when nothing was said yet
+                except Exception as error:  # noqa: BLE001 - RealtimeError: Claude answers when nothing happened yet
                     if _realtime is None or not isinstance(error, _realtime.RealtimeError):
                         raise
                     self._realtime_failed(conversation, error)
-                    if sink.result.timings.get("firstAudio") is not None or result.say or result.actions:
+                    if sink.cancel.is_set():
+                        # Samin stopped this turn: it ends here, interrupted; nobody answers it again.
+                        result.say, result.actions = spoken(sink.said), list(sink.actions)
+                        result.interrupted, result.expect_reply = True, False
+                        run = _tool_run(sink.tools)
+                    elif sink.committed:
+                        # A tool already acted (T3, calendar, journal, the Mac), or words, audio, an action or a card
+                        # went out: answering again (Claude, or a retry) would do or say it twice.
+                        did = "; ".join(_clip(f"{item.get('kind')} {item.get('title') or ''}", 100)
+                                        for item in sink.actions)
+                        conversation.history.append((heard, " ".join(part for part in (
+                            spoken(sink.said), f"(Done before the voice connection dropped: {did}.)" if did else "")
+                            if part)))
                         raise AssistantError(502, "assistant_interrupted", "The voice connection dropped.",
                                              retryable=True, cache=True) from None
-                    if self.settings.brain() == "auto" and self._claude_reason() is None:
+                    elif self.settings.brain() == "auto" and self._claude_reason() is None:
                         _LOG.info("assistant: realtime failed (%s), Claude answers", error.code)
                         run = self._claude_turn(conversation, request, heard, sink)
                     else:
@@ -2294,6 +2346,9 @@ class AssistantService:
                      sink: TurnSink) -> AgentRun:
         result = sink.result
         result.brain = "claude"
+        if sink.cancel.is_set():  # stopped before Claude began: it never runs (nor its tools)
+            result.interrupted, result.expect_reply = True, False
+            return AgentRun()
         started = time.monotonic()
         try:
             run = self._think(conversation, self._message(conversation, heard))
@@ -2344,9 +2399,16 @@ class AssistantService:
                                          self._runner(conversation), sink.cancel)
         finally:
             result.timings["agent"] = _ms(started)
+            # What ran is in the timeline also when the turn failed after it (the sink has it as it happened).
+            run = _tool_run(sink.tools)
+            self._record_tools(conversation, request.turn_id, run)
+        if outcome.pause and self.realtime is not None:
+            self.realtime.pause(outcome.pause, "realtime_response_failed")
         result.say = spoken(outcome.text)
         if not result.say and outcome.max_rounds:
             result.say = "Sorry, that needed more steps than I can take at once."
+        elif not result.say and outcome.failed and outcome.tools and not outcome.interrupted:
+            result.say = "Sorry, I got cut off partway through that."
         result.actions = list(outcome.actions)
         result.interrupted = outcome.interrupted
         result.expect_reply = expects_reply(result.say) and not outcome.interrupted
@@ -2354,12 +2416,6 @@ class AssistantService:
             pcm = sink.pcm()
             if pcm:
                 result.audio, result.audio_mime = _realtime.pcm_to_wav(pcm), "audio/wav"
-        run = AgentRun()
-        for item in outcome.tools:
-            run.tools[str(item["id"])] = {"id": item["id"], "name": item["name"], "input": item.get("input") or {},
-                                          "result": item.get("result"), "isError": bool(item.get("isError")),
-                                          "images": list(item.get("images") or [])}
-        self._record_tools(conversation, request.turn_id, run)
         return run
 
     def _realtime_message(self, conversation: _Conversation, session: Any, heard: str) -> str:
@@ -2402,7 +2458,8 @@ class AssistantService:
                 self._realtime_failed(conversation, error)
                 if sink.result.timings.get("firstAudio") is not None:
                     return
-        sink.say_delta(line)
+        if not sink.said:  # the session may have sent some of its words before it failed: not twice
+            sink.say_delta(line)
         if not sink.cancel.is_set():
             self._voice_out(line, sink)
 

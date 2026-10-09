@@ -459,13 +459,19 @@ class TurnOutcome:
         self.cards: List[Dict[str, Any]] = []
         self.rounds = 0
         self.max_rounds = False
+        # The last response failed after a tool round or words: the turn ends with what it has (it is never answered
+        # again by another brain); ``pause``: seconds the brain stays off (a busy account).
+        self.failed = False
+        self.pause = 0.0
 
 
 def converse(session: RealtimeSession, items: List[Dict[str, Any]], response: Optional[Dict[str, Any]], sink: Any,
              runner: Optional["ToolRunner"], cancel: threading.Event, *, timeout: float = TURN_SECONDS) -> TurnOutcome:
     """One turn: send ``items`` and ``response.create``, stream the reply to ``sink`` (``say_delta(text)``,
-    ``audio(pcm)``, ``action(dict)``, ``card(dict)``), run the function calls one at a time, end when the last
-    response is done and its audio has been forwarded. ``cancel``: barge-in."""
+    ``audio(pcm)``, ``action(dict)``, ``card(dict)``, ``tool(record)`` as soon as a function call has run), run the
+    function calls one at a time, end when the last response is done and its audio has been forwarded. ``cancel``:
+    barge-in. A ``RealtimeError`` can still come after a tool ran (a lost connection, the deadline): the sink has the
+    record of what ran."""
     helper = session.helper
     if helper is None or not session.usable():
         raise RealtimeError("realtime_connection_lost", "The realtime connection on the Mac ended.")
@@ -606,13 +612,16 @@ def converse(session: RealtimeSession, items: List[Dict[str, Any]], response: Op
             if cancelled_at is not None:
                 break
             status = body.get("status")
-            if status == "failed" and not outcome.output_started and not calls:
+            if status == "failed":
                 details = body.get("status_details") if isinstance(body.get("status_details"), dict) else {}
                 error = details.get("error") if isinstance(details.get("error"), dict) else {}
                 code = str(error.get("code") or error.get("type") or "response_failed")[:60]
                 _LOG.warning("realtime response failed (%s)", re.sub(r"[^a-z_]", "", code.lower())[:40])
-                raise RealtimeError("realtime_response_failed", "OpenAI could not answer that.",
-                                    pause=PAUSE_BUSY_SECONDS if "rate" in code or "quota" in code else 0.0)
+                pause = PAUSE_BUSY_SECONDS if "rate" in code or "quota" in code else 0.0
+                if not outcome.output_started and not calls and not outcome.tools:
+                    raise RealtimeError("realtime_response_failed", "OpenAI could not answer that.", pause=pause)
+                # A tool already ran (or words went out): no error that would have the turn answered again.
+                outcome.failed, outcome.pause = True, max(outcome.pause, pause)
             if calls:
                 if outcome.rounds >= MAX_TOOL_ROUNDS or runner is None:
                     outcome.max_rounds = True
@@ -633,9 +642,10 @@ def converse(session: RealtimeSession, items: List[Dict[str, Any]], response: Op
                             "output": json.dumps({"isError": True, "error": "cancelled"})}})
                         continue
                     result = runner.run(call["name"], call["arguments"])
-                    outcome.tools.append({"id": call["call_id"], "name": call["name"], "input": result.arguments,
-                                          "result": result.text, "isError": result.is_error,
-                                          "images": result.images})
+                    record = {"id": call["call_id"], "name": call["name"], "input": result.arguments,
+                              "result": result.text, "isError": result.is_error, "images": result.images}
+                    outcome.tools.append(record)
+                    sink.tool(record)  # at once: whatever fails next, the bridge knows this one acted
                     if result.action and not result.is_error:
                         outcome.actions.append(result.action)
                         sink.action(result.action)

@@ -14,7 +14,8 @@ It speaks the helper's protocol (JSON lines on stdin/stdout: ``offer``, ``answer
 * ``{"call": name, "arguments": {...}}``: a function call (``response.function_call_arguments.done``, then
   ``response.done`` with the call in its output);
 * ``{"fail": "rate_limit_exceeded"}``: ``response.done`` with status failed;
-* ``{"die": true}``: the process exits at once (a crashed helper).
+* ``{"die": true}``: the process exits at once (a crashed helper); with ``say``/``verbatim``, ``"die_after":
+  "words"`` exits after the transcript deltas, before ``response.done`` and any audio.
 
 ``response.cancel`` stops a reply (``response.done`` cancelled), ``output_audio_buffer.clear`` answers
 ``output_audio_buffer.cleared``. Every client event it got is appended to ``<dir>/received.jsonl`` and every op to
@@ -121,6 +122,8 @@ class Fake:
                 break
             out({"ev": "event", "event": {"type": "response.output_audio_transcript.delta",
                                           "delta": (" " if index else "") + word}})
+        if step.get("die_after") == "words":
+            os._exit(3)
         if self.cancelled.is_set():
             out({"ev": "event", "event": {"type": "response.done", "response": {"id": response_id,
                                                                                 "status": "cancelled"}}})
