@@ -1,6 +1,7 @@
 """A stand-in for the ``samrabbit-transcribe`` Swift helper (tests only).
 
     fake_transcribe.py --state <dir> (--file <audio> | --check | --prepare | --version) [--locale ..] [--max-seconds ..]
+                       [--deadline ..]
 
 Behaviour comes from files in the state folder (all optional):
 
@@ -8,8 +9,12 @@ Behaviour comes from files in the state folder (all optional):
   ``model_missing`` (becomes ``ok`` once ``--prepare`` ran), ``insufficient``, ``failed``, ``no_speech``,
   ``too_long``, ``language``, ``audio``, ``crash`` (exit 134, no output), ``garbage``, ``slow`` (``delay`` s,
   default 1.5, then ok),
-  ``hang`` (30 s);
+  ``hang`` (30 s, ignoring ``--deadline``: a stuck helper), ``deadline`` (what the real helper answers when its own
+  ``--deadline`` passes: ``transcribe_timeout``, exit 9), ``spawn_hang`` (starts a child process, in the helper's
+  process group, writes the child's pid to ``child.pid``, then hangs: only a kill of the whole group stops both),
+  ``orphan`` (starts such a child, which keeps stdout open, and exits at once without an answer);
 * ``check``: what ``--check`` answers: ``available`` (default), ``model_missing``, ``speech_unavailable``,
+  ``permission`` (the model is there but Speech Recognition is denied: ``permission: denied``), ``deadline``,
   ``garbage``, ``hang``;
 * ``prepare``: ``ok`` (default), ``fail``, ``slow`` (2 s, then ok).
 
@@ -24,6 +29,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import subprocess
 import sys
 import time
 
@@ -64,6 +70,11 @@ def main(argv: list) -> None:
             sys.exit(0)
         if check == "speech_unavailable":
             say({"ok": True, "available": False, "model": "unknown", "reason": "speech_unavailable"})
+        if check == "deadline":
+            say({"ok": False, "code": "transcribe_timeout", "message": "out of time", "detail": "8000ms"}, 9)
+        if check == "permission":  # as the real helper before it learnt to say so itself: available, but denied
+            say({"ok": True, "available": True, "engine": "SpeechTranscriber", "locale": locale, "model": "installed",
+                 "permission": "denied"})
         missing = check == "model_missing" and not (state / "prepared").exists()
         say({"ok": True, "available": not missing, "engine": "SpeechTranscriber", "locale": locale,
              "model": "missing" if missing else "installed", **({"reason": "model_missing"} if missing else {})})
@@ -81,6 +92,14 @@ def main(argv: list) -> None:
         mode = "ok"
     if mode == "hang":
         time.sleep(30)
+    if mode in ("spawn_hang", "orphan"):
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], stdin=subprocess.DEVNULL)
+        (state / "child.pid").write_text(str(child.pid))
+        if mode == "orphan":
+            os._exit(0)  # no answer; the child still holds stdout
+        time.sleep(30)
+    if mode == "deadline":
+        say({"ok": False, "code": "transcribe_timeout", "message": "out of time", "detail": "40000ms"}, 9)
     if mode == "slow":
         time.sleep(float(read(state, "delay", "1.5")))
         mode = "ok"

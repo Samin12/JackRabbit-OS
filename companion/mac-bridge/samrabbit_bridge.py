@@ -65,6 +65,11 @@ if _HERE not in sys.path:
 import samrabbit_mac as mac  # noqa: E402
 import samrabbit_genui as genui  # noqa: E402
 
+try:  # "is this the installed copy?"; without it every copy is a dev copy (the safe answer)
+    import samrabbit_installed as installation  # noqa: E402
+except Exception:  # noqa: BLE001  # pragma: no cover
+    installation = None  # type: ignore[assignment]
+
 try:  # conversation sync must never keep the journal or Mac control from starting
     import samrabbit_sync as sync  # noqa: E402
 except Exception:  # noqa: BLE001
@@ -95,8 +100,9 @@ DEFAULT_TOKEN_FILE = "~/.config/samrabbit/bridge-token"
 FALLBACK_CLI = "/opt/homebrew/bin/heptabase"
 # Which Heptabase CLI a bridge uses (``--cli`` / SAMRABBIT_HEPTABASE_CLI): a path, ``auto`` (the real CLI on PATH
 # or FALLBACK_CLI) or ``dry-run`` (nothing reaches Heptabase). Without a choice, only the installed LaunchAgent
-# copy (INSTALLED_DIR, written by install.sh) uses the real CLI; a copy run from a checkout or a test is dry-run,
-# so a stray test or dev bridge can never write to the user's journal.
+# copy uses the real CLI: the folder install.sh writes in the account's own home (from the password database, never
+# $HOME) with its ``.samrabbit-installed`` marker (``samrabbit_installed``). A copy run from a checkout, a test or a
+# temp HOME is dry-run, so a stray test or dev bridge can never write to the user's journal.
 CLI_AUTO = "auto"
 CLI_DRY_RUN = "dry-run"
 # ``/health`` ``cli.mode`` of a dry-run bridge. Its health also says ``dryRun: true`` and ``app.reachable: false``
@@ -105,7 +111,6 @@ CLI_DRY_RUN = "dry-run"
 MODE_REAL = "real"
 MODE_DRY_RUN = "dryRun"
 DRY_RUN_DETAIL = "bridge_dry_run"
-INSTALLED_DIR = "~/Library/Application Support/SamRabbit/bridge"
 MAX_BODY_BYTES = 64 * 1024
 MAX_CLI_OUTPUT_BYTES = 32 * 1024 * 1024
 CLI_TIMEOUT_SECONDS = 30.0
@@ -273,10 +278,22 @@ class DryRunHeptabaseCli:
         raise BridgeError(400, "heptabase_rejected", "Dry run: unsupported command.", reason="unsupported")
 
 
-def default_cli_choice(here: Optional[str] = None) -> str:
-    """``auto`` (the real CLI) for the installed LaunchAgent copy, ``dry-run`` for any other copy."""
-    location = os.path.realpath(here or _HERE)
-    return CLI_AUTO if location == os.path.realpath(os.path.expanduser(INSTALLED_DIR)) else CLI_DRY_RUN
+def is_installed_copy(here: Optional[str] = None, **decision: Any) -> bool:
+    """True only for the copy install.sh installed for this user (``samrabbit_installed.is_installed_copy``: the
+    account's real home, never $HOME, plus the install marker). ``decision`` (``home``, ``environ``) is for tests of
+    the decision itself."""
+    if installation is None:
+        return False
+    try:
+        return installation.is_installed_copy(here or _HERE, **decision)
+    except Exception:  # noqa: BLE001 - when in doubt, a dev copy
+        return False
+
+
+def default_cli_choice(here: Optional[str] = None, **decision: Any) -> str:
+    """``auto`` (the real CLI) for the installed LaunchAgent copy, ``dry-run`` for any other copy (a checkout, a
+    test, a copy in a temp HOME)."""
+    return CLI_AUTO if is_installed_copy(here, **decision) else CLI_DRY_RUN
 
 
 def cli_for(choice: Optional[str], *, here: Optional[str] = None) -> Any:
@@ -498,8 +515,9 @@ class BridgeServer(ThreadingHTTPServer):
                  mac_control: Optional[mac.MacControl] = None, sync_dir: Optional[str] = None,
                  desktop_token_file: Optional[str] = None,
                  genui_service: Optional[genui.GenUiService] = None,
-                 calendar_writer: Any = None, mobile_service: Any = None) -> None:
+                 calendar_writer: Any = None, mobile_service: Any = None, installed_copy: bool = False) -> None:
         self.token = token
+        self.installed_copy = installed_copy  # the installed LaunchAgent copy (``is_installed_copy``), else a dev copy
         self.cli = cli
         self.mac = mac_control or mac.MacControl(mac.CuaDriver())
         self.genui = genui_service or genui.GenUiService.create()  # its worker starts in main() (or tests)
@@ -513,7 +531,7 @@ class BridgeServer(ThreadingHTTPServer):
         self.sync: Any = None  # samrabbit_sync.SyncService when a sync folder is given
         self.calendar: Any = calendar_writer  # samrabbit_calendar.CalendarWriter (or UnavailableWriter)
         if self.calendar is None and gcal is not None:
-            self.calendar = gcal.make_writer_or_unavailable()
+            self.calendar = gcal.make_writer_or_unavailable() if installed_copy else _dev_calendar()
         self.mobile: Any = mobile_service  # samrabbit_mobile.MobileService (its worker starts in main() or tests)
         super().__init__(address, BridgeHandler)
         if self.mobile is not None:
@@ -589,6 +607,7 @@ class BridgeServer(ThreadingHTTPServer):
                         "mode": MODE_DRY_RUN if dry_run else MODE_REAL},
                 "app": {"reachable": reachable, "detail": detail},
                 "dryRun": dry_run,
+                "copy": "installed" if self.installed_copy else "dev",
                 "mac": capabilities,
                 "sync": self.sync.health() if self.sync is not None else {"available": False},
                 "genui": generated_ui,
@@ -834,6 +853,12 @@ def _number(query: Dict[str, List[str]], key: str) -> Optional[int]:
     return int(value)
 
 
+def _dev_calendar() -> Any:
+    return gcal.UnavailableWriter("calendar_dev_copy", "This copy of the Mac bridge is not the installed one, so it "
+                                  "does not change Google Calendar. Pass --composio <path> to use a Composio CLI "
+                                  "explicitly.")
+
+
 def make_server(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, *, token_file: str = DEFAULT_TOKEN_FILE,
                 cli: Optional[str] = None, cli_timeout: float = CLI_TIMEOUT_SECONDS,
                 allow_any_client: bool = False, driver: Optional[str] = None,
@@ -850,19 +875,19 @@ def make_server(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, *, token_fil
                 transcribe_helper: Optional[str] = None) -> BridgeServer:
     """Conversation sync runs only with a ``sync_dir`` (the command line passes the default one). ``cli`` is a
     path, ``auto`` or ``dry-run``; without it only the installed copy uses the real CLI (``cli_for``). T3 for the
-    mobile API: the installed copy (or one given ``t3_url``) pairs with T3 Code itself; a copy run from a checkout
-    answers ``t3_dev_copy`` and never reaches T3. ``transcribe_helper``: the speech-to-text helper for
+    mobile API: the installed copy (or one given ``t3_url``) pairs with T3 Code itself; any other copy (a checkout,
+    a test, a copy in a temp HOME) answers ``t3_dev_copy`` and never reaches T3, and ``calendar_dev_copy`` unless
+    given ``composio``. ``transcribe_helper``: the speech-to-text helper for
     ``/v1/mobile/transcribe`` (default: ``samrabbit-transcribe`` next to this script, which install.sh builds)."""
-    if calendar_writer is None and gcal is not None and composio is None and default_cli_choice() == CLI_DRY_RUN:
-        # A copy run from a checkout (tests, dev) never changes the real Google Calendar unless given --composio.
-        calendar_writer = gcal.UnavailableWriter("calendar_dev_copy", "This copy of the Mac bridge is not the "
-                                                 "installed one, so it does not change Google Calendar. Pass "
-                                                 "--composio <path> to use a Composio CLI explicitly.")
+    installed_copy = is_installed_copy()  # decided once: the journal, T3 and the calendar agree
+    if calendar_writer is None and gcal is not None and composio is None and not installed_copy:
+        # A dev copy (a checkout, a test, a temp HOME) never changes the real Google Calendar unless given --composio.
+        calendar_writer = _dev_calendar()
     if calendar_writer is None and gcal is not None:
         # A bad SAMRABBIT_CALENDAR_ID or an unusable temp folder turns calendar changes off, never the bridge.
         calendar_writer = gcal.make_writer_or_unavailable(composio, calendar_id=calendar_id)
     if mobile_service is None and mobile is not None:
-        if t3_hub is None and (t3_url or default_cli_choice() == CLI_AUTO):
+        if t3_hub is None and (t3_url or installed_copy):
             t3_hub = t3.make_hub(t3_url or t3.DEFAULT_SERVER_URL, token_file=t3_token_file or t3.DEFAULT_TOKEN_FILE,
                                  cli=t3_cli)
         mobile_service = mobile.MobileService(devices_file=mobile_devices_file or mobile.DEFAULT_DEVICES_FILE,
@@ -870,14 +895,16 @@ def make_server(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, *, token_fil
                                               timezone_name=mobile_timezone,
                                               google_account=google_account, hosts=mobile_hosts,
                                               bridge_version=VERSION, transcribe_helper=transcribe_helper)
-    return BridgeServer((host, port), token=TokenFile(token_file), cli=cli_for(cli),
+    return BridgeServer((host, port), token=TokenFile(token_file),
+                        cli=cli_for((cli or "").strip() or (CLI_AUTO if installed_copy else CLI_DRY_RUN)),
                         cli_timeout=cli_timeout, allow_any_client=allow_any_client,
                         mac_control=mac_control or mac.MacControl(mac.CuaDriver(driver)),
                         sync_dir=sync_dir, desktop_token_file=desktop_token_file,
                         genui_service=genui_service or genui.GenUiService.create(
                             artifacts_dir or genui.DEFAULT_ARTIFACTS_DIR, claude=claude,
                             agent_browser=agent_browser, model=genui_model),
-                        calendar_writer=calendar_writer, mobile_service=mobile_service)
+                        calendar_writer=calendar_writer, mobile_service=mobile_service,
+                        installed_copy=installed_copy)
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -960,8 +987,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         voice = mobile_health.get("transcribe") or {}
         mobile_line = f"{mobile_health['devices']} devices, T3 {'paired' if mobile_health['t3']['paired'] else 'not paired'}" \
             f", transcription {'on' if voice.get('available') else 'off (' + str(voice.get('reason')) + ')'}"
-    _LOG.info("%s %s listening on %s:%d (cli %s, cua-driver %s, sync %s, composio %s, mobile %s)", SERVICE, VERSION,
-              options.host, server.server_address[1], cli_path or "missing",
+    _LOG.info("%s %s listening on %s:%d (%s copy, cli %s, cua-driver %s, sync %s, composio %s, mobile %s)", SERVICE,
+              VERSION, options.host, server.server_address[1], "installed" if server.installed_copy else "dev",
+              cli_path or "missing",
               "found" if server.mac.driver.executable() else "missing", "on" if server.sync is not None else "off",
               "found" if composio_found else "missing", mobile_line)
     server.serve_forever(poll_interval=0.5)

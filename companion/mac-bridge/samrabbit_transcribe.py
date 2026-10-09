@@ -9,12 +9,20 @@ and there is no permission prompt (the input is a file).
 * Body: ``audio/mp4`` / ``audio/x-m4a`` (an m4a, e.g. AAC from ``AVAudioRecorder``), ``audio/wav`` or ``audio/aac``
   (ADTS); at most 2 MiB and 90 s. The container is checked from the bytes (``ftyp`` at offset 4, ``RIFF....WAVE``
   or an ADTS frame) and its length read from the header before the helper runs.
-* The audio is written to a private temp file (0600, in its own 0700 folder) only while the helper runs (at most
-  45 s), then deleted. Neither the audio nor the words are ever logged or kept.
+* ``?lang=`` is a BCP 47 tag, made deterministic: a bare language is always the same locale (``en`` -> ``en-US``,
+  ``fr`` -> ``fr-FR``, ``es`` -> ``es-ES``, ``de`` -> ``de-DE``, ...; ``DEFAULT_REGIONS``), never the Mac's own region,
+  and the case is canonical (``EN_us`` -> ``en-US``). The default is ``en-US``.
+* The audio is written to a private temp file (0600, in its own 0700 folder ``$TMPDIR/samrabbit-voice-<pid>-*``)
+  only while the helper runs, then deleted; folders a stopped bridge left behind are removed when the bridge starts
+  (``remove_leftovers``). Neither the audio nor the words are ever logged or kept.
+* The helper runs in a session of its own with a deadline of its own (``--deadline``, a little under the bridge's
+  45 s, so it answers ``transcribe_timeout`` and exits by itself, even if the bridge is gone); at the bridge's own
+  timeout the bridge kills the helper's whole process group.
 * Errors (the bridge's ``{error: {code, message, retryable}}``, with ``reason`` where it helps):
   ``transcribe_unavailable`` (503: no helper, no speech transcriber on this Mac, or the language's model is not on
   the Mac yet, which the bridge then downloads in the background), ``transcribe_permission`` (503: Speech
-  Recognition is turned off for it in System Settings), ``transcribe_failed`` (502, or 504 when it took too long),
+  Recognition is turned off for it in System Settings; ``status()`` then says ``reason: permission_denied``),
+  ``transcribe_failed`` (502, or 504 when it took too long),
   ``transcribe_busy`` (503), ``unsupported_audio`` (415), ``audio_too_long`` / ``body_too_large`` (413),
   ``no_speech`` (422), ``unsupported_language`` (422) and ``invalid_lang`` (400).
 
@@ -29,6 +37,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 import struct
 import subprocess
 import tempfile
@@ -45,6 +54,9 @@ MAX_AUDIO_SECONDS = 90
 LENGTH_SLACK_SECONDS = 0.5  # AAC priming and padding
 HELPER_TIMEOUT_SECONDS = 45.0
 CHECK_TIMEOUT_SECONDS = 10.0
+REAP_SECONDS = 2.0  # after a kill: how long the bridge waits for the helper's pipes to close
+FOLDER_PREFIX = "samrabbit-voice-"
+LEFTOVER_SECONDS = 120.0  # no recording folder lives this long (the helper is stopped after HELPER_TIMEOUT_SECONDS)
 CHECK_CACHE_SECONDS = 10 * 60.0
 PREPARE_TIMEOUT_SECONDS = 15 * 60.0
 PREPARE_RETRY_SECONDS = 30 * 60.0
@@ -64,6 +76,17 @@ CONTENT_TYPES: Dict[str, str] = {
 _SUFFIX = {"mp4": ".m4a", "wav": ".wav", "aac": ".aac"}
 _ADTS_RATES = (96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350)
 _LANGUAGE = re.compile(r"^[A-Za-z]{2,3}(?:[-_][A-Za-z0-9]{1,8}){0,3}$")
+# A bare language as one fixed locale (never the Mac's own region), so ``en`` and ``en-US`` are the same request: one
+# status check, one model download. Languages not listed stay bare (the helper finds their closest locale).
+DEFAULT_REGIONS: Dict[str, str] = {
+    "ar": "ar-SA", "ca": "ca-ES", "cs": "cs-CZ", "da": "da-DK", "de": "de-DE", "el": "el-GR", "en": "en-US",
+    "es": "es-ES", "fi": "fi-FI", "fr": "fr-FR", "he": "he-IL", "hi": "hi-IN", "hr": "hr-HR", "hu": "hu-HU",
+    "id": "id-ID", "it": "it-IT", "ja": "ja-JP", "ko": "ko-KR", "ms": "ms-MY", "nb": "nb-NO", "nl": "nl-NL",
+    "no": "nb-NO", "pl": "pl-PL", "pt": "pt-BR", "ro": "ro-RO", "ru": "ru-RU", "sk": "sk-SK", "sv": "sv-SE",
+    "th": "th-TH", "tr": "tr-TR", "uk": "uk-UA", "vi": "vi-VN", "wuu": "wuu-CN", "yue": "yue-CN", "zh": "zh-CN",
+}
+_SCRIPT_REGIONS = {"zh-Hans": "zh-CN", "zh-Hant": "zh-TW"}
+_FOLDER = re.compile(r"^samrabbit-voice-(?:([0-9]{1,10})-)?[A-Za-z0-9_]{1,64}$")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 _ERROR_DETAIL = re.compile(r"^[A-Za-z][A-Za-z0-9._]{0,63}#-?[0-9]{1,12}$")  # e.g. SFSpeechErrorDomain#2
 
@@ -77,6 +100,7 @@ _FAILURES: Dict[str, Tuple[int, str, bool]] = {
     "audio_too_long": (413, f"Recordings can be at most {MAX_AUDIO_SECONDS} seconds.", False),
     "no_speech": (422, "No speech was heard in the recording.", False),
     "transcribe_failed": (502, "The Mac could not transcribe the recording.", True),
+    "transcribe_timeout": (504, "Transcribing took too long on the Mac.", True),  # answered as transcribe_failed
 }
 _UNAVAILABLE_MESSAGES = {
     "helper_missing": "Transcription is not installed on the Mac. Run companion/mac-bridge/install.sh again (it "
@@ -123,12 +147,27 @@ def content_kind(value: Optional[str]) -> str:
 
 
 def normalize_language(value: Optional[str]) -> str:
-    """``?lang=`` as a BCP 47 tag (``en-US``); the default when there is none."""
+    """``?lang=`` as one deterministic BCP 47 locale: canonical case (``en_us`` -> ``en-US``, ``zh-hant-tw`` ->
+    ``zh-Hant-TW``), a bare language as its fixed locale (``DEFAULT_REGIONS``: ``en`` -> ``en-US``, ``fr`` ->
+    ``fr-FR``; ``zh-Hans`` -> ``zh-CN``, ``zh-Hant`` -> ``zh-TW``); ``en-US`` when there is none."""
     if value is None or value == "":
         return DEFAULT_LANGUAGE
     if not _LANGUAGE.match(value):
         raise TranscribeError(400, "invalid_lang", "lang must be a language tag such as en-US.")
-    return value.replace("_", "-")
+    first, *subtags = value.replace("_", "-").split("-")
+    language = first.lower()
+    rest = []
+    for subtag in subtags:
+        if len(subtag) == 4 and subtag.isalpha():
+            rest.append(subtag.title())  # a script: Hant
+        elif (len(subtag) == 2 and subtag.isalpha()) or (len(subtag) == 3 and subtag.isdigit()):
+            rest.append(subtag.upper())  # a region: US, 419
+        else:
+            rest.append(subtag.lower())  # a variant
+    if not rest:
+        return DEFAULT_REGIONS.get(language, language)
+    tag = "-".join([language, *rest])
+    return _SCRIPT_REGIONS.get(tag, tag)
 
 
 def _id3_length(data: bytes) -> int:
@@ -259,13 +298,109 @@ def _child_env() -> Dict[str, str]:
 
 
 def _kill_group(process: "subprocess.Popen[bytes]") -> None:
+    """SIGKILL to the helper's whole process group: it runs in a session of its own (``start_new_session``), so this
+    reaches anything it started too. Only while the helper has not been reaped (until then its pid, and so its group
+    id, cannot have been reused by another process)."""
+    if process.returncode is not None:
+        return
     try:
         os.killpg(process.pid, signal.SIGKILL)
+        return
     except OSError:
+        pass
+    try:
+        process.kill()
+    except OSError:
+        pass
+
+
+def _reap(process: "subprocess.Popen[bytes]") -> None:
+    """Collects a killed helper without waiting forever (a process that left its group could hold its stdout)."""
+    try:
+        process.communicate(timeout=REAP_SECONDS)
+        return
+    except (subprocess.TimeoutExpired, OSError, ValueError):
+        pass
+    for stream in (process.stdout, process.stderr):
+        if stream is not None:
+            try:
+                stream.close()
+            except OSError:
+                pass
+    try:
+        process.wait(timeout=REAP_SECONDS)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+def helper_deadline(timeout: float) -> str:
+    """The helper's own ``--deadline`` (seconds) for a bridge timeout: a little earlier, so the helper answers and
+    exits by itself first, and a helper whose bridge was killed never runs on."""
+    return f"{max(1.0, round(float(timeout) - min(5.0, float(timeout) * 0.2), 1)):g}"
+
+
+def _alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if pid == os.getpid():
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:  # EPERM: it exists
+        return True
+    return True
+
+
+def remove_leftovers(root: Optional[str] = None, *, now: Optional[float] = None,
+                     min_age: float = LEFTOVER_SECONDS) -> int:
+    """Removes the recording folders (``samrabbit-voice-*`` in the temp folder) a bridge that stopped in the middle of
+    a transcription left behind: this user's own real folders (never a link) whose bridge process is gone, or older
+    than any transcription can run (so another bridge's recording in progress is never touched). Returns how many."""
+    folder = root or tempfile.gettempdir()
+    moment = time.time() if now is None else now
+    removed = 0
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return 0
+    for name in names:
+        match = _FOLDER.match(name)
+        if match is None:
+            continue
+        path = os.path.join(folder, name)
         try:
-            process.kill()
+            info = os.lstat(path)
         except OSError:
-            pass
+            continue
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+            continue
+        owner = int(match.group(1)) if match.group(1) else 0
+        if moment - info.st_mtime < min_age and (not owner or _alive(owner)):
+            continue
+        shutil.rmtree(path, ignore_errors=True)
+        if not os.path.lexists(path):
+            removed += 1
+    return removed
+
+
+def _not_stored() -> TranscribeError:
+    return TranscribeError(502, "transcribe_failed", "The Mac could not store the recording to transcribe it.",
+                           retryable=True)
+
+
+def _write_private(folder: str, suffix: str, data: bytes) -> str:
+    """``data`` in a new 0600 file in ``folder``; its descriptor is closed exactly once, whatever fails."""
+    handle, path = tempfile.mkstemp(prefix="clip-", suffix=suffix, dir=folder)
+    try:
+        os.fchmod(handle, 0o600)
+        view = memoryview(data)
+        while view:
+            view = view[os.write(handle, view):]
+    finally:
+        os.close(handle)
+    return path
 
 
 def default_helper() -> str:
@@ -279,8 +414,9 @@ class Transcriber:
     def __init__(self, helper: Optional[str] = None, *, timeout: float = HELPER_TIMEOUT_SECONDS,
                  check_timeout: float = CHECK_TIMEOUT_SECONDS, prepare_timeout: float = PREPARE_TIMEOUT_SECONDS,
                  max_concurrent: int = MAX_CONCURRENT, busy_wait: float = BUSY_WAIT_SECONDS,
-                 monotonic: Callable[[], float] = time.monotonic) -> None:
+                 temp_root: Optional[str] = None, monotonic: Callable[[], float] = time.monotonic) -> None:
         self.helper = os.path.expanduser(helper) if helper else default_helper()
+        self._temp_root = temp_root  # where recording folders go (default: the temp folder)
         self._timeout = min(float(timeout), HELPER_TIMEOUT_SECONDS)
         self._check_timeout = check_timeout
         self._prepare_timeout = prepare_timeout
@@ -300,14 +436,24 @@ class Transcriber:
         path = self.helper
         return path if os.path.isfile(path) and os.access(path, os.X_OK) else None
 
+    def start(self) -> None:
+        """At bridge start: removes recording folders a bridge that stopped mid-transcription left behind."""
+        try:
+            removed = remove_leftovers(self._temp_root)
+        except Exception:  # noqa: BLE001 - housekeeping never stops the bridge
+            removed = 0
+        if removed:
+            _LOG.info("removed %d leftover recording folder%s", removed, "" if removed == 1 else "s")
+
     def close(self) -> None:
-        """Stops a model download and any transcription still running, and removes their recordings."""
+        """Stops a model download and any transcription still running (their whole process groups), and removes their
+        recordings."""
         with self._lock:
             self._closed = True
             processes = [self._prepare_process, *self._running.values()]
             folders = list(self._running)
         for process in processes:
-            if process is not None and process.poll() is None:
+            if process is not None:
                 _kill_group(process)
         for folder in folders:
             shutil.rmtree(folder, ignore_errors=True)
@@ -329,8 +475,8 @@ class Transcriber:
         try:
             out, _ = process.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
-            _kill_group(process)
-            process.communicate()
+            _kill_group(process)  # the whole group: nothing the helper started outlives the timeout
+            _reap(process)
             raise
         if len(out) > MAX_HELPER_OUTPUT:
             return None
@@ -348,7 +494,9 @@ class Transcriber:
 
     # ------------------------------------------------------------------ /health
     def status(self, *, refresh: bool = False) -> Dict[str, Any]:
-        """``{available, engine?, locale?, reason?}`` for the default language, checked at most every 10 minutes."""
+        """``{available, engine?, locale?, reason?}`` for the default language, checked at most every 10 minutes.
+        ``reason: permission_denied`` when Speech Recognition is off for the helper (seen by the check, or by a
+        transcription that failed with ``transcribe_permission``)."""
         if self.executable() is None:
             return {"available": False, "reason": "helper_missing"}
         value = None if refresh else self._cached()
@@ -359,8 +507,18 @@ class Transcriber:
                     value = self._check()
                     with self._lock:
                         self._status = (self._monotonic(), value)
+        return self._overlay(value)
+
+    def cached_status(self) -> Optional[Dict[str, Any]]:
+        """What ``status()`` answers, from what is already known (never runs the helper); None when a check is due."""
+        if self.executable() is None:
+            return {"available": False, "reason": "helper_missing"}
+        value = self._cached()
+        return None if value is None else self._overlay(value)
+
+    def _overlay(self, value: Dict[str, Any]) -> Dict[str, Any]:
         value = dict(value)
-        if not value.get("available") and self._preparing:
+        if not value.get("available") and value.get("reason") == "model_missing" and self._preparing:
             value["reason"] = "model_downloading"
         return value
 
@@ -371,11 +529,14 @@ class Transcriber:
 
     def _check(self) -> Dict[str, Any]:
         try:
-            answer, _status = self._run(["--check", "--locale", DEFAULT_LANGUAGE], self._check_timeout)
+            answer, _status = self._run(["--check", "--locale", DEFAULT_LANGUAGE, "--deadline",
+                                         helper_deadline(self._check_timeout)], self._check_timeout)
         except subprocess.TimeoutExpired:
             return {"available": False, "reason": "check_timeout"}
         except TranscribeError as error:
             return {"available": False, "reason": error.reason or error.code}
+        if answer and answer.get("ok") is False and answer.get("code") == "transcribe_timeout":
+            return {"available": False, "reason": "check_timeout"}  # the helper's own deadline
         if not answer or answer.get("ok") is not True:
             return {"available": False, "reason": "check_failed"}
         value: Dict[str, Any] = {"available": answer.get("available") is True}
@@ -383,6 +544,10 @@ class Transcriber:
             value["engine"] = answer["engine"]
         if isinstance(answer.get("locale"), str) and _LANGUAGE.match(answer["locale"]):
             value["locale"] = answer["locale"]
+        if answer.get("permission") in ("denied", "restricted"):
+            # Speech Recognition is off for the helper (System Settings): the helper treats its failures as that.
+            value.update({"available": False, "reason": "permission_denied"})
+            return value
         if not value["available"]:
             reason = answer.get("reason")
             value["reason"] = reason if isinstance(reason, str) and re.match(r"^[a-z_]{1,40}$", reason) \
@@ -410,7 +575,8 @@ class Transcriber:
     def _prepare(self, language: str) -> None:
         outcome = "failed"
         try:
-            process = self._start(["--prepare", "--locale", language], tempfile.gettempdir())
+            process = self._start(["--prepare", "--locale", language, "--deadline",
+                                   helper_deadline(self._prepare_timeout)], tempfile.gettempdir())
             with self._lock:
                 self._prepare_process = process
             answer = self._finish(process, self._prepare_timeout)
@@ -436,23 +602,20 @@ class Transcriber:
             raise TranscribeError(503, "transcribe_busy", "The Mac is already transcribing. Try again in a moment.",
                                   retryable=True)
         try:
-            folder = tempfile.mkdtemp(prefix="samrabbit-voice-")  # 0700
+            # 0700, named after this process so a bridge starting later can tell a leftover (remove_leftovers)
+            try:
+                folder = tempfile.mkdtemp(prefix=f"{FOLDER_PREFIX}{os.getpid()}-", dir=self._temp_root)
+            except OSError:
+                raise _not_stored() from None
             with self._lock:
                 self._running[folder] = None
             try:
-                handle, path = tempfile.mkstemp(prefix="clip-", suffix=_SUFFIX.get(kind, ".audio"), dir=folder)
                 try:
-                    os.fchmod(handle, 0o600)
-                    with os.fdopen(handle, "wb") as file:
-                        file.write(data)
-                except BaseException:
-                    try:
-                        os.close(handle)
-                    except OSError:
-                        pass
-                    raise
+                    path = _write_private(folder, _SUFFIX.get(kind, ".audio"), data)
+                except OSError:
+                    raise _not_stored() from None
                 process = self._start(["--file", path, "--locale", language, "--max-seconds",
-                                       str(MAX_AUDIO_SECONDS)], folder)
+                                       str(MAX_AUDIO_SECONDS), "--deadline", helper_deadline(self._timeout)], folder)
                 with self._lock:
                     self._running[folder] = process
                 try:
@@ -498,8 +661,10 @@ class Transcriber:
             if reason == "insufficient_resources":
                 raise unavailable(reason, retryable=True)
             raise unavailable(reason or "speech_unavailable")
-        if code == "transcribe_permission":
-            self._remember(None)
+        if code == "transcribe_timeout":  # the helper's own deadline: as if the bridge had stopped it
+            raise TranscribeError(504, "transcribe_failed", _FAILURES[code][1], retryable=True)
+        if code == "transcribe_permission":  # whatever the language: /health says so until the next check
+            self._remember({"available": False, "reason": "permission_denied"})
         if code == "transcribe_failed":  # the detail is logged only as an error domain and number
             _LOG.warning("transcription failed (%s)", detail if _ERROR_DETAIL.match(detail) else "no detail")
         http, message, retryable = _FAILURES[code]

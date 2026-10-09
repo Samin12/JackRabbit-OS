@@ -4,10 +4,15 @@
 //   samrabbit-transcribe --check   [--locale en-US] [--engine ...]   is it usable? (no audio, no download)
 //   samrabbit-transcribe --prepare [--locale en-US] [--engine ...]   download the language model if it is missing
 //   samrabbit-transcribe --version
+//   ... [--deadline <seconds>]   its own time limit (defaults: --file 40 s, --check 20 s, --prepare 15 min)
 //
 // It prints exactly one JSON object on stdout and nothing else anywhere: the words are only ever in that object
 // (never on stderr, never in a log). Errors are {"ok": false, "code", "message", "detail"?} with a matching exit
 // status. The audio is a file (m4a/AAC, WAV, ADTS AAC), so no microphone and no permission prompt is involved.
+//
+// Deadline: whatever it is doing, the helper answers {"ok": false, "code": "transcribe_timeout"} (exit 9) and exits
+// when its deadline passes, so it never runs on by itself (the bridge passes one a little under its own timeout,
+// and kills the helper's whole process group at that timeout).
 //
 // Engine: SpeechAnalyzer with SpeechTranscriber (macOS 26+, on device, punctuated). DictationTranscriber when this
 // Mac has no SpeechTranscriber or it does not know the language. A transcription never downloads a model (that can
@@ -36,6 +41,7 @@ struct Failure: Error {
         case "unsupported_audio": return 6
         case "audio_too_long": return 7
         case "no_speech": return 8
+        case "transcribe_timeout": return 9
         case "usage": return 64
         default: return 1  // transcribe_failed
         }
@@ -53,13 +59,37 @@ struct Options {
     var locale = "en-US"
     var maxSeconds = 90.0
     var engine = "auto"
+    var deadline: Double?
 }
 
+/// Held by the first answer and never released: exactly one JSON object is printed, then the process ends.
+let answerLock = NSLock()
+
 func emit(_ object: [String: Any], status: Int32 = 0) -> Never {
+    answerLock.lock()
     var data = (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])) ?? Data("{}".utf8)
     data.append(0x0A)
     FileHandle.standardOutput.write(data)
-    exit(status)
+    _exit(status)  // not exit(): no atexit work that a thread stuck in a framework could block
+}
+
+/// The helper's own time limit for a mode when the bridge gives none.
+func defaultDeadline(_ mode: String) -> Double? {
+    switch mode {
+    case "file": return 40
+    case "check": return 20
+    case "prepare": return 15 * 60
+    default: return nil
+    }
+}
+
+/// Answers transcribe_timeout and exits when the deadline passes, whatever the work is waiting on.
+func armDeadline(_ seconds: Double) {
+    Thread.detachNewThread {
+        Thread.sleep(forTimeInterval: seconds)
+        fail(Failure(code: "transcribe_timeout", message: "The helper ran out of time.",
+                     detail: "\(Int((seconds * 1000).rounded()))ms"))
+    }
 }
 
 func fail(_ failure: Failure) -> Never {
@@ -90,6 +120,11 @@ func parse(_ arguments: [String]) throws -> Options {
                 throw Failure(code: "usage", message: "--max-seconds must be a positive number.")
             }
             options.maxSeconds = seconds
+        case "--deadline":
+            guard let seconds = Double(try value(argument)), seconds > 0, seconds.isFinite else {
+                throw Failure(code: "usage", message: "--deadline must be a positive number of seconds.")
+            }
+            options.deadline = seconds
         default: throw Failure(code: "usage", message: "Unknown argument.")
         }
         index += 1
@@ -188,6 +223,12 @@ func check(_ options: Options) async -> [String: Any] {
         value["model"] = installed ? "installed" : "missing"
         value["available"] = installed
         if !installed { value["reason"] = "model_missing" }
+        let permission = permissionState()
+        if permission == "denied" || permission == "restricted" {
+            // Speech Recognition is off for the helper in System Settings: its transcriptions would fail.
+            value["available"] = false
+            value["reason"] = "permission_denied"
+        }
     } catch {
         let failure = classify(error)
         value["available"] = false
@@ -316,6 +357,9 @@ struct SamRabbitTranscribe {
             options = try parse(CommandLine.arguments)
         } catch {
             fail(classify(error))
+        }
+        if let seconds = options.deadline ?? defaultDeadline(options.mode) {
+            armDeadline(seconds)
         }
         do {
             switch options.mode {

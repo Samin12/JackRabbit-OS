@@ -25,6 +25,7 @@ import tempfile
 import threading
 import time
 import unittest
+import unittest.mock
 import wave
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote
@@ -151,9 +152,21 @@ class AudioChecksTest(unittest.TestCase):
                 transcribe.content_kind(value)
             self.assertEqual(415, caught.exception.status)
         self.assertEqual("en-US", transcribe.normalize_language(None))
+        self.assertEqual("en-US", transcribe.normalize_language(""))
         self.assertEqual("en-GB", transcribe.normalize_language("en_GB"))
-        self.assertEqual("fr", transcribe.normalize_language("fr"))
         self.assertEqual("zh-Hant-TW", transcribe.normalize_language("zh-Hant-TW"))
+        # One deterministic locale per request: a bare language is always the same locale, the case canonical.
+        for value, locale in (("en", "en-US"), ("EN", "en-US"), ("en-us", "en-US"), ("EN_us", "en-US"),
+                              ("fr", "fr-FR"), ("es", "es-ES"), ("de", "de-DE"), ("it", "it-IT"), ("ja", "ja-JP"),
+                              ("pt", "pt-BR"), ("nl", "nl-NL"), ("ko", "ko-KR"), ("zh", "zh-CN"), ("no", "nb-NO"),
+                              ("yue", "yue-CN"), ("fr-ca", "fr-CA"), ("es-419", "es-419"), ("zh-hant-tw", "zh-Hant-TW"),
+                              ("zh-Hans", "zh-CN"), ("zh-hant", "zh-TW"), ("sr-Latn-RS", "sr-Latn-RS"),
+                              ("xx", "xx"), ("qaa", "qaa")):
+            with self.subTest(value=value):
+                self.assertEqual(locale, transcribe.normalize_language(value))
+                self.assertEqual(locale, transcribe.normalize_language(locale), "stable")
+        for language, locale in transcribe.DEFAULT_REGIONS.items():
+            self.assertRegex(locale, r"^[a-z]{2,3}-[A-Z]{2}$", language)
         for value in ("en US", "en-US;rm -rf", "../en", "e", "english-language-please-x", "--file"):
             with self.assertRaises(transcribe.TranscribeError) as caught:
                 transcribe.normalize_language(value)
@@ -216,7 +229,10 @@ class TranscribeRouteTest(TranscribeBase):
         self.assertEqual(200, status, value)
         self.assertEqual({"text": WORDS, "durationMs": 6358, "engine": "SpeechTranscriber", "locale": "en-US"}, value)
         [call] = self.helper_calls()
-        self.assertEqual(["--file", call["file"], "--locale", "en-US", "--max-seconds", "90"], call["args"])
+        self.assertEqual(["--file", call["file"], "--locale", "en-US", "--max-seconds", "90", "--deadline", "40"],
+                         call["args"], "the helper's own deadline is a little under the bridge's 45 s")
+        self.assertTrue(Path(call["file"]).parent.name.startswith(f"samrabbit-voice-{os.getpid()}-"),
+                        "the folder names its bridge process")
         self.assertTrue(call["file"].endswith(".m4a"))
         self.assertEqual(0o600, call["fileMode"], "a private temp file")
         self.assertEqual(0o700, call["dirMode"], "in a private folder")
@@ -237,6 +253,11 @@ class TranscribeRouteTest(TranscribeBase):
         self.assertEqual((200, "fr-FR"), (status, value["locale"]))
         self.assertEqual("fr-FR", self.helper_calls()[-1]["args"][3])
         self.assertEqual("en-GB", self.post(m4a(3), query="?lang=en_GB")[1]["locale"])
+        for short, locale in (("fr", "fr-FR"), ("es", "es-ES"), ("de", "de-DE"), ("en", "en-US")):
+            with self.subTest(lang=short):
+                status, value = self.post(m4a(3), query="?lang=" + short)
+                self.assertEqual((200, locale), (status, value["locale"]))
+                self.assertEqual(locale, self.helper_calls()[-1]["args"][3], "the helper gets the full locale")
         cases = (("audio/x-m4a", m4a(2), ".m4a"), ("audio/mp4; codecs=mp4a.40.2", m4a(2), ".m4a"),
                  ("audio/wav", wav(1.5), ".wav"), ("audio/x-wav", wav(1.5), ".wav"), ("audio/aac", adts(2), ".aac"),
                  ("audio/aac", m4a(2), ".m4a"))  # the bytes decide the container
@@ -332,12 +353,15 @@ class TranscribeRouteTest(TranscribeBase):
         self.server._health = None  # noqa: SLF001
         self.call("GET", "/health", token=TOKEN)
         self.assertEqual(1, len(self.helper_calls("--check")), "checked once, then cached")
-        self.assertEqual(["--check", "--locale", "en-US"], self.helper_calls("--check")[0]["args"])
+        self.assertEqual(["--check", "--locale", "en-US", "--deadline", "4"], self.helper_calls("--check")[0]["args"])
         for check, expected in (
                 ("model_missing", {"available": False, "engine": "SpeechTranscriber", "locale": "en-US",
                                    "reason": "model_missing"}),
                 ("speech_unavailable", {"available": False, "reason": "speech_unavailable"}),
                 ("garbage", {"available": False, "reason": "check_failed"}),
+                ("deadline", {"available": False, "reason": "check_timeout"}),
+                ("permission", {"available": False, "engine": "SpeechTranscriber", "locale": "en-US",
+                                "reason": "permission_denied"}),
                 ("available", {"available": True, "engine": "SpeechTranscriber", "locale": "en-US"})):
             with self.subTest(check=check):
                 self.fake("check", check)
@@ -359,7 +383,8 @@ class TranscribeRouteTest(TranscribeBase):
         self.assertEqual("model_downloading", again[1]["error"]["reason"], "one download at a time")
         self.wait_for(lambda: self.transcriber._preparing is None)  # noqa: SLF001
         self.assertEqual(1, len(self.helper_calls("--prepare")))
-        self.assertEqual(["--prepare", "--locale", "en-US"], self.helper_calls("--prepare")[0]["args"])
+        self.assertEqual(["--prepare", "--locale", "en-US", "--deadline", "895"],
+                         self.helper_calls("--prepare")[0]["args"])
         self.assertEqual(200, self.post(m4a(3))[0], "ready once the model is there")
         self.assertTrue(self.transcriber.status()["available"])
         self.assertIn("speech model download ready", self.log.getvalue())
@@ -390,6 +415,74 @@ class TranscribeRouteTest(TranscribeBase):
         self.assertEqual(502, results[0][0])
         self.assert_gone(call)
 
+    def test_a_bare_language_is_one_request_for_status_and_models(self) -> None:
+        self.fake("mode", "model_missing")
+        self.fake("prepare", "slow")
+        self.assertEqual("model_downloading", self.post(m4a(3), query="?lang=fr")[1]["error"]["reason"])
+        self.assertEqual("model_downloading", self.post(m4a(3), query="?lang=fr-FR")[1]["error"]["reason"])
+        self.wait_for(lambda: self.transcriber._preparing is None)  # noqa: SLF001
+        self.assertEqual([["--prepare", "--locale", "fr-FR"]], [call["args"][:3] for call in self.helper_calls("--prepare")],
+                         "fr and fr-FR share one download")
+        # A recording in "en" is a recording in the default en-US: it counts as the status check.
+        self.fake("mode", "ok")
+        self.fake("check", "speech_unavailable")
+        self.assertFalse(self.transcriber.status(refresh=True)["available"])
+        self.assertEqual((200, "en-US"), (lambda answer: (answer[0], answer[1]["locale"]))(
+            self.post(m4a(2), query="?lang=en")))
+        self.assertEqual({"available": True, "engine": "SpeechTranscriber", "locale": "en-US"},
+                         self.transcriber.status())
+
+    def test_permission_problems_show_in_health_and_the_summary(self) -> None:
+        self.assertTrue(self.transcriber.status(refresh=True)["available"])
+        checks = len(self.helper_calls("--check"))
+        self.fake("mode", "permission")
+        status, value = self.post(m4a(3), query="?lang=de")
+        self.assertEqual((503, "transcribe_permission"), (status, value["error"]["code"]))
+        expected = {"available": False, "reason": "permission_denied"}
+        self.assertEqual(expected, self.transcriber.status(), "whatever the recording's language")
+        self.assertEqual(checks, len(self.helper_calls("--check")), "known from the failure, not a new check")
+        self.server._health = None  # noqa: SLF001
+        self.assertEqual(expected, self.call("GET", "/health", token=TOKEN)[1]["mobile"]["transcribe"])
+        self.assertEqual(expected, self.call("GET", "/v1/mobile/summary", token=self.phone)[1]["transcribe"])
+        # A check that sees Speech Recognition denied says the same (the model alone does not make it available).
+        self.fake("check", "permission")
+        self.assertEqual("permission_denied", self.transcriber.status(refresh=True)["reason"])
+        # Turned back on: the next check (or a recording that works) says so.
+        self.fake("check", "available")
+        self.fake("mode", "ok")
+        self.assertEqual(200, self.post(m4a(2))[0])
+        self.assertEqual({"available": True}, self.call("GET", "/v1/mobile/summary", token=self.phone)[1]["transcribe"])
+
+    def test_the_summary_says_whether_the_mac_transcribes(self) -> None:
+        value = self.call("GET", "/v1/mobile/summary", token=self.phone)[1]
+        self.assertEqual({"available": True}, value["transcribe"])
+        self.fake("check", "model_missing")
+        self.transcriber.status(refresh=True)
+        self.clock.advance(5)
+        value = self.call("GET", "/v1/mobile/summary", token=self.phone)[1]
+        self.assertEqual({"available": False, "reason": "model_missing"}, value["transcribe"])
+
+    def test_a_recording_that_cannot_be_stored_fails_cleanly(self) -> None:
+        def failing_write(_descriptor: int, _data: Any) -> int:
+            raise OSError(28, "No space left on device")
+
+        with unittest.mock.patch.object(transcribe, "_write_private",
+                                        lambda folder, suffix, data: failing_write(0, data)):
+            status, value = self.post(m4a(3))
+        self.assertEqual((502, "transcribe_failed", True),
+                         (status, value["error"]["code"], value["error"]["retryable"]))
+        self.assertEqual([], self.helper_calls(), "the helper never ran")
+        self.assertEqual([], [name for name in os.listdir(tempfile.gettempdir())
+                              if name.startswith(f"samrabbit-voice-{os.getpid()}-")], "its folder is gone too")
+        self.assertEqual(200, self.post(m4a(3))[0], "and the next one works")
+
+    def test_the_helpers_own_deadline_is_a_timeout(self) -> None:
+        self.fake("mode", "deadline")
+        status, value = self.post(m4a(3))
+        self.assertEqual((504, "transcribe_failed", True),
+                         (status, value["error"]["code"], value["error"]["retryable"]))
+        self.assert_gone(self.helper_calls()[-1])
+
     def wait_for(self, condition: Any, seconds: float = 15.0) -> None:
         deadline = time.monotonic() + seconds
         while not condition():
@@ -415,6 +508,24 @@ class TranscribeLimitsTest(TranscribeBase):
         self.fake("check", "hang")
         self.assertEqual({"available": False, "reason": "check_timeout"}, self.transcriber.status(refresh=True))
 
+    def test_a_timeout_kills_the_helpers_whole_process_group(self) -> None:
+        for mode in ("spawn_hang", "orphan"):
+            with self.subTest(mode=mode):
+                pid_file = self.voice_dir / "child.pid"
+                if pid_file.exists():
+                    pid_file.unlink()
+                self.fake("mode", mode)
+                started = time.monotonic()
+                status, value = self.post(m4a(3))
+                self.assertLess(time.monotonic() - started, 10, "never waits for the child")
+                self.assertEqual((504, "transcribe_failed"), (status, value["error"]["code"]))
+                child = int(pid_file.read_text())
+                deadline = time.monotonic() + 10
+                while _running(child) and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                self.assertFalse(_running(child), "the helper's child was killed with it")
+                self.assert_gone(self.helper_calls()[-1])
+
     def test_one_at_a_time_then_busy(self) -> None:
         self.fake("mode", "slow")
         self.fake("delay", "0.6")  # longer than the wait for a free slot, shorter than the helper timeout
@@ -428,6 +539,97 @@ class TranscribeLimitsTest(TranscribeBase):
         self.assertEqual([200, 503], sorted(status for status, _value in results))
         busy = next(value for status, value in results if status == 503)["error"]
         self.assertEqual(("transcribe_busy", True), (busy["code"], busy["retryable"]))
+
+
+def _running(pid: int) -> bool:
+    """Is ``pid`` still a live process (not a zombie)?"""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    done = subprocess.run(["/bin/ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True, timeout=10)
+    return bool(done.stdout.strip()) and not done.stdout.strip().startswith("Z")
+
+
+class FileAndFolderTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+
+    def test_the_recording_file_descriptor_is_closed_exactly_once(self) -> None:
+        closed: List[int] = []
+        real_close = os.close
+
+        def counting_close(descriptor: int) -> None:
+            closed.append(descriptor)
+            real_close(descriptor)
+
+        def failing_write(_descriptor: int, _data: Any) -> int:
+            raise OSError(28, "No space left on device")
+
+        with unittest.mock.patch.object(transcribe.os, "close", counting_close), \
+                unittest.mock.patch.object(transcribe.os, "write", failing_write):
+            with self.assertRaises(OSError):
+                transcribe._write_private(str(self.root), ".m4a", b"audio")  # noqa: SLF001
+        self.assertEqual(1, len(closed), "closed once, never twice (a second close could hit another file)")
+        with unittest.mock.patch.object(transcribe.os, "close", counting_close):
+            path = transcribe._write_private(str(self.root), ".wav", b"x" * 300_000)  # noqa: SLF001
+        self.assertEqual(2, len(closed))
+        self.assertEqual(b"x" * 300_000, Path(path).read_bytes())
+        self.assertEqual(0o600, stat.S_IMODE(Path(path).stat().st_mode))
+
+    def test_leftover_recording_folders_are_removed(self) -> None:
+        gone = subprocess.Popen(["/usr/bin/true"])
+        gone.wait()
+        now = time.time()
+
+        def folder(name: str, *, age: float = 0.0) -> Path:
+            path = self.root / name
+            path.mkdir(mode=0o700)
+            (path / "clip-x.m4a").write_bytes(b"audio")
+            os.utime(path, (now - age, now - age))
+            return path
+
+        stale = [folder(f"samrabbit-voice-{gone.pid}-abc123"),  # its bridge is gone
+                 folder(f"samrabbit-voice-{os.getpid()}-old1", age=600),  # older than any transcription
+                 folder("samrabbit-voice-k2j4h5", age=600)]  # an older bridge's name, long stale
+        kept = [folder(f"samrabbit-voice-{os.getpid()}-busy1"),  # this bridge's recording in progress
+                folder("samrabbit-voice-1-busy2"),  # another live process's (pid 1), still young
+                folder("samrabbit-voice-k2j4h6"),  # an older bridge's name, still young
+                folder("samrabbit-other-x", age=600), folder("other", age=600)]
+        target = folder("target", age=600)
+        (self.root / "samrabbit-voice-link").symlink_to(target)
+        (self.root / "samrabbit-voice-file").write_text("not a folder")
+        self.assertEqual(3, transcribe.remove_leftovers(str(self.root), now=now))
+        for path in stale:
+            self.assertFalse(path.exists(), path.name)
+        for path in kept + [target]:
+            self.assertTrue(path.exists(), path.name)
+        self.assertTrue((self.root / "samrabbit-voice-link").is_symlink(), "a link is never followed or removed")
+        self.assertTrue((target / "clip-x.m4a").exists())
+        self.assertTrue((self.root / "samrabbit-voice-file").exists())
+        self.assertEqual(0, transcribe.remove_leftovers(str(self.root / "missing"), now=now))
+
+    def test_the_bridge_removes_leftovers_when_it_starts(self) -> None:
+        import samrabbit_mobile as mobile
+
+        gone = subprocess.Popen(["/usr/bin/true"])
+        gone.wait()
+        leftover = self.root / f"samrabbit-voice-{gone.pid}-zz9"
+        leftover.mkdir(mode=0o700)
+        (leftover / "clip-1.m4a").write_bytes(b"private audio")
+        service = mobile.MobileService(devices_file=str(self.root / "devices.json"),
+                                       transcriber=transcribe.Transcriber(str(self.root / "no-helper"),
+                                                                          temp_root=str(self.root)),
+                                       hosts=["10.0.0.2"])
+        with self.assertLogs("samrabbit-bridge.transcribe", level="INFO") as logs:
+            service.start()
+        self.addCleanup(service.close)
+        self.assertFalse(leftover.exists())
+        self.assertIn("removed 1 leftover recording folder", "\n".join(logs.output))
 
 
 class NoHelperTest(MobileBase):
@@ -545,6 +747,23 @@ class RealHelperTest(MobileBase):
         broken.write_bytes(box(b"ftyp", b"M4A \x00\x00\x00\x00M4A mp42isom") + b"\x00garbage" * 200)
         status, value = self.post(broken, "audio/mp4")
         self.assertEqual((415, "unsupported_audio"), (status, value["error"]["code"]))
+
+    def test_the_helper_stops_itself_at_its_deadline(self) -> None:
+        clip = Path(self.helper).parent / "clip.wav"
+        started = time.monotonic()
+        done = subprocess.run([self.helper, "--file", str(clip), "--locale", "en-US", "--deadline", "0.01"],
+                              capture_output=True, text=True, timeout=60)
+        self.assertLess(time.monotonic() - started, 10)
+        self.assertEqual(1, len(done.stdout.strip().splitlines()), "exactly one answer")
+        answer = json.loads(done.stdout)
+        self.assertEqual((9, False, "transcribe_timeout"), (done.returncode, answer["ok"], answer["code"]))
+        self.assertNotIn("dentist", done.stdout.lower())
+        self.assertEqual("", done.stderr)
+        done = subprocess.run([self.helper, "--check", "--deadline", "0"], capture_output=True, text=True, timeout=60)
+        self.assertEqual((64, "usage"), (done.returncode, json.loads(done.stdout)["code"]))
+        done = subprocess.run([self.helper, "--check", "--deadline", "30"], capture_output=True, text=True,
+                              timeout=60)
+        self.assertEqual((0, True), (done.returncode, json.loads(done.stdout)["available"]))
 
     def test_health_says_on(self) -> None:
         value = self.service.health()["transcribe"]

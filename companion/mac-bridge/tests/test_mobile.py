@@ -525,7 +525,10 @@ class SummaryTest(MobileBase):
         phone = self.pair()["token"]
         status, value = self.call("GET", "/v1/mobile/summary", token=phone)
         self.assertEqual(200, status, value)
-        self.assertEqual({"generatedAt", "mac", "r1", "t3", "calendar", "latestConversation", "journal"}, set(value))
+        self.assertEqual({"generatedAt", "mac", "r1", "t3", "calendar", "latestConversation", "journal", "transcribe"},
+                         set(value))
+        self.assertEqual({"available": False, "reason": "helper_missing"}, value["transcribe"],
+                         "the phone and the watch know whether the Mac transcribes (no helper here)")
         self.assertEqual(mobile.iso_utc(NOW), value["generatedAt"])
         self.assertEqual({"name": "Test Mac Studio", "online": True, "screenLocked": False}, value["mac"])
         self.assertEqual({"lastSeenAt", "live", "liveConversationId", "liveTitle"}, set(value["r1"]))
@@ -676,6 +679,7 @@ class DevCopyTest(unittest.TestCase):
                 self.assertEqual((503, "calendar_dev_copy"), (status, value["error"]["code"]))
                 summary = call("GET", "/v1/mobile/summary", headers=auth)[1]
                 self.assertEqual("t3_dev_copy", summary["t3"]["reason"])
+                self.assertEqual("calendar_dev_copy", summary["calendar"]["reason"])
                 self.assertEqual({"available": True, "dryRun": True}, summary["journal"])
                 status, value = call("POST", "/v1/mobile/journal", {"text": NOTE}, headers=auth)
                 self.assertEqual((200, True), (status, value.get("dryRun")), "a checkout copy never writes the journal")

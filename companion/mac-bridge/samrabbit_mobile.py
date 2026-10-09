@@ -12,7 +12,8 @@ Routes (CONTRACTS-WAVE4 "Mobile API"):
   ``POST /v1/mobile/devices/child {name, platform: "watchos"}`` (a phone mints its watch's own token) and
   ``POST /v1/mobile/unpair`` (a device forgets itself).
 * ``GET /v1/mobile/summary``: the dashboard for widgets and complications, assembled from caches that a background
-  worker keeps warm while a device is active (T3 every ~10 s, calendar every 120 s).
+  worker keeps warm while a device is active (T3 every ~10 s, calendar every 120 s), including
+  ``transcribe: {available, reason?}`` (can the phone and the watch send recordings to the Mac?).
 * R1 conversations, reusing ``samrabbit_sync``'s desktop handlers: ``GET /v1/mobile/conversations``,
   ``/conversations/<id>[/events]``, ``/stream`` (SSE), ``/blobs/<sha256>``; generated UIs:
   ``GET /v1/mobile/ui/artifacts/<id>[/image|/document]`` and ``POST /v1/mobile/ui/generate {prompt, data?}``
@@ -102,6 +103,7 @@ T3_REFRESH_SECONDS = 10.0
 CALENDAR_REFRESH_SECONDS = 120.0
 JOURNAL_REFRESH_SECONDS = 300.0  # the probe reads today's journal; a phone note also tells
 SCREEN_REFRESH_SECONDS = 15.0
+TRANSCRIBE_REFRESH_SECONDS = 60.0  # the transcriber caches its own check for 10 minutes; this only reads it
 FAILED_REFRESH_SECONDS = 20.0
 DEMAND_WINDOW_SECONDS = 10 * 60
 COLD_WAIT_SECONDS = 1.5
@@ -722,9 +724,13 @@ class MobileService:
         self.server = server
 
     def start(self) -> None:
-        """The background refresher (summary caches). Pre-warms when devices are already paired."""
+        """The background refresher (summary caches). Pre-warms when devices are already paired. Also removes the
+        recording folders a bridge that stopped mid-transcription left behind."""
         if self._worker is not None:
             return
+        starter = getattr(self.transcriber, "start", None)
+        if callable(starter):
+            starter()
         if self.devices.count():
             self._demand_at = self._monotonic()
         self._worker = threading.Thread(target=self._work, name="samrabbit-mobile", daemon=True)
@@ -935,7 +941,8 @@ class MobileService:
     def _components(self) -> Dict[str, Tuple[float, Callable[[], Any]]]:
         return {"screen": (SCREEN_REFRESH_SECONDS, self._load_screen), "t3": (T3_REFRESH_SECONDS, self._load_t3),
                 "journal": (JOURNAL_REFRESH_SECONDS, self._load_journal),
-                "calendar": (CALENDAR_REFRESH_SECONDS, self._load_calendar)}
+                "calendar": (CALENDAR_REFRESH_SECONDS, self._load_calendar),
+                "transcribe": (TRANSCRIBE_REFRESH_SECONDS, self.transcribe_status)}
 
     def _due(self, name: str) -> bool:
         ttl = self._components()[name][0]
@@ -1041,7 +1048,7 @@ class MobileService:
             cached = self._summary
         if cached is not None and self._monotonic() - cached[0] < SUMMARY_CACHE_SECONDS:
             return cached[1]
-        parts = self._parts(("screen", "t3", "journal", "calendar"))
+        parts = self._parts(("screen", "t3", "journal", "calendar", "transcribe"))
         t3_state, calendar, journal, screen = (parts[name] or {} for name in ("t3", "calendar", "journal", "screen"))
         if calendar.get("_loading"):
             calendar = {"available": False, "reason": "loading"}
@@ -1076,11 +1083,32 @@ class MobileService:
                         **({"dryRun": True} if journal.get("dryRun") else {}),
                         **({"reason": journal["reason"]} if journal.get("reason") and not journal.get("available")
                            else {})},
+            "transcribe": self._transcribe_part(parts["transcribe"]),
         }
         value["r1"], value["latestConversation"] = self._r1_part()
         with self._lock:
             self._summary = (self._monotonic(), value)
         return value
+
+    def _transcribe_part(self, loaded: Any) -> Dict[str, Any]:
+        """``{available, reason?}``: can the phone and the watch send recordings to ``/v1/mobile/transcribe``? What
+        the transcriber knows right now (a transcription that just worked or failed) wins over the cached part."""
+        value: Any = None
+        try:
+            if self.transcriber is not None and callable(getattr(self.transcriber, "cached_status", None)):
+                value = self.transcriber.cached_status()
+        except Exception:  # noqa: BLE001 - never fails the summary
+            value = None
+        if value is None:
+            value = loaded if isinstance(loaded, dict) else {}
+            if value.get("_loading"):
+                value = {"available": False, "reason": "loading"}
+            elif value.get("_failed"):
+                value = {"available": False, "reason": "check_failed"}
+        available = value.get("available") is True
+        reason = value.get("reason")
+        return {"available": available,
+                **({"reason": reason} if not available and isinstance(reason, str) and reason else {})}
 
     def _r1_part(self) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
         r1: Dict[str, Any] = {"lastSeenAt": None, "live": False, "liveConversationId": None, "liveTitle": None}
@@ -1506,7 +1534,11 @@ class MobileService:
         if len(data) != length:
             raise MobileError(400, "invalid_audio", "The recording did not arrive completely.", retryable=True)
         kind, _seconds = _transcribe.check_audio(data, declared)
-        result = self.transcriber.transcribe(data, kind, language)
+        try:
+            result = self.transcriber.transcribe(data, kind, language)
+        finally:
+            with self._lock:
+                self._summary = None  # the summary's "transcribe" part reflects what this recording showed
         _LOG.info("mobile transcription done (%s, %d ms of audio)", result.get("engine"), result.get("durationMs", 0))
         return 200, result
 

@@ -222,14 +222,22 @@ class CliAndTokenTest(unittest.TestCase):
 
 class Python39Test(unittest.TestCase):
     def test_new_modules_parse_as_python_3_9_and_import_isolated(self) -> None:
-        for name in ("samrabbit_mobile.py", "samrabbit_t3.py", "samrabbit_bridge.py"):
+        for name in ("samrabbit_mobile.py", "samrabbit_t3.py", "samrabbit_bridge.py", "samrabbit_installed.py"):
             ast.parse((ROOT / name).read_text(), filename=name, feature_version=(3, 9))
         # As the LaunchAgent runs it: the macOS system Python, isolated mode, from another folder.
         code = ("import sys; sys.path.append(sys.argv[1]); import samrabbit_mobile, samrabbit_t3, samrabbit_bridge; "
-                "print(sys.version_info[:2] >= (3, 9), samrabbit_bridge.mobile is not None)")
+                "print(sys.version_info[:2] >= (3, 9), samrabbit_bridge.mobile is not None, "
+                "samrabbit_bridge.installation is not None, samrabbit_bridge.is_installed_copy())")
         done = subprocess.run(["/usr/bin/python3", "-I", "-c", code, str(ROOT)], capture_output=True, text=True,
                               timeout=60, cwd=tempfile.gettempdir())
-        self.assertEqual("True True", done.stdout.strip(), done.stderr)
+        self.assertEqual("True True True False", done.stdout.strip(), done.stderr)
+        # samrabbit_t3.py run as a script (install.sh) finds samrabbit_installed next to it, isolated too.
+        done = subprocess.run(["/usr/bin/python3", "-I", "-c", "import sys; sys.argv = [sys.argv[1]]; "
+                               "import runpy; ns = runpy.run_path(sys.argv[0]); "
+                               "print(ns['_installed_copy'](), 'samrabbit_installed' in sys.modules)",
+                               str(ROOT / "samrabbit_t3.py")], capture_output=True, text=True, timeout=60,
+                              cwd=tempfile.gettempdir())
+        self.assertEqual("False True", done.stdout.strip(), done.stderr)
 
 
 if __name__ == "__main__":

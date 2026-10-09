@@ -118,9 +118,17 @@ install -m 0644 "$SOURCE_DIR/samrabbit_calendar.py" "$APP_DIR/samrabbit_calendar
 install -m 0644 "$SOURCE_DIR/samrabbit_mobile.py" "$APP_DIR/samrabbit_mobile.py"  # iPhone / Apple Watch API
 install -m 0644 "$SOURCE_DIR/samrabbit_t3.py" "$APP_DIR/samrabbit_t3.py"          # its T3 Code client
 install -m 0644 "$SOURCE_DIR/samrabbit_transcribe.py" "$APP_DIR/samrabbit_transcribe.py"  # speech to text
+install -m 0644 "$SOURCE_DIR/samrabbit_installed.py" "$APP_DIR/samrabbit_installed.py"  # "is this the installed copy?"
 rm -rf "$APP_DIR/genui"; mkdir -p "$APP_DIR/genui"
 for asset in "$SOURCE_DIR"/genui/*; do install -m 0644 "$asset" "$APP_DIR/genui/"; done
 install -m 0644 "$SOURCE_DIR/samrabbit_app.py" "$APP_DIR/samrabbit_app.py"  # desktop web UI at /app/
+# The install marker: the installed copy is the one in the account's own home (from the password database, never
+# $HOME) whose .samrabbit-installed names its folder. Only that copy reaches the real Heptabase journal, T3 Code and
+# Google Calendar by default; a checkout, a test or a copy in a temp HOME (SAMRABBIT_HOME) is always a dev copy.
+printf '%s\n' "$APP_DIR" > "$APP_DIR/.samrabbit-installed.tmp"
+chmod 0644 "$APP_DIR/.samrabbit-installed.tmp"
+mv -f "$APP_DIR/.samrabbit-installed.tmp" "$APP_DIR/.samrabbit-installed"
+echo "bridge copy: $("$PYTHON" -I "$APP_DIR/samrabbit_installed.py" "$APP_DIR" 2>/dev/null || echo "dev (unknown)")"
 touch "$LOG_FILE"; chmod 600 "$LOG_FILE"
 if [ "$(stat -f %z "$LOG_FILE" 2>/dev/null || echo 0)" -gt 5242880 ]; then : > "$LOG_FILE"; fi
 
@@ -174,16 +182,28 @@ else
   PREPARE=1
   [ "${SAMRABBIT_SKIP_LAUNCHCTL:-0}" = 1 ] && PREPARE=${SAMRABBIT_TRANSCRIBE_PREPARE:-0}
   "$PYTHON" -I - "$TRANSCRIBE_BIN" "$PREPARE" <<'EOF' || echo "transcription: off (the check failed)"
-import json, os, subprocess, sys, tempfile, time
+import json, os, signal, subprocess, sys, tempfile, time
 helper, prepare = sys.argv[1], sys.argv[2] == "1"
 def run(*args, timeout):
+    # Its own deadline a little under ours; at ours, the helper's whole process group is killed.
     try:
-        done = subprocess.run([helper, *args], stdin=subprocess.DEVNULL, capture_output=True, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "code": "timeout"}
+        process = subprocess.Popen([helper, *args, "--deadline", f"{max(1, timeout - 5)}"], stdin=subprocess.DEVNULL,
+                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, start_new_session=True)
     except OSError:
         return {"ok": False, "code": "not_runnable"}
-    lines = [line for line in done.stdout.decode("utf-8", "replace").splitlines() if line.strip()]
+    try:
+        out, _ = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except OSError:
+            process.kill()
+        try:
+            process.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        return {"ok": False, "code": "timeout"}
+    lines = [line for line in out.decode("utf-8", "replace").splitlines() if line.strip()]
     try:
         value = json.loads(lines[-1]) if lines else {}
     except ValueError:
@@ -313,6 +333,9 @@ while True:
                   "see ~/Library/Logs/samrabbit-bridge.log", file=sys.stderr)
             sys.exit(1)
         time.sleep(0.5)
+if health.get("copy") != "installed":
+    print("install.sh: warning: the running bridge says it is a dev copy, so the phone's T3 and Google Calendar stay "
+          "off; run install.sh as the Mac's own user, with HOME unchanged", file=sys.stderr)
 cli, app = health.get("cli") or {}, health.get("app") or {}
 print(f"bridge running: heptabase CLI {cli.get('version') or 'missing'}, "
       f"Heptabase app {'reachable' if app.get('reachable') else 'NOT reachable (' + str(app.get('detail')) + ')'}")

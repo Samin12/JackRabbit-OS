@@ -1,7 +1,9 @@
 """Which Heptabase CLI a bridge uses: only the installed LaunchAgent copy may reach the real journal.
 
-A bridge run from a checkout (tests, dev bridges on other ports) defaults to a dry-run CLI, even when a
-``heptabase`` executable is first on PATH, so a stray test can never write to the user's Heptabase journal.
+A bridge run from a checkout (tests, dev bridges on other ports) or with HOME pointing at a temp folder defaults to
+a dry-run CLI, even when a ``heptabase`` executable is first on PATH, so a stray test can never write to the user's
+Heptabase journal (only the copy install.sh marked in the account's own home is the installed one; see also
+``tests/test_installed_copy.py``).
 A dry-run bridge says so (``/health`` ``dryRun``, ``cli.mode`` ``dryRun``, ``app.reachable`` false, and
 ``dryRun: true`` on every journal answer), so a runtime paired with it never reports an entry as sent.
 
@@ -147,18 +149,32 @@ class CliChoiceTest(unittest.TestCase):
         self.call(base, "POST", "/v1/heptabase/journal/append", {"date": "2026-10-08", "content": "By path."})
         self.assertTrue(any(line.startswith("journal append 2026-10-08") for line in self.real_calls()))
 
-    def test_the_installed_copy_defaults_to_the_real_cli(self) -> None:
+    def test_only_the_installed_copy_defaults_to_the_real_cli(self) -> None:
+        # The decision (samrabbit_installed) takes the account's home from the password database, never $HOME, and
+        # needs install.sh's marker. Here the account home is a stand-in passed to the decision itself; no CLI runs.
         home = Path(self.tmp.name, "home")
         installed = home / "Library/Application Support/SamRabbit/bridge"
         installed.mkdir(parents=True)
+        decision = {"home": str(home), "environ": {"HOME": str(home)}}
+        self.assertEqual(bridge.CLI_DRY_RUN, bridge.default_cli_choice(str(installed), **decision), "no marker yet")
+        (installed / ".samrabbit-installed").write_text(str(installed) + "\n")  # what install.sh writes
+        self.assertEqual(bridge.CLI_AUTO, bridge.default_cli_choice(str(installed), **decision))
+        self.assertEqual(bridge.CLI_DRY_RUN, bridge.default_cli_choice(str(ROOT), **decision))
+        self.assertIsInstance(bridge.cli_for("dry-run", here=str(installed)), bridge.DryRunHeptabaseCli,
+                              "an explicit dry-run wins even for the installed copy")
+
+    def test_a_temp_home_is_never_the_installed_copy(self) -> None:
+        # The same folder and marker, but HOME pointing at the temp folder: the account's real home decides.
+        home = Path(self.tmp.name, "home")
+        installed = home / "Library/Application Support/SamRabbit/bridge"
+        installed.mkdir(parents=True)
+        (installed / ".samrabbit-installed").write_text(str(installed) + "\n")
         old_home = os.environ.get("HOME")
         os.environ["HOME"] = str(home)
         try:
-            self.assertEqual(bridge.CLI_AUTO, bridge.default_cli_choice(str(installed)))
-            self.assertIsInstance(bridge.cli_for(None, here=str(installed)), bridge.HeptabaseCli)
+            self.assertEqual(bridge.CLI_DRY_RUN, bridge.default_cli_choice(str(installed)))
+            self.assertIsInstance(bridge.cli_for(None, here=str(installed)), bridge.DryRunHeptabaseCli)
             self.assertEqual(bridge.CLI_DRY_RUN, bridge.default_cli_choice(str(ROOT)))
-            self.assertIsInstance(bridge.cli_for("dry-run", here=str(installed)), bridge.DryRunHeptabaseCli,
-                                  "an explicit dry-run wins even for the installed copy")
         finally:
             if old_home is None:
                 os.environ.pop("HOME", None)
@@ -169,12 +185,19 @@ class CliChoiceTest(unittest.TestCase):
     def test_install_sh_keeps_the_launch_agent_on_the_real_cli(self) -> None:
         home = Path(self.tmp.name, "install-home")
         home.mkdir()
-        env = {**os.environ, "SAMRABBIT_HOME": str(home), "SAMRABBIT_SKIP_LAUNCHCTL": "1"}
+        env = {**os.environ, "SAMRABBIT_HOME": str(home), "SAMRABBIT_SKIP_LAUNCHCTL": "1",
+               "SAMRABBIT_SKIP_TRANSCRIBE_BUILD": "1"}
         subprocess.run([str(ROOT / "install.sh")], env=env, capture_output=True, text=True, timeout=60, check=True)
         with (home / "Library/LaunchAgents/com.samrabbit.bridge.plist").open("rb") as handle:
             arguments = plistlib.load(handle)["ProgramArguments"]
         self.assertEqual("auto", arguments[arguments.index("--cli") + 1])
-        self.assertTrue(arguments[2].startswith(str(home / "Library/Application Support/SamRabbit/bridge")))
+        app_dir = home / "Library/Application Support/SamRabbit/bridge"
+        self.assertTrue(arguments[2].startswith(str(app_dir)))
+        # The marker the installed copy is recognised by: right for an account whose home this is, but this
+        # temp home is not the account's, so the copy here stays a dev copy.
+        decision = {"home": str(home), "environ": {"HOME": str(home)}}
+        self.assertEqual(bridge.CLI_AUTO, bridge.default_cli_choice(str(app_dir), **decision))
+        self.assertEqual(bridge.CLI_DRY_RUN, bridge.default_cli_choice(str(app_dir)))
 
     def test_main_reads_the_choice_from_the_environment(self) -> None:
         # --cli defaults to SAMRABBIT_HEPTABASE_CLI; parse only (no server): the parser lives in main().

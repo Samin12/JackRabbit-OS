@@ -47,11 +47,14 @@ You can run it again at any time. It:
    the same for `~/.config/samrabbit/desktop-token` (the desktop app's own token), and creates the conversation store
    folder `~/Library/Application Support/SamRabbit/sync/` (0700);
 2. copies the bridge (`samrabbit_bridge.py` and its modules: `samrabbit_mac.py`, `samrabbit_sync.py`, `samrabbit_genui.py`,
-   `samrabbit_calendar.py`, `samrabbit_app.py`, `samrabbit_mobile.py`, `samrabbit_t3.py`, `samrabbit_transcribe.py`) to
-   `~/Library/Application Support/SamRabbit/bridge/`, and builds the speech-to-text helper `samrabbit-transcribe` there
-   (only when its source or the compiler changed), downloads the en-US speech model if it is missing, transcribes one
-   clip that `say -o` writes to a file, and prints `transcription: on (SpeechTranscriber, en-US, a test clip took
-   0.2 s)` or `transcription: off (<reason>)`. A failed build never fails the install;
+   `samrabbit_calendar.py`, `samrabbit_app.py`, `samrabbit_mobile.py`, `samrabbit_t3.py`, `samrabbit_transcribe.py`,
+   `samrabbit_installed.py`) to `~/Library/Application Support/SamRabbit/bridge/`, writes the install marker
+   `.samrabbit-installed` there (the folder's path; see "Which copy is the installed one" below) and prints
+   `bridge copy: installed` (or `dev (<reason>)` for an install into another home), and builds the speech-to-text
+   helper `samrabbit-transcribe` there (only when its source or the compiler changed), downloads the en-US speech
+   model if it is missing, transcribes one clip that `say -o` writes to a file, and prints `transcription: on
+   (SpeechTranscriber, en-US, a test clip took 0.2 s)` or `transcription: off (<reason>)`. A failed build never fails
+   the install;
 3. writes `~/Library/LaunchAgents/com.samrabbit.bridge.plist` (RunAtLoad, KeepAlive, a PATH that includes
    `/opt/homebrew/bin`, `--sync-dir`, `--desktop-token-file` and `--cli auto` (the real Heptabase CLI; see "Which
    Heptabase CLI" below), the Composio CLI's absolute path as
@@ -88,7 +91,7 @@ private-LAN peers are accepted (10/8, 172.16/12, 192.168/16, 169.254/16, fc00::/
 
 | Route | Result |
 |---|---|
-| `GET /health` | `{ok, service, version, cli:{available, version, mode ("real" or "dryRun")}, app:{reachable, detail}, dryRun, mac:{…capabilities, screenLocked}, sync, genui, calendarWrite:{available, composio, path, calendarId, account, lastError, lastOkAt}, checkedAt}` (cached 10 s) |
+| `GET /health` | `{ok, service, version, cli:{available, version, mode ("real" or "dryRun")}, app:{reachable, detail}, dryRun, copy ("installed" or "dev"), mac:{…capabilities, screenLocked}, sync, genui, calendarWrite:{available, composio, path, calendarId, account, lastError, lastOkAt}, mobile, checkedAt}` (cached 10 s) |
 | `POST /v1/heptabase/journal/append` `{date:"YYYY-MM-DD", content:"<markdown>"}` | the CLI's `{date, title, contentMd5}` (plus `dryRun: true` on a dry-run bridge) |
 | `GET /v1/heptabase/journal/read?date=YYYY-MM-DD` | `{date, title, text, contentMd5}` (plus `dryRun: true` on a dry-run bridge): the day as plain text lines (paragraphs, headings, `- ` bullets, `1. ` numbers, `[ ]`/`[x]` todos, `+ ` toggles, `> ` quotes; marks removed; nested items indented) |
 
@@ -317,7 +320,7 @@ sync routes, which keep epoch milliseconds):
 
 | Route | What |
 |---|---|
-| `GET /v1/mobile/summary` | `{generatedAt, mac: {name, online, screenLocked}, r1: {lastSeenAt, live, liveConversationId, liveTitle}, t3: {available, needsYou, working, threads: [top 5 {threadId, title, project, status, updatedAt, summary}]}, calendar: {available, next: [≤3 {title, startsAt, endsAt, allDay, location, meetingUrl}]}, latestConversation: {conversationId, title, lastAt, preview, live}, journal: {available}}`. Served from caches (< 300 ms) that a worker refreshes while a device is active (T3 every 10 s, calendar every 120 s, journal every 5 min, screen lock every 15 s). The journal check is one read of today through the bridge's own read slots (at most two Heptabase CLI reads at once), and a note added from the phone counts as a check. A part that can't be read says `available: false` with a `reason` (`loading` while a cold start is still reading it). |
+| `GET /v1/mobile/summary` | `{generatedAt, mac: {name, online, screenLocked}, r1: {lastSeenAt, live, liveConversationId, liveTitle}, t3: {available, needsYou, working, threads: [top 5 {threadId, title, project, status, updatedAt, summary}]}, calendar: {available, next: [≤3 {title, startsAt, endsAt, allDay, location, meetingUrl}]}, latestConversation: {conversationId, title, lastAt, preview, live}, journal: {available}, transcribe: {available, reason?}}`. Served from caches (< 300 ms) that a worker refreshes while a device is active (T3 every 10 s, calendar every 120 s, journal every 5 min, screen lock every 15 s, transcription every 60 s). `transcribe` tells the phone and the watch whether `POST /v1/mobile/transcribe` works now (the same `reason`s as `/health`, e.g. `helper_missing`, `model_downloading`, `permission_denied`); a recording that just worked or failed updates it at once. The journal check is one read of today through the bridge's own read slots (at most two Heptabase CLI reads at once), and a note added from the phone counts as a check. A part that can't be read says `available: false` with a `reason` (`loading` while a cold start is still reading it). |
 | `GET /v1/mobile/conversations?limit=&before=&q=`, `GET /v1/mobile/conversations/<id>[/events?after=]`, `GET /v1/mobile/stream?after=` (SSE), `GET /v1/mobile/blobs/<sha256>` | the desktop sync API's own handlers (same JSON and SSE format), authorized by the mobile token. Phones and watches share 4 of the sync store's 8 live streams (so the desktop app always has some; 503 `too_many_streams` beyond that), at most 2 per device (a third one, e.g. a reconnect, closes that device's oldest); revoking a device ends its open streams at once |
 | `GET /v1/mobile/ui/artifacts/<id>` (+ `/image` JPEG, `/document` HTML with the generated-UI CSP) | a generated UI's status and content |
 | `POST /v1/mobile/ui/generate {prompt, data?, requestId?}` | → `202 {artifactId, status, conversationId}`; the request and the result are recorded in the day's **"Phone"** conversation (`phone-YYYYMMDD`, never live), so the desktop app shows them too. A request the generator would refuse (bad `data`, 503 `genui_busy`) records nothing. With the phone's own `requestId` (1–96 of `A-Z a-z 0-9 . _ : -`), a retry after a timeout answers the same visual and records the request once |
@@ -333,7 +336,7 @@ sync routes, which keep epoch milliseconds):
 | `POST /v1/mobile/transcribe[?lang=en-US]` | a raw recording as the body → `{text, durationMs, engine, locale}`; see "Speech to text (watch and phone)" below |
 | `GET /v1/mobile/mac/state` · `POST /v1/mobile/mac/open {app\|url}` · `GET /v1/mobile/mac/screenshot?max=` | Mac control; the screenshot is a JPEG, or 409 `screen_locked` / `screen_recording_required`. `open` pins Google Calendar, Gmail, Drive, Docs and Meet links to one account with `authuser=`: `SAMRABBIT_GOOGLE_ACCOUNT` (`install.sh --google-account`), else the account on an event the bridge created, else the account the agenda shows (an event its owner created, the primary calendar's own name, or a calendar id that is an email), learned on every calendar refresh, so right after a restart too (a Google link with nothing known yet reads the agenda first) |
 
-`/health` adds `mobile: {available, devices, t3: {paired, ok}, transcribe: {available, engine?, locale?, reason?}}`.
+`/health` adds `mobile: {available, devices, t3: {paired, ok, reason?}, transcribe: {available, engine?, locale?, reason?}}`.
 
 ### Speech to text (watch and phone)
 
@@ -352,18 +355,25 @@ a file. A 6 s clip takes about 0.2–0.3 s.
   container is checked from the bytes (`ftyp` at offset 4, `RIFF…WAVE`, an ADTS frame) and its length read from the
   header before anything runs; the helper checks the length again.
 - Answer: `{text, durationMs, engine: "SpeechTranscriber"|"DictationTranscriber", locale}`. `lang` is a BCP 47 tag
-  (default `en-US`); SpeechTranscriber knows about 45 locales, and a locale whose model is not on the Mac yet is
-  downloaded in the background on its first use.
-- The audio is written to a private temp file (0600 in its own 0700 folder) only while the helper runs (at most 45 s,
-  then it is killed), and deleted right after. At most 2 transcriptions run at once. Neither the audio nor the words
-  are logged or kept; the helper prints them only on its stdout, and its stderr is discarded.
+  (default `en-US`), made deterministic: a bare language is always the same locale, never the Mac's own region
+  (`en` → `en-US`, `fr` → `fr-FR`, `es` → `es-ES`, `de` → `de-DE`, `it` → `it-IT`, `ja` → `ja-JP`, `pt` → `pt-BR`,
+  `zh` → `zh-CN`, …; `zh-Hans` → `zh-CN`, `zh-Hant` → `zh-TW`), and the case is canonical (`EN_us` → `en-US`), so
+  `en` and `en-US` share one status check and one model download. SpeechTranscriber knows about 45 locales, and a
+  locale whose model is not on the Mac yet is downloaded in the background on its first use.
+- The audio is written to a private temp file (0600 in its own 0700 folder `$TMPDIR/samrabbit-voice-<pid>-…`) only
+  while the helper runs, and deleted right after; when the bridge starts it removes the folders a bridge that stopped
+  mid-transcription left behind (its process is gone, or older than any transcription runs). The helper runs in a
+  session of its own with a deadline of its own (`--deadline 40`: it answers `transcribe_timeout` and exits by
+  itself, even with no bridge left to stop it); at the bridge's own 45 s it kills the helper's whole process group.
+  At most 2 transcriptions run at once. Neither the audio nor the words are logged or kept; the helper prints them
+  only on its stdout, and its stderr is discarded.
 - Errors (`{error: {code, message, retryable, reason?}}`):
 
 | Status | Code | When |
 |---|---|---|
 | 503 | `transcribe_unavailable` | `reason`: `helper_missing` (not built: run `install.sh` with Xcode or the Command Line Tools), `speech_unavailable` (no on-device transcriber on this Mac), `model_downloading` (retryable: the language's model is downloading now), `model_missing` (its download failed; tried again after 30 minutes), `insufficient_resources` (retryable) |
 | 503 | `transcribe_permission` | Speech Recognition is turned off for it (System Settings > Privacy & Security > Speech Recognition) |
-| 502 / 504 | `transcribe_failed` | the helper failed or crashed (502) or took longer than 45 s (504); retryable |
+| 502 / 504 | `transcribe_failed` | the helper failed or crashed, or the recording could not be stored (502), or it ran out of time (504: its own 40 s deadline or the bridge's 45 s); retryable |
 | 503 | `transcribe_busy` | two transcriptions were still running after a 10 s wait for a free slot (retryable) |
 | 415 | `unsupported_audio` | another Content-Type, or bytes that are not an m4a, WAV or ADTS AAC recording |
 | 413 | `body_too_large` / `audio_too_long` | over 2 MiB / over 90 s |
@@ -372,9 +382,13 @@ a file. A 6 s clip takes about 0.2–0.3 s.
 
 `/health` says `mobile.transcribe: {available: true, engine: "SpeechTranscriber", locale: "en-US"}` (checked with
 `samrabbit-transcribe --check` at most every 10 minutes; a transcription that worked counts as a check), or
-`{available: false, reason}`. The bridge finds the helper next to its script; `--transcribe-helper <path>`
+`{available: false, reason}`: `reason` is `permission_denied` when Speech Recognition is turned off for the helper
+(seen by the check, or by a recording that failed with `transcribe_permission`, whatever its language), and also
+`helper_missing`, `speech_unavailable`, `model_missing`, `model_downloading`, `check_timeout` or `check_failed`. The
+summary's `transcribe` says the same. The bridge finds the helper next to its script; `--transcribe-helper <path>`
 (`SAMRABBIT_TRANSCRIBE_HELPER`) points it elsewhere. By hand:
-`samrabbit-transcribe --check | --prepare | --file clip.m4a [--locale en-US]` prints one JSON object.
+`samrabbit-transcribe --check | --prepare | --file clip.m4a [--locale en-US] [--deadline <seconds>]` prints one JSON
+object (its own deadlines without `--deadline`: 40 s for a file, 20 s for a check, 15 minutes for a download).
 
 **T3 Code.** The bridge has its own T3 session ("SamRabbit bridge", scopes `orchestration:read orchestration:operate`),
 separate from the R1's. It mints a pairing credential with the CLI inside the T3 Code app
@@ -390,8 +404,11 @@ token that worked for a while and is then revoked is replaced at once; and there
 an hour. `/health` then says `mobile.t3: {paired: false, ok: false, reason}`. `install.sh` pairs once;
 `python3 -I samrabbit_t3.py status` shows the state. Options:
 `--t3-url`, `--t3-cli`, `--t3-token-file` (`SAMRABBIT_T3_URL`, `SAMRABBIT_T3_CLI`, `SAMRABBIT_T3_TOKEN_FILE`).
-A copy of the bridge run from a checkout never talks to T3 unless given `--t3-url` (it answers 503 `t3_dev_copy`),
-just as it never changes Google Calendar (`calendar_dev_copy`) or writes the journal (dry run).
+A copy of the bridge that is not the installed one (a checkout, a test, a copy installed into a temp HOME; see "Which
+copy is the installed one") never talks to T3 unless given `--t3-url` (it answers 503 `t3_dev_copy`), just as it
+never changes Google Calendar unless given `--composio` (`calendar_dev_copy`) or writes the journal (dry run).
+`samrabbit_t3.py ensure-paired` follows the same rule: from any other copy it pairs only with a server given by
+`--url` (or `SAMRABBIT_T3_URL`), and otherwise prints `T3 not paired: t3_dev_copy`.
 
 **Placement compared with the R1.** New tasks from the phone follow the R1's `placement.py` (a project the request
 names wins; the same coding and everyday word lists) with three differences:
@@ -438,14 +455,27 @@ names wins; the same coding and everyday word lists) with three differences:
 - The token file is re-read when it changes. To rotate it, delete the file, run `install.sh`, and connect the R1
   again.
 
-## Which Heptabase CLI (test and dev bridges never write to the real journal)
+## Which copy is the installed one (test and dev bridges never reach the real journal, T3 or calendar)
+
+Only the installed copy reaches the real Heptabase journal, T3 Code and Google Calendar by default
+(`samrabbit_installed.py`). It is the one that runs from `<home>/Library/Application Support/SamRabbit/bridge/`
+where `<home>` is the account's home from the password database (`pwd.getpwuid(os.getuid()).pw_dir`, never
+`$HOME`), with `$HOME` (when set) being that same home, and with the marker `install.sh` writes there,
+`.samrabbit-installed` (a regular file, not a link, owned by the user), naming exactly that folder. Every other copy
+is a **dev copy**: a checkout, a test, a second bridge on another port, or a copy `install.sh` put into a temp HOME
+(`SAMRABBIT_HOME` or `HOME` pointing elsewhere), even when started with that temp HOME. A dev copy's Heptabase CLI is
+a dry run, its T3 answers `t3_dev_copy` and its calendar `calendar_dev_copy`, unless it is given `--cli`,
+`--t3-url` or `--composio` explicitly. `/health` says `copy: "installed"` or `"dev"`, the start log line says
+`(installed copy, …)` or `(dev copy, …)`, and `python3 -I samrabbit_installed.py [<folder>]` prints `installed` or
+`dev (<reason>)`. `install.sh` warns when the bridge it started does not say `installed`.
+
+### Which Heptabase CLI
 
 `--cli` (or `SAMRABBIT_HEPTABASE_CLI`) picks it: a path (used as given), `auto` (the real `heptabase` on `PATH` or
 `/opt/homebrew/bin/heptabase`) or `dry-run` (nothing reaches Heptabase: appends stay in the bridge's memory and are
 answered with `dryRun: true`; reads return them, also with `dryRun: true`). Without a choice, only the installed
-LaunchAgent copy in `~/Library/Application Support/SamRabbit/bridge/` uses the real CLI; every other copy, such as a
-second bridge run from a checkout on another port, is `dry-run`. `install.sh` also passes `--cli auto` in the
-LaunchAgent. `/health` reports it as `cli.mode` (`real` or `dryRun`) and `dryRun`; a dry-run bridge's `app` is
+copy (above) uses the real CLI; every other copy, such as a second bridge run from a checkout on another port, is
+`dry-run`. `install.sh` also passes `--cli auto` in the LaunchAgent. `/health` reports it as `cli.mode` (`real` or `dryRun`) and `dryRun`; a dry-run bridge's `app` is
 `{reachable: false, detail: "bridge_dry_run"}`, and it logs a warning at start. An R1 paired with a dry-run bridge
 keeps its journal entries queued (never "sent") and shows "test copy (dry run)" on its Heptabase card. To test against
 a fake CLI, pass its path; pass `--cli auto` only when you really want writes in your Heptabase journal.
@@ -471,8 +501,10 @@ the "Phone" conversation. `tests/test_transcribe.py` drives `/v1/mobile/transcri
 (`tests/fake_transcribe.py`): the private temp file and its removal, the size, length, type and language checks,
 every helper failure, the timeout, the busy limit, the background model download and `/health`; it also builds the
 real helper and transcribes clips made with `say -o` (skipped without Xcode or the Command Line Tools).
-`tests/test_t3.py` covers the T3 port and a Python 3.9 `-I` import check. `tests/test_sync.py`
-covers the conversation store, dedupe, drafts, blobs, the auth matrix (R1 token vs desktop token, loopback vs a real
+`tests/test_installed_copy.py` points HOME at a temp folder (and installs a copy there with `install.sh`, then runs
+it) and checks that every such copy is a dev copy for the journal, T3 and the calendar, with recording fakes standing
+in for every real service in case it were not. `tests/test_t3.py` covers the T3 port and a Python 3.9 `-I` import
+check. `tests/test_sync.py` covers the conversation store, dedupe, drafts, blobs, the auth matrix (R1 token vs desktop token, loopback vs a real
 LAN peer through this Mac's own address), SSE and screenshots.
 
 ## Troubleshooting

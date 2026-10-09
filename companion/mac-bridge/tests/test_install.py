@@ -88,8 +88,19 @@ class InstallTest(unittest.TestCase):
                           "--cli", "auto", "--mobile-devices-file", str(config / "mobile-devices.json"),
                           "--t3-token-file", str(config / "t3-token")],
                          plist["ProgramArguments"][3:], "the installed bridge, and only it, uses the real CLI")
-        for module in ("samrabbit_mobile.py", "samrabbit_t3.py", "samrabbit_transcribe.py"):
+        for module in ("samrabbit_mobile.py", "samrabbit_t3.py", "samrabbit_transcribe.py", "samrabbit_installed.py"):
             self.assertTrue((script.parent / module).is_file(), module)
+        # The install marker names the installed folder: that (in the account's own home) is what makes a copy the
+        # installed one. This throwaway home is not the account's, so the copy here is a dev copy, and says so.
+        import samrabbit_installed as installed
+
+        marker = script.parent / ".samrabbit-installed"
+        self.assertEqual(str(script.parent) + "\n", marker.read_text())
+        self.assertEqual(0o644, stat.S_IMODE(marker.stat().st_mode))
+        self.assertTrue(installed.is_installed_copy(str(script.parent), home=self.home, environ={"HOME": self.home}),
+                        "the marker install.sh writes is the one the installed copy is recognised by")
+        self.assertFalse(installed.is_installed_copy(str(script.parent)))
+        self.assertIn("bridge copy: dev (not_the_install_folder)", output)
         self.assertIn("transcription: off (build skipped: SAMRABBIT_SKIP_TRANSCRIBE_BUILD=1)", output)
         self.assertIn("skipping the T3 pairing (test install)", output, "a test install never pairs with T3")
         self.assertFalse((config / "t3-token").exists())
@@ -106,6 +117,7 @@ class InstallTest(unittest.TestCase):
         self.run_script("uninstall.sh")
         self.assertFalse(plist_path.exists())
         self.assertFalse(script.exists())
+        self.assertFalse(marker.exists(), "the marker goes with the installed folder")
         self.assertTrue(token_file.exists(), "token kept without --purge")
         self.assertTrue(desktop_token_file.exists())
         self.run_script("uninstall.sh", "--purge")

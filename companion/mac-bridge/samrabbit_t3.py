@@ -25,6 +25,11 @@ Thread text, prompts, the token and pairing credentials are never logged.
 Command line (used by install.sh)::
 
     python3 -I samrabbit_t3.py status|ensure-paired [--token-file F] [--url U] [--cli auto|PATH] [--label L]
+
+``ensure-paired`` pairs with the default T3 server (``http://127.0.0.1:3773``) only from the installed copy of the
+bridge (``samrabbit_installed``: the account's own home, never $HOME, plus install.sh's marker). Any other copy (a
+checkout, a test, a copy installed into a temp HOME) answers ``t3_dev_copy`` unless given ``--url`` (or
+``SAMRABBIT_T3_URL``) explicitly, so a test never mints a credential on the real T3 Code.
 """
 
 from __future__ import annotations
@@ -1727,18 +1732,36 @@ def make_hub(url: Optional[str], *, token_file: str = DEFAULT_TOKEN_FILE, cli: O
 # --------------------------------------------------------------------------- command line (install.sh)
 
 
+def _installed_copy() -> bool:
+    """Is this file the installed bridge's copy? (``samrabbit_installed`` next to it; when in doubt, no.)"""
+    here = os.path.dirname(os.path.abspath(__file__))
+    if here not in sys.path:
+        sys.path.append(here)  # ``python3 -I`` leaves the script's folder off sys.path; appended, never shadowing
+    try:
+        import samrabbit_installed  # noqa: PLC0415
+        return bool(samrabbit_installed.is_installed_copy(here))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="The SamRabbit bridge's own T3 Code session.")
     parser.add_argument("command", choices=("status", "ensure-paired"))
     parser.add_argument("--token-file", default=os.environ.get("SAMRABBIT_T3_TOKEN_FILE") or DEFAULT_TOKEN_FILE)
-    parser.add_argument("--url", default=os.environ.get("SAMRABBIT_T3_URL") or DEFAULT_SERVER_URL)
+    parser.add_argument("--url", default=os.environ.get("SAMRABBIT_T3_URL") or None,
+                        help=f"the T3 Code server (default {DEFAULT_SERVER_URL}; a copy that is not the installed "
+                             "bridge pairs only with a server given here)")
     parser.add_argument("--cli", default=os.environ.get("SAMRABBIT_T3_CLI") or CLI_AUTO,
                         help="'auto' (the T3 Code app) or a path to a stand-in CLI")
     parser.add_argument("--label", default=CLIENT_LABEL)
     options = parser.parse_args(argv)
+    if options.command == "ensure-paired" and not options.url and not _installed_copy():
+        print("T3 not paired: t3_dev_copy (this copy of the bridge is not the installed one, so it pairs with T3 "
+              "Code only when given --url)")
+        return 3
     try:
-        session = T3Session(T3Http(options.url), TokenStore(options.token_file), T3Cli(options.cli),
-                            label=options.label)
+        session = T3Session(T3Http(options.url or DEFAULT_SERVER_URL), TokenStore(options.token_file),
+                            T3Cli(options.cli), label=options.label)
     except ValueError as error:
         print(f"T3 not paired: {error}")
         return 3
