@@ -33,9 +33,17 @@ public struct AssistantTurnRequest: Sendable, Equatable {
         Date.ISO8601FormatStyle(timeZoneSeparator: .colon, timeZone: timeZone).format(date)
     }
 
-    /// How long the bridge may stay quiet. A stream starts at once; a buffered answer arrives whole, after speech
-    /// to text, the agent and the voice (up to about 80 s on the Claude path).
-    public var timeout: TimeInterval { stream ? 40 : 90 }
+    /// How long the bridge may stay quiet once it answered: a tool can run for a while without a word (the bridge
+    /// sends a `{"type":"ping"}` event while it does, about every 15 s; an older one sends nothing), and a buffered
+    /// answer arrives whole after speech to text, the agent and the voice (up to about 80 s on the Claude path).
+    public static let readTimeout: TimeInterval = 90
+
+    public var timeout: TimeInterval { Self.readTimeout }
+
+    /// How long until the bridge answers at all (its status line). A stream answers once the utterance is
+    /// transcribed (at most 45 s on the Mac); a buffered answer only when it is whole. Shorter than `timeout` so a Mac
+    /// that can't be reached is given up on (and the iPhone tried) without waiting the whole read timeout.
+    public var headTimeout: TimeInterval { stream ? 50 : Self.readTimeout }
 
     /// The request line, headers and body.
     public var bridgeRequest: BridgeRequest {
@@ -52,6 +60,12 @@ public struct AssistantTurnRequest: Sendable, Equatable {
             return BridgeRequest(method: "POST", path: Self.path, body: jsonBody, authorized: true, accept: accept,
                                  timeout: timeout, contentType: "application/json", headers: headers)
         }
+    }
+
+    /// The utterance's WAV (nil for a text or an announcement).
+    public var audio: Data? {
+        if case .audio(let wav) = input { return wav }
+        return nil
     }
 
     /// `{text, conversationId?, turnId}` or `{announce, conversationId?, turnId}`.
@@ -186,21 +200,26 @@ extension BridgeClient {
     /// Mac streams them or answers in one piece. Directly (each address in turn) or through the relay (the watch:
     /// the iPhone); a turn carries its own id, so the Mac answers a repeat with the same turn and it may be sent
     /// again another way. "Still answering" (409 `assistant_busy`, a cancelled turn still stopping) is retried for
-    /// `busyFor` seconds. Throws `BridgeError` (or `AssistantStreamError`).
+    /// `busyFor` seconds, counted from the first 409: getting the turn there can take a while of its own (the iPhone
+    /// relay sends the recording over Bluetooth). Throws `BridgeError` (or `AssistantStreamError`).
     public func assistantTurn(_ turn: AssistantTurnRequest, busyFor: TimeInterval = 4) -> AsyncThrowingStream<AssistantStreamItem, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    let deadline = Date.now.addingTimeInterval(busyFor)
+                    var deadline: Date?
                     while true {
                         let response = try await self.openAssistantTurn(turn)
-                        if response.status == 409, Date.now < deadline {
+                        if response.status == 409 {
+                            let now = Date.now
+                            let limit = deadline ?? now.addingTimeInterval(busyFor)
+                            deadline = limit
                             let body = try await AssistantTurnResponse.collect(response.body, limit: 64 * 1024)
-                            if BridgeError.from(status: 409, data: body).code == "assistant_busy" {
+                            let refusal = BridgeError.from(status: 409, data: body)
+                            if refusal.code == "assistant_busy", now < limit {
                                 try await Task.sleep(for: .milliseconds(350))
                                 continue
                             }
-                            throw BridgeError.from(status: 409, data: body)
+                            throw refusal
                         }
                         for try await item in response.items() { continuation.yield(item) }
                         break
@@ -249,7 +268,8 @@ extension BridgeClient {
     public func openDirect(_ turn: AssistantTurnRequest) async throws -> AssistantTurnResponse {
         do {
             return try await withHosts(turn.bridgeRequest, idempotent: true) { urlRequest in
-                let (http, body) = try await StreamingBody.open(urlRequest, in: self.streamSession)
+                let (http, body) = try await StreamingBody.open(urlRequest, in: self.streamSession,
+                                                                headWithin: turn.headTimeout)
                 return AssistantTurnResponse(status: http.statusCode,
                                              contentType: http.value(forHTTPHeaderField: "Content-Type") ?? "",
                                              body: body)
@@ -272,13 +292,31 @@ final class StreamingBody: NSObject, URLSessionDataDelegate, @unchecked Sendable
 
     private let state = Mutex(State())
 
-    static func open(_ request: URLRequest, in session: URLSession) async throws -> (HTTPURLResponse, AsyncThrowingStream<Data, Error>) {
+    /// `headWithin`: the status line must arrive within this long (connecting included), else the request fails with
+    /// `URLError(.timedOut)` like a connection that timed out; after it, the request's own timeout is the longest
+    /// the body may stay quiet.
+    static func open(_ request: URLRequest, in session: URLSession,
+                     headWithin: TimeInterval? = nil) async throws -> (HTTPURLResponse, AsyncThrowingStream<Data, Error>) {
         let delegate = StreamingBody()
         let task = session.dataTask(with: request)
         task.delegate = delegate
         let (body, continuation) = AsyncThrowingStream<Data, Error>.makeStream()
         delegate.state.withLock { $0.stream = continuation }
         continuation.onTermination = { _ in task.cancel() }
+        let watchdog = headWithin.map { limit in
+            Task {
+                try? await Task.sleep(for: .seconds(limit))
+                guard !Task.isCancelled else { return }
+                let head = delegate.state.withLock { state -> CheckedContinuation<HTTPURLResponse, Error>? in
+                    defer { state.head = nil }
+                    return state.answered ? nil : state.head
+                }
+                guard let head else { return }
+                head.resume(throwing: URLError(.timedOut))
+                task.cancel()
+            }
+        }
+        defer { watchdog?.cancel() }
         let http = try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (head: CheckedContinuation<HTTPURLResponse, Error>) in
                 delegate.state.withLock { $0.head = head }

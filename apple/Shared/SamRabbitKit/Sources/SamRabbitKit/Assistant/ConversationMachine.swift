@@ -16,9 +16,12 @@ import Foundation
 ///   ("I can't reach your Mac right now"), then the conversation ends. A warm-up that fails before the audio runs
 ///   (the microphone prompt, Siri still holding it) is said once it does (`audioReady`).
 /// * Announcements (T3 tasks that finished or need Samin) wait until the conversation is listening, then play:
-///   their own clip if they have one, else as a `{"announce": id}` turn in the conversation's voice.
-/// * It ends on Stop, when the Mac says so (`endConversation`), after `idleTimeout` (about 2 minutes) without
-///   speech, or after the current reply when the app leaves the screen.
+///   their own clip if they have one (the words, said by the watch, when the clip can't be read), else as a
+///   `{"announce": id}` turn in the conversation's voice. The bridge counts one as told once the watch has it, so
+///   none is ever dropped: one that waits when the conversation ends is said when the next one starts.
+/// * It ends on Stop, when the Mac says so (`endConversation`), after `idleTimeout` (about 2 minutes) without a
+///   turn that heard words (noise, coughs and empty transcripts don't count), or after the current reply when the
+///   app leaves the screen (coming back while it plays keeps the conversation going).
 public struct ConversationMachine: Sendable {
     public enum Phase: String, Sendable, Equatable {
         /// No conversation.
@@ -107,6 +110,28 @@ public struct ConversationMachine: Sendable {
             }
         }
 
+        /// What a bridge error code means to the conversation: an HTTP refusal (with its status) or an `error`
+        /// event in a stream (no status). The ones that can't get better by trying again end the conversation.
+        public init(code: String, message: String = "", status: Int? = nil) {
+            switch code {
+            case "assistant_unavailable", "assistant_missing", "transcribe_unavailable", "transcribe_permission",
+                 "chatgpt_unavailable", "chatgpt_not_connected":
+                self = .unavailable(code)
+            case "unauthorized", "invalid_token", "device_revoked":
+                self = .unauthorized
+            case "assistant_busy":
+                self = .busy
+            default:
+                if status == 401 {
+                    self = .unauthorized
+                } else if status == 404, code != "conversation_not_found", code != "announcement_not_found" {
+                    self = .outdated
+                } else {
+                    self = .failed(code: code, message: message)
+                }
+            }
+        }
+
         /// What the watch says.
         public var spoken: String {
             switch self {
@@ -115,6 +140,9 @@ public struct ConversationMachine: Sendable {
             case .unavailable: "The assistant isn't available on your Mac right now."
             case .outdated: "Update SamRabbit on your Mac to talk with me."
             case .busy: "One moment, I'm still on the last thing."
+            // Tools may already have acted: never "try again" (that would do it twice).
+            case .failed("assistant_interrupted", _): "Sorry, I got cut off partway through that."
+            case .failed("conversation_not_found", _): "Sorry, I lost our conversation. Say that again?"
             case .failed: "Sorry, that didn't work. Try again."
             }
         }
@@ -164,6 +192,8 @@ public struct ConversationMachine: Sendable {
         case playing
         /// Everything scheduled has played.
         case drained
+        /// An announcement's own clip couldn't be read (its words are said instead).
+        case clipFailed
         /// The orb (or the Action Button again).
         case tap
         /// The Stop button.
@@ -173,9 +203,10 @@ public struct ConversationMachine: Sendable {
         case announcements([Announcement])
         /// A call or Siri took the audio session.
         case interrupted
-        /// The app left the screen (the Digital Crown): finish what plays, then end.
+        /// The app left the screen (the Digital Crown): finish what plays, then pause.
         case background
-        /// The app is in front again (wrist raised, reopened).
+        /// The app is in front again (wrist raised, reopened): continues a paused conversation, or keeps one whose
+        /// reply was still playing going.
         case resume
     }
 
@@ -209,6 +240,10 @@ public struct ConversationMachine: Sendable {
         var gotAudio = false
         var done: AssistantDone?
         var say = ""
+        /// Words were heard or said (an announcement too): the conversation is in use. A turn of noise isn't.
+        var accepted = false
+        /// When it became complete (the speaking watchdog counts from here).
+        var completedAt: Date?
     }
 
     public private(set) var phase: Phase = .idle
@@ -217,19 +252,37 @@ public struct ConversationMachine: Sendable {
     /// Why the last conversation ended badly (shown while idle), or nil.
     public private(set) var problem: String?
     public private(set) var exchanges: [Exchange] = []
-    /// The last speech, reply or start: `idleTimeout` counts from here.
+    /// The start, the last turn that heard (or said) words, an announcement, a tap: `idleTimeout` counts from here.
+    /// Noise never moves it, so a café, a car or a TV can't keep the microphone open forever.
     public private(set) var lastActivity: Date = .distantPast
     public private(set) var expectReply = false
     public var idleTimeout: TimeInterval
     /// A conversation that stopped because the app left (or the audio was taken) is resumed within this long.
     public var resumeWindow: TimeInterval = 180
     public static let maxExchanges = 12
+    /// Announcements kept for later at most (a burst of T3 events while nobody listens).
+    public static let maxWaiting = 10
+    /// A waiting announcement is said once the conversation has been listening this long with nobody speaking
+    /// (after a barge-in, say).
+    public static let announceAfterQuiet: TimeInterval = 1.5
+    /// A finished reply whose playback never reports the end (a lost audio route, a stuck player) is over after this.
+    public static let speakingLimit: TimeInterval = 60
+    /// Speech that never ends (the microphone stopped delivering mid-utterance) is dropped after this; the speech
+    /// detector itself cuts an utterance at 30 s.
+    public static let hearingLimit: TimeInterval = 40
 
     private var current: Turn?
     private var queue: [Announcement] = []
     private var announced: Set<String> = []
     private var playing = false
+    /// A fatal failure is being said: the conversation ends after it.
     private var endAfterPlayback = false
+    /// The app left the screen while a reply played: the conversation pauses after it, unless the app comes back.
+    private var pausing = false
+    /// The Mac ended the conversation and announcements wait: they are said first, then it ends.
+    private var closing = false
+    private var listeningSince: Date = .distantPast
+    private var hearingSince: Date = .distantPast
     private var reachable = true
     /// A fatal warm-up failure that came while the audio was still starting: said at `audioReady`.
     private var pendingFailure: Failure?
@@ -257,17 +310,22 @@ public struct ConversationMachine: Sendable {
     public mutating func handle(_ event: Event, at now: Date = .now) -> [Effect] {
         switch event {
         case .start:
+            // Opened again while a reply plays (the Crown, then straight back): the conversation goes on.
+            if phase.inConversation { return keepGoing() }
             return start(at: now)
         case .audioReady:
             guard phase == .starting else { return [] }
             phase = .listening
+            listeningSince = now
             lastActivity = now
             if let failure = pendingFailure {
                 // The warm-up failed while the audio came up: say why now that it can be heard, then end.
                 pendingFailure = nil
                 return fail(failure, at: now)
             }
-            return [.openMic, .haptic(.start), .announcements(true)]
+            let effects: [Effect] = [.openMic, .haptic(.start), .announcements(true)]
+            // Announcements that waited (the last conversation paused or ended with them) are said first.
+            return queue.isEmpty ? effects : effects + announce(queue.removeFirst(), at: now)
         case .audioFailed(let message):
             guard phase.inConversation else { return [] }
             return finish(at: now, problem: message, haptic: .failure, tellMac: false)
@@ -286,16 +344,18 @@ public struct ConversationMachine: Sendable {
             }
             return fail(failure, at: now)
         case .speechStarted:
+            // Not activity yet: noise starts "speech" too. Only a turn that heard words counts.
             guard phase == .listening else { return [] }
             phase = .hearing
-            lastActivity = now
+            hearingSince = now
             return []
         case .discarded:
-            if phase == .hearing { phase = .listening }
-            return []
+            guard phase == .hearing else { return [] }
+            phase = .listening
+            listeningSince = now
+            return listeningAgain(at: now)
         case .utterance(let wav):
             guard phase == .listening || phase == .hearing else { return [] }
-            lastActivity = now
             return send(.audio(wav), kind: .utterance)
         case .turn(let id, let turnEvent):
             guard current?.id == id, current?.kind == .bridge else { return [] }
@@ -310,22 +370,29 @@ public struct ConversationMachine: Sendable {
             playing = false
             guard let current, phase == .speaking || phase == .thinking else { return [] }
             return current.complete ? finishTurn(at: now) : []
+        case .clipFailed:
+            guard let turn = current, turn.kind == .clip else { return [] }
+            playing = false
+            if let item = turn.announcement, !item.say.isEmpty {
+                // The words are known: the watch says them itself.
+                current?.kind = .local
+                current?.completedAt = now
+                return [.speak(item.say)]
+            }
+            return finishTurn(at: now)
         case .tap:
             return tap(at: now)
         case .stop:
             guard phase.inConversation else { return [] }
             return finish(at: now, problem: nil, haptic: .stop, tellMac: true)
         case .tick:
-            guard phase == .listening, now.timeIntervalSince(lastActivity) >= idleTimeout else { return [] }
-            return finish(at: now, problem: nil, haptic: .stop, tellMac: true)
+            return tick(at: now)
         case .announcements(let items):
-            guard phase.inConversation else { return [] }
-            for item in items where !announced.contains(item.id) {
-                announced.insert(item.id)
-                queue.append(item)
-            }
+            // Kept even when they arrive after the conversation ended (a poll still on its way): the bridge counts
+            // them as told already, so they are said when the next conversation starts.
+            enqueue(items)
             guard phase == .listening, current == nil, !queue.isEmpty else { return [] }
-            return announce(queue.removeFirst())
+            return announce(queue.removeFirst(), at: now)
         case .interrupted:
             guard phase.inConversation else { return [] }
             let effects = finish(at: now, problem: "Paused. Tap to talk.", haptic: .retry, tellMac: false)
@@ -335,8 +402,7 @@ public struct ConversationMachine: Sendable {
             switch phase {
             case .idle: return []
             case .thinking, .speaking:
-                endAfterPlayback = true
-                resumable = true
+                pausing = true
                 return []
             case .starting, .listening, .hearing:
                 let effects = finish(at: now, problem: nil, haptic: nil, tellMac: false)
@@ -344,9 +410,60 @@ public struct ConversationMachine: Sendable {
                 return effects
             }
         case .resume:
-            guard phase == .idle, canContinue(at: now) else { return [] }
+            if phase.inConversation { return keepGoing() }
+            guard canContinue(at: now) else { return [] }
             return start(at: now)
         }
+    }
+
+    /// Back in front while the reply still plays: it no longer pauses afterwards.
+    private mutating func keepGoing() -> [Effect] {
+        pausing = false
+        resumable = false
+        return []
+    }
+
+    /// About once a second: the quiet end, waiting announcements, and the watchdogs.
+    private mutating func tick(at now: Date) -> [Effect] {
+        switch phase {
+        case .listening:
+            guard current == nil else { return [] }
+            if !queue.isEmpty, now.timeIntervalSince(listeningSince) >= Self.announceAfterQuiet {
+                return announce(queue.removeFirst(), at: now)
+            }
+            guard now.timeIntervalSince(lastActivity) >= idleTimeout else { return [] }
+            return finish(at: now, problem: nil, haptic: .stop, tellMac: true)
+        case .hearing:
+            guard now.timeIntervalSince(hearingSince) >= Self.hearingLimit else { return [] }
+            // Speech that never ended: drop it (opening the microphone again resets the detector) and listen.
+            phase = .listening
+            listeningSince = now
+            return [.openMic] + listeningAgain(at: now)
+        case .thinking, .speaking:
+            guard let turn = current, turn.complete, let since = turn.completedAt,
+                  now.timeIntervalSince(since) >= Self.speakingLimit else { return [] }
+            // The player never said it was done: stop it and go on.
+            return [.stopPlayback] + finishTurn(at: now)
+        case .idle, .starting:
+            return []
+        }
+    }
+
+    /// Listening again with nothing on its way (speech that was too short, speech that never ended): a waiting
+    /// announcement goes first; a conversation that has been idle too long ends.
+    private mutating func listeningAgain(at now: Date) -> [Effect] {
+        if !queue.isEmpty { return announce(queue.removeFirst(), at: now) }
+        guard now.timeIntervalSince(lastActivity) >= idleTimeout else { return [] }
+        return finish(at: now, problem: nil, haptic: .stop, tellMac: true)
+    }
+
+    /// New announcements join the queue once each (the oldest go when too many wait).
+    private mutating func enqueue(_ items: [Announcement]) {
+        for item in items where !announced.contains(item.id) {
+            announced.insert(item.id)
+            queue.append(item)
+        }
+        if queue.count > Self.maxWaiting { queue.removeFirst(queue.count - Self.maxWaiting) }
     }
 
     // MARK: - Conversation
@@ -363,14 +480,16 @@ public struct ConversationMachine: Sendable {
             conversationId = nil
             brain = .unknown
             exchanges = []
-            announced = []
+            // A new conversation hears of new events only; the ones still waiting are said in it.
+            announced = Set(queue.map(\.id))
         }
         phase = .starting
         problem = nil
         current = nil
-        queue = []
         playing = false
         endAfterPlayback = false
+        pausing = false
+        closing = false
         reachable = true
         pendingFailure = nil
         resumable = false
@@ -391,9 +510,11 @@ public struct ConversationMachine: Sendable {
         if let haptic { effects.append(.haptic(haptic)) }
         phase = .idle
         current = nil
-        queue = []
+        // The queue stays: those announcements are said when the conversation goes on or the next one starts.
         playing = false
         endAfterPlayback = false
+        pausing = false
+        closing = false
         pendingFailure = nil
         resumable = false
         endedAt = now
@@ -405,7 +526,7 @@ public struct ConversationMachine: Sendable {
 
     private mutating func send(_ input: Input, kind: Exchange.Kind, announcement: Announcement? = nil) -> [Effect] {
         let id = makeId()
-        current = Turn(id: id, kind: .bridge, announcement: announcement)
+        current = Turn(id: id, kind: .bridge, announcement: announcement, accepted: announcement != nil)
         playing = false
         phase = .thinking
         var exchange = Exchange(id: id, kind: kind)
@@ -414,10 +535,10 @@ public struct ConversationMachine: Sendable {
         return [.closeMic, .send(TurnRequest(turnId: id, conversationId: conversationId, input: input)), .haptic(.click)]
     }
 
-    private mutating func announce(_ item: Announcement) -> [Effect] {
+    private mutating func announce(_ item: Announcement, at now: Date) -> [Effect] {
         if let audio = item.audio {
             let id = makeId()
-            current = Turn(id: id, kind: .clip, announcement: item, complete: true)
+            current = Turn(id: id, kind: .clip, announcement: item, complete: true, accepted: true, completedAt: now)
             playing = false
             phase = .thinking
             record(Exchange(id: id, kind: .announcement, say: item.say))
@@ -433,14 +554,21 @@ public struct ConversationMachine: Sendable {
         guard var turn = current else { return [] }
         switch event {
         case .heard(let text):
+            if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                // Words, not noise: the conversation is in use.
+                current?.accepted = true
+                lastActivity = now
+            }
             update { $0.heard = text }
         case .sayDelta(let text):
             turn.say += text
+            if !text.isEmpty { turn.accepted = true }
             current = turn
             // An announcement's caption is its own line already.
             if turn.announcement == nil { update { $0.say = turn.say } }
         case .sayDone(let text):
             turn.say = text
+            if !text.isEmpty { turn.accepted = true }
             current = turn
             if !text.isEmpty { update { $0.say = text } }
         case .action(let action):
@@ -450,6 +578,7 @@ public struct ConversationMachine: Sendable {
         case .done(let done):
             turn.done = done
             turn.complete = true
+            turn.completedAt = now
             current = turn
             if !done.conversationId.isEmpty { conversationId = done.conversationId }
             if done.brain != .unknown { brain = done.brain }
@@ -480,13 +609,20 @@ public struct ConversationMachine: Sendable {
             // The watch has the line itself: say it (the next turn finds out what is wrong with the Mac).
             current?.kind = .local
             current?.complete = true
+            current?.completedAt = now
             return effects + [.speak(item.say)]
         }
         if failure == .unreachable { reachable = false }
-        update { $0.failed = true }
+        // The Mac no longer knows the conversation (it restarted): the next turn starts a new one.
+        if case .failed("conversation_not_found", _) = failure { conversationId = nil }
+        update { exchange in
+            exchange.failed = true
+            // The caption shows what the watch says now (unless the reply had said something already).
+            if exchange.say.isEmpty { exchange.say = failure.spoken }
+        }
         let id = current?.id ?? makeId()
         if current == nil { record(Exchange(id: id, kind: .notice, say: failure.spoken, failed: true)) }
-        current = Turn(id: id, kind: .local, complete: true)
+        current = Turn(id: id, kind: .local, complete: true, completedAt: now)
         phase = .thinking
         if failure.isFatal {
             endAfterPlayback = true
@@ -495,24 +631,32 @@ public struct ConversationMachine: Sendable {
         return effects + [.closeMic, .speak(failure.spoken), .haptic(.failure)]
     }
 
-    /// The current turn is over (played out, or nothing to play): end, announce, or listen again.
+    /// The current turn is over (played out, or nothing to play): end, pause, announce, or listen again.
     private mutating func finishTurn(at now: Date) -> [Effect] {
-        let done = current?.done
+        let turn = current
         current = nil
         playing = false
-        if done?.endConversation == true {
-            return finish(at: now, problem: nil, haptic: .stop, tellMac: false)
-        }
+        // Only a turn with words counts: noise (an empty transcript) doesn't keep the conversation open.
+        if turn?.accepted == true { lastActivity = now }
+        if turn?.done?.endConversation == true { closing = true }
         if endAfterPlayback {
-            // A fatal failure was said, or the app left while this played.
-            let keep = resumable
-            let effects = finish(at: now, problem: problem, haptic: nil, tellMac: false)
-            resumable = keep
+            // A fatal failure was said.
+            return finish(at: now, problem: problem, haptic: nil, tellMac: false)
+        }
+        if pausing {
+            // The app left while this played: pause (the same conversation goes on when it comes back).
+            let effects = finish(at: now, problem: nil, haptic: nil, tellMac: false)
+            resumable = true
             return effects
         }
-        if !queue.isEmpty { return announce(queue.removeFirst()) }
+        if !queue.isEmpty { return announce(queue.removeFirst(), at: now) }
+        if closing { return finish(at: now, problem: nil, haptic: .stop, tellMac: false) }
+        // Noise turns long after the last words: the quiet end (the tick may never see "listening" in a noisy room).
+        if now.timeIntervalSince(lastActivity) >= idleTimeout {
+            return finish(at: now, problem: nil, haptic: .stop, tellMac: true)
+        }
         phase = .listening
-        lastActivity = now
+        listeningSince = now
         return [.openMic]
     }
 
@@ -523,6 +667,7 @@ public struct ConversationMachine: Sendable {
         case .starting, .listening:
             return []
         case .hearing:
+            lastActivity = now
             return [.flushMic]
         case .thinking, .speaking:
             // Barge in: stop the reply and listen.
@@ -535,6 +680,7 @@ public struct ConversationMachine: Sendable {
             current = nil
             playing = false
             phase = .listening
+            listeningSince = now
             lastActivity = now
             return effects + [.stopPlayback, .openMic, .haptic(.click)]
         }

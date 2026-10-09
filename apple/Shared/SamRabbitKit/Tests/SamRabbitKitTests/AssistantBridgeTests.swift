@@ -191,7 +191,9 @@ struct AssistantBridgeTests {
         #expect(noise.heard == "" && noise.audioBytes == 0 && noise.said == "")
         _ = try await bridge.control("assistant", ["mode": "error"])
         let failed = try await collect(client.assistantTurn(turn()))
-        #expect(failed.last == .event(.error(code: "assistant_failed", message: "The realtime session failed.")))
+        // Like the real bridge: the error event, then `done`.
+        #expect(failed.contains(.event(.error(code: "assistant_failed", message: "The realtime session failed."))))
+        #expect(failed.done != nil && failed.last == .event(.done(failed.done!)))
         _ = try await bridge.control("assistant", ["mode": "end"])
         #expect(try await collect(client.assistantTurn(turn())).done?.endConversation == true)
         _ = try await bridge.control("assistant", ["mode": "drop"])
@@ -199,6 +201,47 @@ struct AssistantBridgeTests {
             if case .unreachable = $0 as? BridgeError { return true }
             return false
         }
+    }
+}
+
+extension AssistantBridgeTests {
+    /// A tool that runs for a while: the stream stays quiet but for `{"type":"ping"}` events, which are skipped, and
+    /// the reply comes after them.
+    @Test func aLongToolCallWithPingsIsWaitedFor() async throws {
+        let bridge = try FakeBridgeProcess()
+        let (client, _) = try await bridge.pairedClient()
+        _ = try await bridge.control("assistant", ["hold": 2.5, "ping": 0.5, "delay": 0])
+        let started = Date.now
+        let items = try await collect(client.assistantTurn(
+            AssistantTurnRequest(turnId: UUID().uuidString, conversationId: nil, input: .text("Look at my screen"))))
+        #expect(Date.now.timeIntervalSince(started) >= 2.4)
+        #expect(!items.contains { if case .event(.unknown) = $0 { true } else { false } })
+        #expect(items.said == Self.say)
+        #expect(items.done?.interrupted == false)
+    }
+
+    /// An `error` event that can't get better (the assistant went away on the Mac mid-turn) keeps its code.
+    @Test func aFatalErrorInTheStreamKeepsItsCode() async throws {
+        let bridge = try FakeBridgeProcess()
+        let (client, _) = try await bridge.pairedClient()
+        _ = try await bridge.control("assistant", ["mode": "error", "code": "assistant_unavailable"])
+        let items = try await collect(client.assistantTurn(
+            AssistantTurnRequest(turnId: UUID().uuidString, conversationId: nil, input: .audio(utteranceWAV))))
+        let error = items.compactMap { if case .event(.error(let code, _)) = $0 { code } else { nil } }.first
+        #expect(error == "assistant_unavailable")
+        #expect(ConversationMachine.Failure(code: try #require(error)).isFatal)
+    }
+
+    /// An announcement whose own clip can't be played (an MP3 the watch can't read): it still arrives, with its words.
+    @Test func anAnnouncementWithAnUnreadableClip() async throws {
+        let bridge = try FakeBridgeProcess()
+        let (client, _) = try await bridge.pairedClient()
+        let session = try await client.assistantSession()
+        _ = try await bridge.control("announce", ["say": "Deploy needs you.", "kind": "needs_you", "audio": "broken"])
+        let item = try #require(try await client.assistantAnnouncements(conversationId: session.conversationId).items.first)
+        #expect(item.say == "Deploy needs you.")
+        #expect(item.audio?.mime == "audio/mpeg")
+        #expect(item.audio?.pcm16k == nil)
     }
 }
 
@@ -307,6 +350,67 @@ struct AssistantRelayTests {
         #expect(link.host.open == 0)
         #expect(link.sent.withLock { $0.contains("cancel") })
         #expect(link.active.withLock { $0[turn.turnId] } == 0)
+    }
+
+    /// 409 "still answering the last thing" through the phone: the watch retries the same turn, the phone runs it
+    /// again against the Mac (it used to hand back the first 409 until the watch gave up), and the recording goes up
+    /// once.
+    @Test func aBusyMacIsRetriedThroughThePhone() async throws {
+        let closed = try SilentPort(listening: false)
+        let (bridge, relay, watch, _) = try await RelayTests().setUpWithContext(watchHost: closed.host)
+        _ = try await bridge.control("assistant", ["busyFor": 1.5, "delay": 0])
+        let wav = WAV.encode(samples: Signal.speech(2.6, dbfs: -22))
+        let turn = AssistantTurnRequest(turnId: UUID().uuidString, conversationId: nil, input: .audio(wav), language: "en-US")
+        let items = try await collect(watch.assistantTurn(turn, busyFor: 6))
+        #expect(items.said == AssistantBridgeTests.say)
+        #expect(items.done?.turnId == turn.turnId)
+        let state = try await bridge.assistantState()
+        #expect((state["refused"].array ?? []).count >= 2, "the Mac said 409 a few times first")
+        #expect(state["turns"].array?.count == 1, "then answered the turn once")
+        #expect(state["turns"].array?.last?["bytes"].int == wav.count, "with the recording")
+        let sent = relay.turnLink.sent.withLock { $0 }
+        #expect(sent.filter { $0.hasPrefix("chunk") }.count == 3, "the recording went up once: \(sent)")
+        #expect(sent.filter { $0 == "start" }.count >= 3)
+        #expect(relay.turnLink.active.withLock { $0[turn.turnId] } == 0)
+        #expect(relay.turnLink.host.open == 0)
+    }
+
+    /// The phone's side of it: a start of a turn the Mac refused runs it again; one that is running or answered
+    /// just says ok; one the phone forgot asks for the recording again.
+    @Test func thePhoneRunsARefusedTurnAgain() async throws {
+        let bridge = try FakeBridgeProcess()
+        let (client, _) = try await bridge.pairedClient()
+        let host = TurnRelayHost()
+        _ = try await bridge.control("assistant", ["busyFor": 30, "delay": 0])
+        let start = TurnRelay.Message(op: .start, turnId: "busy-1", kind: "text", text: "Draft the notes", stream: true)
+        #expect(TurnRelay.Answer(dictionary: host.start(start, client: client)).reply?.ok == true)
+        func drain() async -> (status: Int?, body: Data) {
+            var offset = 0
+            var body = Data()
+            for _ in 0..<100 {
+                let (reply, data) = await host.pull("busy-1", offset: offset, wait: 1.5)
+                body += data
+                offset += data.count
+                if reply.done { return (reply.status, body) }
+            }
+            return (nil, body)
+        }
+        let refused = await drain()
+        #expect(refused.status == 409)
+        #expect(BridgeError.from(status: 409, data: refused.body).code == "assistant_busy")
+        _ = try await bridge.control("assistant", ["busyFor": 0])
+        #expect(TurnRelay.Answer(dictionary: host.start(start, client: client)).reply?.ok == true)
+        let answered = await drain()
+        #expect(answered.status == 200)
+        var parser = AssistantStreamParser()
+        #expect(try parser.items(answered.body).compactMap { if case .event(.done(let d)) = $0 { d } else { nil } }.first?.turnId == "busy-1")
+        // Answered: a start again changes nothing.
+        #expect(TurnRelay.Answer(dictionary: host.start(start, client: client)).reply?.ok == true)
+        #expect(try await bridge.assistantState()["turns"].array?.count == 1)
+        // An audio turn the phone doesn't know (anymore) asks for its recording.
+        let audio = TurnRelay.Message(op: .start, turnId: "gone-1", kind: "audio")
+        let missing = TurnRelay.Answer(dictionary: host.start(audio, client: client)).refusal
+        #expect(missing.map(TurnRelay.missingRecording) == true)
     }
 
     @Test func aRevokedWatchIsRefusedThroughThePhone() async throws {

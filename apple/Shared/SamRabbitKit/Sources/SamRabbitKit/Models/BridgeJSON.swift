@@ -113,11 +113,22 @@ extension KeyedDecodingContainer {
         return value
     }
 
-    func int(_ key: Key, default value: Int = 0) -> Int {
-        if let int = lenient(Int.self, key) { return int }
-        if let number = lenient(Double.self, key), number.isFinite { return Int(number) }
-        if let text = lenient(String.self, key), let int = Int(text) { return int }
-        return value
+    /// A whole number that fits `Int` (32 bits on the Apple Watch), else `value`. Never traps: counts and small
+    /// numbers only. Epoch milliseconds, cursors and sequence numbers are read with `int64`.
+    func int(_ key: Key, default value: Int = 0) -> Int { integer(key, as: Int.self) ?? value }
+
+    /// A whole number that fits 64 bits, else `value`.
+    func int64(_ key: Key, default value: Int64 = 0) -> Int64 { integer(key, as: Int64.self) ?? value }
+
+    /// A JSON number (or digits in a string) as `T` when it fits exactly. `decodeIfPresent(Int.self)` throws for
+    /// a number that doesn't fit, and `Int(Double)` would trap: neither is used.
+    func integer<T: FixedWidthInteger & Decodable>(_ key: Key, as type: T.Type) -> T? {
+        if let number = lenient(Double.self, key) { return JSONNumbers.exact(number, as: type) }
+        if let text = lenient(String.self, key) {
+            let digits = text.trimmingCharacters(in: .whitespaces)
+            return T(digits) ?? Double(digits).flatMap { JSONNumbers.exact($0, as: type) }
+        }
+        return nil
     }
 
     /// An array whose undecodable elements are dropped rather than failing the array.

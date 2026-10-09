@@ -96,11 +96,9 @@ final class ConversationEngine {
     // MARK: - What the app asks for
 
     /// Opens a conversation (the app opened, the Action Button, Siri, a complication), or continues the one that
-    /// was paused a moment ago. While one is open: the Action Button acts like a tap.
-    func open() {
-        if active { return }
-        handle(.start)
-    }
+    /// was paused a moment ago. While one is open it goes on (back from the Crown while a reply played: it no longer
+    /// pauses after the reply).
+    func open() { handle(.start) }
 
     /// The orb (or the Action Button while talking): talk, send now, or barge in.
     func tap() { handle(.tap) }
@@ -187,7 +185,8 @@ final class ConversationEngine {
         case .speak(let text):
             graph.speak(text)
         case .play(let clip):
-            if !graph.play(clip: clip) { handle(.drained) }
+            // An announcement's clip the watch can't read (an MP3 from the Claude path): its words are said instead.
+            if !graph.play(clip: clip) { handle(.clipFailed) }
         case .haptic(let haptic):
             WKInterfaceDevice.current().play(Self.haptic(haptic))
         case .end(let conversationId):
@@ -242,9 +241,17 @@ final class ConversationEngine {
             case .failure(let error):
                 // The warm-up is optional: a bridge without it (404, the Claude fallback's first build) is fine.
                 if case .server(404, _, _, _) = error { return }
-                if let failure = Self.failure(error) { handle(.warmUpFailed(failure)) }
+                if let failure = Self.failure(error) {
+                    noteRefused(failure)
+                    handle(.warmUpFailed(failure))
+                }
             }
         }
+    }
+
+    /// The Mac refused the watch's token: the status shows Reconnect at once (not at the next summary refresh).
+    private func noteRefused(_ failure: ConversationMachine.Failure) {
+        if failure == .unauthorized { onUnauthorized?() }
     }
 
     private func send(_ request: ConversationMachine.TurnRequest) {
@@ -265,7 +272,10 @@ final class ConversationEngine {
                 }
             } catch {
                 guard !Task.isCancelled, let self else { return }
-                if let failure = Self.failure(error) { self.handle(.turn(id, .failed(failure))) }
+                if let failure = Self.failure(error) {
+                    self.noteRefused(failure)
+                    self.handle(.turn(id, .failed(failure)))
+                }
             }
             self?.onTurnFinished?()
         }
@@ -285,8 +295,17 @@ final class ConversationEngine {
             case .sayDone(let text): handle(.turn(id, .sayDone(text)))
             case .action(let action): handle(.turn(id, .action(action)))
             case .card(let card): handle(.turn(id, .card(card)))
-            case .done(let done): handle(.turn(id, .done(done)))
-            case .error(let code, let message): handle(.turn(id, .failed(.failed(code: code, message: message))))
+            case .done(let done):
+                // Nothing more comes: what waits in the jitter buffer plays now (before the machine decides
+                // whether the reply had audio).
+                graph.endOfStream()
+                handle(.turn(id, .done(done)))
+            case .error(let code, let message):
+                // The same rules as a refusal: one that can't get better (the assistant unavailable, a revoked
+                // watch) ends the conversation once it was said; the bridge's `done` after it is ignored.
+                let failure = ConversationMachine.Failure(code: code, message: message)
+                noteRefused(failure)
+                handle(.turn(id, .failed(failure)))
             case .unknown: break
             }
         }
@@ -302,13 +321,7 @@ final class ConversationEngine {
             case .unauthorized, .notPaired: return .unauthorized
             case .invalidResponse: return .failed(code: "invalid_response", message: "")
             case .server(let status, let code, let message, _):
-                switch code {
-                case "assistant_unavailable", "assistant_missing", "transcribe_unavailable", "transcribe_permission":
-                    return .unavailable(code)
-                case "assistant_busy": return .busy
-                default: return status == 404 && code != "conversation_not_found" && code != "announcement_not_found"
-                    ? .outdated : .failed(code: code, message: message)
-                }
+                return ConversationMachine.Failure(code: code, message: message, status: status)
             }
         case is CancellationError:
             return nil
@@ -349,6 +362,7 @@ final class ConversationEngine {
         tickTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(1))
+                self?.graph.checkStalled()
                 self?.handle(.tick)
             }
         }

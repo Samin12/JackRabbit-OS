@@ -8,11 +8,12 @@ import Foundation
 /// The words of a recording: `POST /v1/mobile/transcribe` -> `{text, durationMs, engine, locale}`.
 public struct Transcript: Codable, Sendable, Equatable {
     public var text: String
-    public var durationMs: Int
+    /// Milliseconds of audio (64-bit like every millisecond value: the watch's `Int` is 32 bits).
+    public var durationMs: Int64
     public var engine: String?
     public var locale: String?
 
-    public init(text: String, durationMs: Int = 0, engine: String? = nil, locale: String? = nil) {
+    public init(text: String, durationMs: Int64 = 0, engine: String? = nil, locale: String? = nil) {
         self.text = text
         self.durationMs = durationMs
         self.engine = engine
@@ -22,7 +23,7 @@ public struct Transcript: Codable, Sendable, Equatable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: AnyKey.self)
         text = (c.string("text") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        durationMs = c.int("durationMs")
+        durationMs = c.int64("durationMs")
         engine = c.text("engine")
         locale = c.text("locale")
     }

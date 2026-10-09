@@ -21,6 +21,9 @@ public enum Formatting {
             if let end, end > now { return "now" }
             return end == nil ? "now" : "ended"
         }
+        // A day or more away (or a far-off date from a bad timestamp): the date itself. Bounded before it becomes an
+        // `Int`, which is 32 bits on the Apple Watch.
+        guard seconds < 86_400 else { return date.formatted(.dateTime.weekday(.abbreviated).hour().minute()) }
         let minutes = Int((seconds / 60).rounded(.up))
         let (m, h) = short ? ("m", "h") : (" min", " h")
         if minutes < 60 { return "in \(minutes)\(m)" }

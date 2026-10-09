@@ -13,6 +13,10 @@ import Synchronization
 ///    `done` once the body ended and the watch has it all. Pulling the same offset again is safe.
 /// 4. `cancel`: the phone drops the turn (barge-in; the watch also asks the Mac to cancel).
 ///
+/// A turn the Mac refused (409 "still answering the last thing") or couldn't be reached for is started again when
+/// the watch retries it with the same id: the phone runs it again with the recording it kept, so the retry sends no
+/// audio (unless the phone no longer has it: then the refusal says so and the watch sends it again).
+///
 /// The watch reads the pieces as if they came straight from the Mac, so a stream, a buffered JSON answer (an older
 /// bridge, the Claude fallback) and an error envelope all come through unchanged.
 public enum TurnRelay {
@@ -186,29 +190,69 @@ public protocol TurnRelayLink: Sendable {
 }
 
 extension TurnRelay {
+    /// Turns whose recording reached the phone lately (the watch's side): a retry of one (409 "still answering")
+    /// starts it again without sending the audio a second time.
+    static let delivered = Mutex<[String: Date]>([:])
+
+    static func noteDelivered(_ turnId: String, now: Date = .now) {
+        delivered.withLock { sent in
+            sent = sent.filter { now.timeIntervalSince($0.value) < expiry }
+            if sent.count >= 32, let oldest = sent.min(by: { $0.value < $1.value })?.key { sent[oldest] = nil }
+            sent[turnId] = now
+        }
+    }
+
+    static func wasDelivered(_ turnId: String, now: Date = .now) -> Bool {
+        delivered.withLock { $0[turnId].map { now.timeIntervalSince($0) < expiry } ?? false }
+    }
+
+    /// The phone's refusal of a start whose recording it doesn't have (any more).
+    static func missingRecording(_ refusal: WatchRelay.Response) -> Bool {
+        refusal.status == 400 && BridgeError.from(status: 400, data: refusal.body).code == "invalid_audio"
+    }
+
     /// The watch's side: sends the turn through the phone and returns the bridge's answer as it streams in.
     /// Status 0: the phone couldn't reach the Mac either.
     public static func run(_ turn: AssistantTurnRequest, over link: any TurnRelayLink) async throws -> AssistantTurnResponse {
+        var started: Answer?
         if case .audio(let wav) = turn.input {
-            let chunks = VoiceRelay.chunks(of: wav, id: turn.turnId, contentType: WAV.contentType,
-                                           language: turn.language, purpose: purpose)
-            for chunk in chunks {
-                guard let answer = try await link.send(.chunk(chunk), timeout: 15) else {
-                    throw BridgeError.unreachable("iPhone: the recording got no answer")
+            if wasDelivered(turn.turnId) {
+                // A retry: the phone kept the recording.
+                guard let answer = try await link.send(.message(.start(turn)), timeout: 15) else {
+                    throw BridgeError.unreachable("iPhone: the turn got no answer")
                 }
-                if let refusal = answer.refusal { return .whole(status: refusal.status, body: refusal.body) }
-                guard answer.ack == chunk.seq else { throw BridgeError.unreachable("iPhone: a piece got lost") }
+                if let refusal = answer.refusal, missingRecording(refusal) {
+                    started = nil // the phone dropped it meanwhile: send it again
+                } else {
+                    started = answer
+                }
+            }
+            if started == nil {
+                let chunks = VoiceRelay.chunks(of: wav, id: turn.turnId, contentType: WAV.contentType,
+                                               language: turn.language, purpose: purpose)
+                for chunk in chunks {
+                    guard let answer = try await link.send(.chunk(chunk), timeout: 15) else {
+                        throw BridgeError.unreachable("iPhone: the recording got no answer")
+                    }
+                    if let refusal = answer.refusal { return .whole(status: refusal.status, body: refusal.body) }
+                    guard answer.ack == chunk.seq else { throw BridgeError.unreachable("iPhone: a piece got lost") }
+                }
+                noteDelivered(turn.turnId)
             }
         }
-        guard let started = try await link.send(.message(.start(turn)), timeout: 15) else {
-            throw BridgeError.unreachable("iPhone: the turn got no answer")
+        if started == nil {
+            guard let answer = try await link.send(.message(.start(turn)), timeout: 15) else {
+                throw BridgeError.unreachable("iPhone: the turn got no answer")
+            }
+            started = answer
         }
+        guard let started else { throw BridgeError.unreachable("iPhone: the turn got no answer") }
         if let refusal = started.refusal { return .whole(status: refusal.status, body: refusal.body) }
         guard started.reply?.ok == true else { throw BridgeError.unreachable("iPhone: the turn didn't start") }
 
-        // Until the Mac answers, each pull waits on the phone.
+        // Until the Mac answers, each pull waits on the phone (which gives the Mac `headTimeout`).
         var first: (reply: Reply, data: Data)?
-        let deadline = Date.now.addingTimeInterval(turn.timeout + 10)
+        let deadline = Date.now.addingTimeInterval(turn.headTimeout + 10)
         var misses = 0
         while first == nil {
             try Task.checkCancellation()
@@ -275,6 +319,8 @@ extension TurnRelay {
 /// piece, cancelled, or stopped pulling for two minutes.
 public final class TurnRelayHost: Sendable {
     private struct Turn {
+        /// What was sent to the Mac (with the recording), to send again when the Mac refused it.
+        var request: AssistantTurnRequest
         var status: Int?
         var contentType: String?
         var body = Data()
@@ -282,6 +328,9 @@ public final class TurnRelayHost: Sendable {
         var released = false
         var touched: Date
         var task: Task<Void, Never>?
+
+        /// Over without a 2xx answer (409 still answering, the Mac out of reach, ...): a start again runs it again.
+        var refused: Bool { done && !(200..<300).contains(status ?? 0) }
     }
 
     private struct State {
@@ -321,7 +370,9 @@ public final class TurnRelayHost: Sendable {
         }
     }
 
-    /// Starts the turn (once: a repeated start of the same turn just says ok).
+    /// Starts the turn. A repeated start of a turn that is running (or answered) just says ok; one of a turn the Mac
+    /// refused (409 still answering the last one) or couldn't be reached for runs it again: the watch retries a
+    /// refusal with the same turn id, and must get the Mac's new answer, not the old refusal.
     public func start(_ message: TurnRelay.Message, client: BridgeClient?, now: Date = .now) -> [String: Any] {
         guard message.validId else {
             return WatchRelay.Response.refusal(400, "invalid_turn", "That isn't a turn id.").message
@@ -330,17 +381,28 @@ public final class TurnRelayHost: Sendable {
             return WatchRelay.Response.refusal(401, "unauthorized", "Reconnect your watch through the iPhone.").message
         }
         sweep(now: now)
-        enum Outcome { case started(AssistantTurnRequest), again, busy, missing }
+        enum Outcome { case started(AssistantTurnRequest), again, busy, missing, restarted(AssistantTurnRequest, held: Bool) }
         let outcome = state.withLock { state -> Outcome in
-            if state.turns[message.turnId] != nil { return .again }
+            if let existing = state.turns[message.turnId] {
+                // A recording sent again (an older watch resends it with every retry) replaces the kept one.
+                let audio = state.uploads.removeValue(forKey: message.turnId)?.upload.data
+                guard existing.refused else { return .again }
+                let request = message.turn(audio: audio ?? existing.request.audio) ?? existing.request
+                state.turns[message.turnId] = Turn(request: request, touched: now)
+                return .restarted(request, held: !existing.released)
+            }
             guard state.turns.values.filter({ !$0.released }).count < TurnRelay.maxOpen else { return .busy }
             let audio = state.uploads.removeValue(forKey: message.turnId)?.upload.data
             guard let request = message.turn(audio: audio) else { return .missing }
-            state.turns[message.turnId] = Turn(touched: now)
+            state.turns[message.turnId] = Turn(request: request, touched: now)
             return .started(request)
         }
         switch outcome {
         case .again:
+            return TurnRelay.Reply(ok: true).message()
+        case .restarted(let request, let held):
+            if held { activity?(request.turnId, false) } // `run` holds the phone awake again
+            run(request, client: client)
             return TurnRelay.Reply(ok: true).message()
         case .busy:
             return WatchRelay.Response.refusal(503, "relay_busy", "The iPhone is passing on other turns.").message

@@ -47,7 +47,9 @@ public final class BridgeClient: Sendable {
         configuration.httpAdditionalHeaders = ["User-Agent": "SamRabbit-Apple/1.0"]
         session = URLSession(configuration: configuration)
         let streaming = URLSessionConfiguration.ephemeral
-        streaming.timeoutIntervalForRequest = 45 // the bridge sends a heartbeat every 15 s
+        // Only the ceiling: each request sets its own (the SSE feed 45 s, the bridge sends a heartbeat every 15 s;
+        // an assistant turn 90 s, `AssistantTurnRequest.readTimeout`).
+        streaming.timeoutIntervalForRequest = 100
         streaming.timeoutIntervalForResource = 60 * 60 * 24
         streaming.waitsForConnectivity = false
         streaming.requestCachePolicy = .reloadIgnoringLocalCacheData
@@ -106,7 +108,8 @@ public final class BridgeClient: Sendable {
     // MARK: - R1 conversations
 
     /// `GET /v1/mobile/conversations?limit=&before=&q=`
-    public func conversations(limit: Int = 50, before: Int? = nil, query: String? = nil) async throws -> ConversationPage {
+    /// `before` is epoch milliseconds (`ConversationPage.nextBefore`), so 64-bit on the watch too.
+    public func conversations(limit: Int = 50, before: Int64? = nil, query: String? = nil) async throws -> ConversationPage {
         var items = [URLQueryItem(name: "limit", value: String(limit))]
         if let before { items.append(URLQueryItem(name: "before", value: String(before))) }
         if let query, !query.isEmpty { items.append(URLQueryItem(name: "q", value: query)) }
@@ -114,14 +117,14 @@ public final class BridgeClient: Sendable {
     }
 
     /// `GET /v1/mobile/conversations/<id>/events?after=`
-    public func events(conversationId: String, after: Int = 0, limit: Int? = nil) async throws -> EventPage {
+    public func events(conversationId: String, after: Int64 = 0, limit: Int? = nil) async throws -> EventPage {
         var items = [URLQueryItem(name: "after", value: String(after))]
         if let limit { items.append(URLQueryItem(name: "limit", value: String(limit))) }
         return try await json(.get("/v1/mobile/conversations/\(Self.segment(conversationId))/events", query: items))
     }
 
     /// Every event of a conversation (follows `more` pages).
-    public func allEvents(conversationId: String, after: Int = 0) async throws -> EventPage {
+    public func allEvents(conversationId: String, after: Int64 = 0) async throws -> EventPage {
         var page = try await events(conversationId: conversationId, after: after)
         var collected = page.events
         var guardCount = 0
@@ -141,7 +144,7 @@ public final class BridgeClient: Sendable {
 
     /// `GET /v1/mobile/stream?after=` as parsed SSE items. One connection; see `LiveSyncFeed` for
     /// the reconnecting version.
-    public func stream(after cursor: Int?) -> AsyncThrowingStream<SyncStreamItem, Error> {
+    public func stream(after cursor: Int64?) -> AsyncThrowingStream<SyncStreamItem, Error> {
         var query: [URLQueryItem] = []
         if let cursor { query.append(URLQueryItem(name: "after", value: String(cursor))) }
         let request = BridgeRequest.get("/v1/mobile/stream", query: query, accept: "text/event-stream")

@@ -125,13 +125,14 @@ public struct AssistantCard: Codable, Sendable, Equatable, Hashable {
     }
 }
 
-/// `timings: {stt, firstAudio, total}` (ms). The buffered Claude path says `{stt, agent, tts}`.
+/// `timings: {stt, firstAudio, total}` (ms, 64-bit like every millisecond value). The buffered Claude path says
+/// `{stt, agent, tts}`.
 public struct AssistantTimings: Codable, Sendable, Equatable {
-    public var stt: Int?
-    public var firstAudio: Int?
-    public var total: Int?
+    public var stt: Int64?
+    public var firstAudio: Int64?
+    public var total: Int64?
 
-    public init(stt: Int? = nil, firstAudio: Int? = nil, total: Int? = nil) {
+    public init(stt: Int64? = nil, firstAudio: Int64? = nil, total: Int64? = nil) {
         self.stt = stt
         self.firstAudio = firstAudio
         self.total = total
@@ -139,11 +140,12 @@ public struct AssistantTimings: Codable, Sendable, Equatable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: AnyKey.self)
-        stt = c.optionalInt("stt")
-        firstAudio = c.optionalInt("firstAudio")
-        total = c.optionalInt("total")
-        if total == nil, let agent = c.optionalInt("agent") {
-            total = (stt ?? 0) + agent + (c.optionalInt("tts") ?? 0)
+        stt = c.optionalInt64("stt")
+        firstAudio = c.optionalInt64("firstAudio")
+        total = c.optionalInt64("total")
+        if total == nil, let agent = c.optionalInt64("agent") {
+            // Wrapping adds: three durations can't overflow 64 bits, and nothing a bridge sends may trap the watch.
+            total = (stt ?? 0) &+ agent &+ (c.optionalInt64("tts") ?? 0)
         }
     }
 }
@@ -384,7 +386,7 @@ public struct Announcement: Codable, Sendable, Equatable, Identifiable {
         let raw = c.json("id")
         if let text = raw.text {
             id = text
-        } else if let number = raw.int {
+        } else if let number = raw.int64 {
             id = String(number)
         } else {
             throw AssistantStreamError.invalidEvent
@@ -411,7 +413,7 @@ public struct AnnouncementPage: Codable, Sendable, Equatable {
         let c = try decoder.container(keyedBy: AnyKey.self)
         items = c.list(Announcement.self, "items")
         let raw = c.json("cursor")
-        cursor = raw.text ?? raw.int.map(String.init)
+        cursor = raw.text ?? raw.int64.map(String.init)
     }
 }
 

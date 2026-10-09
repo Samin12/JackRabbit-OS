@@ -7,7 +7,7 @@ struct ChatsView: View {
     @Environment(AppModel.self) private var model
     @State private var conversations: [ConversationSummary] = []
     @State private var query = ""
-    @State private var nextBefore: Int?
+    @State private var nextBefore: Int64?
     @State private var loading = false
     @State private var error: BridgeError?
 

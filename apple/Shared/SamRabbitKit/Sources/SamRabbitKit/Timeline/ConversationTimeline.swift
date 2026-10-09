@@ -77,11 +77,11 @@ public struct T3Update: Sendable, Equatable {
 /// in place, cards update by id and generated UIs never downgrade from ready to generating.
 public struct ConversationTimeline: Sendable {
     public private(set) var conversationId: String
-    public private(set) var cursor: Int = 0
+    public private(set) var cursor: Int64 = 0
     public private(set) var ended = false
     private var seen = Set<String>()
     private var items: [String: TimelineItem] = [:]
-    private var assistantSeq: [String: Int] = [:]
+    private var assistantSeq: [String: Int64] = [:]
     private var openAssistant: String?
     private var nextOrder = 0
 
@@ -119,7 +119,7 @@ public struct ConversationTimeline: Sendable {
         guard !type.isEmpty else { return false }
         let id = event.id
         if seen.contains(id) { return false }
-        let seq = raw["seq"].int
+        let seq = event.seq
         let messageId = raw["messageId"].text
         if !(type == "message.assistant.delta" && messageId != nil && seq != nil) { seen.insert(id) }
         let at = event.at ?? .now

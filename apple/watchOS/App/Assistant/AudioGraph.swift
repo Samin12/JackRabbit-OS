@@ -29,6 +29,11 @@ protocol ConversationInput: AnyObject {
 ///
 /// It reports when something starts playing and when everything scheduled has played (`onPlaying`, `onDrained`),
 /// and an interruption (a call, Siri) or a lost route it couldn't recover from (`onInterrupted`).
+///
+/// A streamed reply waits in a small jitter buffer (`PlaybackJitterBuffer`, 0.2 s) before it starts, so audio that
+/// arrives at the pace it is spoken doesn't stutter. Playback that never reports its end (a route change, a stuck
+/// player) still ends: a route change reports what was playing as drained, and `checkStalled()` gives up on
+/// buffers that should have played long ago.
 @MainActor
 final class AudioGraph {
     enum StartFailure: Error, Equatable {
@@ -72,6 +77,12 @@ final class AudioGraph {
     /// Frames scheduled in this generation, and the level of each buffer (for the orb).
     private var scheduledFrames: Int64 = 0
     private var levels: [(end: Int64, level: Double)] = []
+    /// When everything scheduled should have played (the stall watchdog).
+    private var expectedEnd: Date = .distantPast
+    /// Scheduled audio this long overdue counts as stuck.
+    private static let stallSlack: TimeInterval = 3
+    private var jitter = PlaybackJitterBuffer()
+    private var jitterTimer: Task<Void, Never>?
     private var synthesizer: AVSpeechSynthesizer?
     private var speaking = false
     private var speechTimer: Task<Void, Never>?
@@ -228,6 +239,9 @@ final class AudioGraph {
     private func reconfigure() {
         guard running, let engine else { return }
         audioLog.notice("audio route changed")
+        // What was playing is gone with the old route, and its completions never come: report it as played out, or
+        // the conversation would wait on "Speaking" forever (a reply still streaming just plays on).
+        let wasPlaying = outstanding > 0 || speaking || jitter.isHolding
         stopPlayback()
         input.stop(engine: engine)
         do {
@@ -237,25 +251,71 @@ final class AudioGraph {
             player?.play()
         } catch {
             onInterrupted?()
+            return
         }
+        if wasPlaying { onDrained?() }
+    }
+
+    /// About once a second: scheduled audio that should have played out a while ago (the player stopped calling
+    /// back) is dropped and reported as played, so the conversation goes on.
+    func checkStalled(now: Date = .now) {
+        guard outstanding > 0, now.timeIntervalSince(expectedEnd) > Self.stallSlack else { return }
+        audioLog.notice("playback stalled")
+        stopPlayback()
+        onDrained?()
     }
 
     // MARK: - Playback
 
-    /// A piece of a streamed reply: PCM16LE mono 16 kHz.
+    /// A piece of a streamed reply: PCM16LE mono 16 kHz. Waits in the jitter buffer until 0.2 s are there (or
+    /// 0.35 s went by, or the stream ends: `endOfStream`), then plays; later pieces play as they come.
     func schedule(pcm: Data) {
+        for piece in jitter.add(pcm, at: .now) { play(pcm: piece) }
+        armJitterTimer()
+    }
+
+    /// The reply's stream ended: what waits in the jitter buffer plays now.
+    func endOfStream() {
+        jitterTimer?.cancel()
+        jitterTimer = nil
+        for piece in jitter.finish() { play(pcm: piece) }
+    }
+
+    /// The first piece mustn't wait for the rest longer than the buffer's `maxWait`.
+    private func armJitterTimer() {
+        jitterTimer?.cancel()
+        jitterTimer = nil
+        guard let deadline = jitter.deadline else { return }
+        let current = generation
+        jitterTimer = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(max(0, deadline.timeIntervalSinceNow)))
+            guard !Task.isCancelled, let self, self.generation == current else { return }
+            for piece in self.jitter.tick(at: max(.now, deadline)) { self.play(pcm: piece) }
+        }
+    }
+
+    private func play(pcm: Data) {
         let samples = PCM16.samples(pcm)
-        guard !samples.isEmpty, let buffer = AVAudioPCMBuffer(pcmFormat: playFormat, frameCapacity: AVAudioFrameCount(samples.count)),
+        guard !samples.isEmpty, let count = AVAudioFrameCount(exactly: samples.count),
+              let buffer = AVAudioPCMBuffer(pcmFormat: playFormat, frameCapacity: count),
               let channel = buffer.floatChannelData?[0] else { return }
-        buffer.frameLength = AVAudioFrameCount(samples.count)
+        buffer.frameLength = count
         for (index, sample) in samples.enumerated() { channel[index] = Float(sample) / 32768 }
         schedule(buffer)
+    }
+
+    /// Another sound takes over (the watch's voice, a clip): reply audio still waiting is dropped.
+    private func dropWaiting() {
+        jitterTimer?.cancel()
+        jitterTimer = nil
+        jitter.reset()
     }
 
     /// A whole clip (MP3 from the Claude fallback's voice, AAC, a WAV in another format). Returns false when it
     /// couldn't be read (the conversation then speaks the words itself).
     @discardableResult
     func play(clip: AssistantAudio) -> Bool {
+        dropWaiting()
         let ext = clip.mime.contains("mpeg") || clip.mime.contains("mp3") ? "mp3"
             : clip.mime.contains("wav") ? "wav" : "m4a"
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("reply-\(UUID().uuidString).\(ext)")
@@ -263,8 +323,13 @@ final class AudioGraph {
         do {
             try clip.data.write(to: url)
             let file = try AVAudioFile(forReading: url)
-            guard let source = AVAudioPCMBuffer(pcmFormat: file.processingFormat,
-                                                frameCapacity: AVAudioFrameCount(file.length)) else { return false }
+            // `file.length` is 64-bit: a broken header must not trap the conversion (or ask for a huge buffer;
+            // replies are a sentence or two, three minutes at 48 kHz is plenty).
+            guard file.length > 0, let frames = AVAudioFrameCount(exactly: file.length), frames <= 48_000 * 180,
+                  let source = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: frames) else {
+                audioLog.notice("a clip could not be read")
+                return false
+            }
             try file.read(into: source)
             guard let converted = convert(source) else { return false }
             schedule(converted)
@@ -277,6 +342,7 @@ final class AudioGraph {
 
     /// Says `text` with the watch's own voice (best en-US voice), through the same player.
     func speak(_ text: String) {
+        dropWaiting()
         let synthesizer = AVSpeechSynthesizer()
         self.synthesizer = synthesizer
         speaking = true
@@ -333,6 +399,8 @@ final class AudioGraph {
         outstanding = 0
         scheduledFrames = 0
         levels = []
+        expectedEnd = .distantPast
+        dropWaiting()
         speaking = false
         speechTimer?.cancel()
         speechTimer = nil
@@ -348,6 +416,8 @@ final class AudioGraph {
         if outstanding == 0 { onPlaying?() }
         outstanding += 1
         scheduledFrames += Int64(buffer.frameLength)
+        let seconds = Double(buffer.frameLength) / max(1, buffer.format.sampleRate)
+        expectedEnd = max(expectedEnd, .now).addingTimeInterval(seconds)
         levels.append((scheduledFrames, Self.level(of: buffer)))
         player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
             DispatchQueue.main.async { MainActor.assumeIsolated { self?.played(current) } }
@@ -358,7 +428,10 @@ final class AudioGraph {
     private func played(_ generation: Int) {
         guard generation == self.generation else { return }
         outstanding = max(0, outstanding - 1)
-        if outstanding == 0, !speaking { onDrained?() }
+        guard outstanding == 0 else { return }
+        // Ran dry while the reply may go on: its next pieces fill the jitter buffer again first.
+        jitter.underrun()
+        if !speaking { onDrained?() }
     }
 
     /// 0...1: how loud the reply is right now (the orb pulses with it).
@@ -372,7 +445,7 @@ final class AudioGraph {
 
     private static func level(of buffer: AVAudioPCMBuffer) -> Double {
         guard let channel = buffer.floatChannelData?[0] else { return 0 }
-        let power = PCM16.dbfs(floats: UnsafeBufferPointer(start: channel, count: Int(buffer.frameLength)))
+        let power = PCM16.dbfs(floats: UnsafeBufferPointer(start: channel, count: Int(clamping: buffer.frameLength)))
         return VoiceActivity.level(forPower: power + 8)
     }
 
@@ -381,8 +454,12 @@ final class AudioGraph {
         if source.format == playFormat { return source }
         guard let converter = AVAudioConverter(from: source.format, to: playFormat) else { return nil }
         let ratio = playFormat.sampleRate / source.format.sampleRate
-        let capacity = AVAudioFrameCount(Double(source.frameLength) * ratio + 1024)
-        guard let output = AVAudioPCMBuffer(pcmFormat: playFormat, frameCapacity: capacity) else { return nil }
+        // Bounded before it becomes a UInt32 frame count (a format with no sample rate would trap the conversion).
+        let frames = Double(source.frameLength) * ratio + 1024
+        guard frames.isFinite, frames > 0, frames < Double(UInt32.max),
+              let output = AVAudioPCMBuffer(pcmFormat: playFormat, frameCapacity: AVAudioFrameCount(frames)) else {
+            return nil
+        }
         nonisolated(unsafe) var consumed = false
         nonisolated(unsafe) let input = source
         var error: NSError?
@@ -447,8 +524,11 @@ final class TapConverter: @unchecked Sendable {
 
     func convert(_ buffer: AVAudioPCMBuffer) -> [Int16]? {
         let ratio = target.sampleRate / buffer.format.sampleRate
-        let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio + 64)
-        guard let output = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: capacity) else { return nil }
+        let frames = Double(buffer.frameLength) * ratio + 64
+        guard frames.isFinite, frames > 0, frames < Double(UInt32.max),
+              let output = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: AVAudioFrameCount(frames)) else {
+            return nil
+        }
         var consumed = false
         var error: NSError?
         converter.convert(to: output, error: &error) { _, status in
@@ -461,6 +541,6 @@ final class TapConverter: @unchecked Sendable {
             return buffer
         }
         guard error == nil, let channel = output.int16ChannelData?[0] else { return nil }
-        return Array(UnsafeBufferPointer(start: channel, count: Int(output.frameLength)))
+        return Array(UnsafeBufferPointer(start: channel, count: Int(clamping: output.frameLength)))
     }
 }

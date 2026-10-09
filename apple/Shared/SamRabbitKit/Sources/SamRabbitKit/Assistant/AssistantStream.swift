@@ -16,10 +16,15 @@ public enum AssistantStream {
     public static let maxPayload = 1 << 22
 
     /// One frame on the wire.
+    /// A frame's 4-byte big-endian length.
+    public static func length(_ b0: UInt8, _ b1: UInt8, _ b2: UInt8, _ b3: UInt8) -> UInt32 {
+        UInt32(b0) << 24 | UInt32(b1) << 16 | UInt32(b2) << 8 | UInt32(b3)
+    }
+
     public static func frame(type: UInt8, _ payload: Data) -> Data {
         var data = Data(capacity: headerSize + payload.count)
         data.append(type)
-        let length = UInt32(payload.count).bigEndian
+        let length = UInt32(clamping: payload.count).bigEndian
         withUnsafeBytes(of: length) { data.append(contentsOf: $0) }
         data.append(payload)
         return data
@@ -54,9 +59,13 @@ public struct AssistantStreamParser: Sendable {
         while buffer.count - cursor >= AssistantStream.headerSize {
             let start = buffer.startIndex + cursor
             let type = buffer[start]
-            let length = Int(buffer[start + 1]) << 24 | Int(buffer[start + 2]) << 16 | Int(buffer[start + 3]) << 8
-                | Int(buffer[start + 4])
-            guard length <= AssistantStream.maxPayload else { throw AssistantStreamError.frameTooLarge(length) }
+            // Read as UInt32 and checked before it becomes an `Int`: on the Apple Watch (arm64_32) `Int` is 32 bits,
+            // so `Int(byte) << 24` of a first byte >= 0x80 is negative and a negative length would trap the slice.
+            let declared = AssistantStream.length(buffer[start + 1], buffer[start + 2], buffer[start + 3], buffer[start + 4])
+            guard declared <= UInt32(AssistantStream.maxPayload) else {
+                throw AssistantStreamError.frameTooLarge(Int(clamping: declared))
+            }
+            let length = Int(declared)
             guard buffer.count - cursor - AssistantStream.headerSize >= length else { break }
             let payloadStart = start + AssistantStream.headerSize
             let payload = Data(buffer[payloadStart..<(payloadStart + length)])
@@ -76,12 +85,16 @@ public struct AssistantStreamParser: Sendable {
         return frames
     }
 
-    /// The items of the frames `bytes` completed: events decoded, audio passed on, unknown types and unreadable
-    /// events skipped.
+    /// The items of the frames `bytes` completed: events decoded, audio passed on, unknown types, unreadable events
+    /// and the bridge's keep-alive (`{"type":"ping"}`, while a tool runs) skipped.
     public mutating func items(_ bytes: Data) throws -> [AssistantStreamItem] {
         try feed(bytes).compactMap { frame in
             switch frame {
-            case .event(let json): (try? AssistantEvent(json: json)).map { .event($0) }
+            case .event(let json):
+                switch try? AssistantEvent(json: json) {
+                case nil, .unknown("ping"): nil
+                case let event?: .event(event)
+                }
             case .audio(let pcm): pcm.isEmpty ? nil : .audio(pcm)
             case .other: nil
             }

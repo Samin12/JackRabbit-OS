@@ -237,11 +237,15 @@ struct ConversationMachineTests {
     @Test func endsAfterTwoQuietMinutes() {
         var m = listening()
         #expect(m.handle(.tick, at: t0 + 119).isEmpty)
-        // Speech pushes it back.
-        _ = m.handle(.speechStarted, at: t0 + 100)
-        _ = m.handle(.discarded, at: t0 + 101)
-        #expect(m.handle(.tick, at: t0 + 200).isEmpty)
-        let effects = m.handle(.tick, at: t0 + 221)
+        // A turn that heard words pushes it back (counted from when its reply finished).
+        _ = m.handle(.utterance(wav), at: t0 + 100)
+        _ = m.handle(.turn("t1", .heard("What's next?")), at: t0 + 101)
+        _ = m.handle(.turn("t1", .sayDone("The review.")), at: t0 + 101)
+        _ = m.handle(done("t1"), at: t0 + 101)
+        #expect(m.handle(.drained, at: t0 + 103).isEmpty == false)
+        #expect(m.lastActivity == t0 + 103)
+        #expect(m.handle(.tick, at: t0 + 222).isEmpty)
+        let effects = m.handle(.tick, at: t0 + 223)
         #expect(effects == [.stopPlayback, .closeMic, .stopAudio, .announcements(false), .end(conversationId: "wc_1"),
                             .haptic(.stop)])
         #expect(m.phase == .idle)
@@ -249,6 +253,44 @@ struct ConversationMachineTests {
         var busy = listening()
         _ = busy.handle(.utterance(wav), at: t0)
         #expect(busy.handle(.tick, at: t0 + 500).isEmpty)
+    }
+
+    /// A café, a car, a TV: speech that is too short, and turns where the Mac heard no words, don't keep the
+    /// conversation open. It ends about two minutes after the last words, even if the tick never sees it listening.
+    @Test func noiseDoesNotKeepTheConversationOpen() {
+        var m = listening()
+        // Blips that start "speech" and are dropped.
+        for second in stride(from: 10, through: 110, by: 20) {
+            _ = m.handle(.speechStarted, at: t0 + TimeInterval(second))
+            #expect(m.handle(.discarded, at: t0 + TimeInterval(second) + 0.4).isEmpty)
+        }
+        #expect(m.lastActivity == t0)
+        // Noise long enough to be sent: the Mac hears nothing (an empty transcript), the watch listens again.
+        _ = m.handle(.speechStarted, at: t0 + 112)
+        _ = m.handle(.utterance(wav), at: t0 + 114)
+        _ = m.handle(.turn("t1", .heard("")), at: t0 + 115)
+        #expect(m.handle(done("t1"), at: t0 + 115) == [.openMic])
+        #expect(m.lastActivity == t0)
+        // More noise turns after the two minutes: the first one that finishes then ends it (the tick may only ever
+        // see "hearing" or "thinking" in a noisy room).
+        _ = m.handle(.speechStarted, at: t0 + 116)
+        _ = m.handle(.utterance(wav), at: t0 + 130)
+        _ = m.handle(.turn("t2", .heard("  ")), at: t0 + 131)
+        #expect(m.handle(done("t2"), at: t0 + 131) == [.stopPlayback, .closeMic, .stopAudio, .announcements(false),
+                                                        .end(conversationId: "wc_1"), .haptic(.stop)])
+        #expect(m.phase == .idle)
+
+        // Speech dropped as too short after the two minutes ends it at once too.
+        var blips = listening()
+        _ = blips.handle(.speechStarted, at: t0 + 125)
+        #expect(blips.handle(.discarded, at: t0 + 125.3).contains(.end(conversationId: "wc_1")))
+
+        // A microphone that stops delivering mid-speech can't keep it "hearing" forever.
+        var stuck = listening()
+        _ = stuck.handle(.speechStarted, at: t0 + 1)
+        #expect(stuck.handle(.tick, at: t0 + 30).isEmpty)
+        #expect(stuck.handle(.tick, at: t0 + 41) == [.openMic])
+        #expect(stuck.phase == .listening)
     }
 
     @Test func stopEndsAtOnceAndTellsTheMac() {
@@ -290,6 +332,90 @@ struct ConversationMachineTests {
         #expect(m.handle(.drained, at: t0) == [.openMic])
     }
 
+    /// The bridge counts an announcement as told once the watch has it: one that waits is never dropped.
+    @Test func announcementsAreNeverDropped() {
+        let item = Announcement(id: "11", say: "“Deploy” needs your approval.", kind: "needs_you")
+        // Queued while someone spoke; the speech was too short: it plays once the watch listens again.
+        var m = listening()
+        _ = m.handle(.speechStarted, at: t0)
+        #expect(m.handle(.announcements([item]), at: t0).isEmpty)
+        #expect(m.handle(.discarded, at: t0 + 0.3) ==
+                [.closeMic, .send(.init(turnId: "t1", conversationId: "wc_1", input: .announce("11"))),
+                 .haptic(.notification)])
+        _ = m.handle(.playing, at: t0 + 1)
+        _ = m.handle(done("t1"), at: t0 + 1)
+        #expect(m.handle(.drained, at: t0 + 3) == [.openMic])
+
+        // Queued during a reply, then a barge-in: said once the conversation has listened quietly for a moment.
+        var barge = listening()
+        _ = barge.handle(.utterance(wav), at: t0)
+        _ = barge.handle(.playing, at: t0)
+        _ = barge.handle(.announcements([item]), at: t0 + 0.5)
+        _ = barge.handle(.tap, at: t0 + 1)
+        #expect(barge.handle(.tick, at: t0 + 2).isEmpty) // he may be about to talk
+        #expect(barge.handle(.tick, at: t0 + 3).contains(.send(.init(turnId: "t2", conversationId: "wc_1",
+                                                                       input: .announce("11")))))
+
+        // Waiting when the two quiet minutes are up: said instead of ending.
+        var quiet = listening()
+        _ = quiet.handle(.speechStarted, at: t0 + 119)
+        _ = quiet.handle(.announcements([item]), at: t0 + 119.5)
+        let effects = quiet.handle(.discarded, at: t0 + 120.2)
+        #expect(effects.contains(.send(.init(turnId: "t1", conversationId: "wc_1", input: .announce("11")))))
+        #expect(quiet.phase == .thinking)
+
+        // Waiting when he stops: kept, and said first in the next conversation.
+        var stopped = listening()
+        _ = stopped.handle(.utterance(wav), at: t0)
+        _ = stopped.handle(.announcements([item]), at: t0 + 1)
+        _ = stopped.handle(.stop, at: t0 + 2)
+        #expect(stopped.waitingAnnouncements == 1)
+        // A poll that was still on its way when it ended: kept too.
+        let late = Announcement(id: "12", say: "“Report” finished.", kind: "done")
+        #expect(stopped.handle(.announcements([late]), at: t0 + 3).isEmpty)
+        #expect(stopped.waitingAnnouncements == 2)
+        _ = stopped.handle(.start, at: t0 + 600)
+        let ready = stopped.handle(.audioReady, at: t0 + 601)
+        #expect(ready == [.openMic, .haptic(.start), .announcements(true), .closeMic,
+                          .send(.init(turnId: "t2", conversationId: nil, input: .announce("11"))), .haptic(.notification)])
+        // The new conversation doesn't take them again from its own polls.
+        #expect(stopped.handle(.announcements([item, late]), at: t0 + 602).isEmpty)
+        #expect(stopped.waitingAnnouncements == 1)
+
+        // The Mac ends the conversation while one waits: said first, then it ends.
+        var bye = listening()
+        _ = bye.handle(.utterance(wav), at: t0)
+        _ = bye.handle(.announcements([item]), at: t0)
+        _ = bye.handle(.playing, at: t0)
+        _ = bye.handle(done("t1", end: true), at: t0)
+        #expect(bye.handle(.drained, at: t0 + 2).contains(.send(.init(turnId: "t2", conversationId: "wc_1",
+                                                                        input: .announce("11")))))
+        _ = bye.handle(.playing, at: t0 + 2)
+        _ = bye.handle(done("t2"), at: t0 + 3)
+        #expect(bye.handle(.drained, at: t0 + 4) == [.stopPlayback, .closeMic, .stopAudio, .announcements(false),
+                                                       .haptic(.stop)])
+        #expect(bye.phase == .idle)
+    }
+
+    /// An announcement's own clip the watch can't read (an MP3 from the Claude path): its words are said instead.
+    @Test func anAnnouncementClipThatCannotBeReadIsSpoken() {
+        var m = listening()
+        let clip = AssistantAudio(mime: "audio/mpeg", data: Data([0x49, 0x44, 0x33]))
+        let item = Announcement(id: "21", say: "Deploy needs you.", audio: clip, kind: "needs_you")
+        #expect(m.handle(.announcements([item]), at: t0) == [.closeMic, .haptic(.notification), .play(clip)])
+        #expect(m.handle(.clipFailed, at: t0) == [.speak("Deploy needs you.")])
+        _ = m.handle(.playing, at: t0)
+        #expect(m.phase == .speaking)
+        #expect(m.handle(.drained, at: t0 + 2) == [.openMic])
+        #expect(m.exchanges.last?.say == "Deploy needs you.")
+        // Nothing to say: just listen again.
+        let silent = Announcement(id: "22", say: "", audio: clip)
+        _ = m.handle(.announcements([silent]), at: t0 + 3)
+        #expect(m.handle(.clipFailed, at: t0 + 3) == [.openMic])
+        // Not a clip that plays: ignored.
+        #expect(m.handle(.clipFailed, at: t0 + 4).isEmpty)
+    }
+
     @Test func anAnnouncementWhoseTurnFailsIsSaidByTheWatch() {
         var m = listening()
         let item = Announcement(id: "9", say: "Deploy failed.", kind: "error")
@@ -320,6 +446,99 @@ struct ConversationMachineTests {
         #expect(m.handle(.resume, at: t0 + 61 + 200).isEmpty)
         // Opening the app again then starts a new one.
         #expect(m.handle(.start, at: t0 + 61 + 200) == [.startAudio, .warmUp(conversationId: nil)])
+    }
+
+    /// The Crown during a reply, then straight back to the app: the conversation goes on (listening after the
+    /// reply), it doesn't end.
+    @Test func comingBackWhileTheReplyPlaysKeepsTheConversation() {
+        for back in [ConversationMachine.Event.start, .resume] {
+            var m = listening()
+            _ = m.handle(.utterance(wav), at: t0)
+            _ = m.handle(.playing, at: t0)
+            #expect(m.handle(.background, at: t0 + 1).isEmpty)
+            #expect(m.handle(back, at: t0 + 2).isEmpty)
+            _ = m.handle(done("t1"), at: t0 + 2)
+            #expect(m.handle(.drained, at: t0 + 3) == [.openMic], "\(back)")
+            #expect(m.phase == .listening)
+        }
+        // While thinking too.
+        var thinking = listening()
+        _ = thinking.handle(.utterance(wav), at: t0)
+        _ = thinking.handle(.background, at: t0 + 1)
+        _ = thinking.handle(.start, at: t0 + 2)
+        _ = thinking.handle(.turn("t1", .sayDone("Sure.")), at: t0 + 3)
+        #expect(thinking.handle(done("t1"), at: t0 + 3) == [.speak("Sure.")])
+        #expect(thinking.handle(.drained, at: t0 + 4) == [.openMic])
+        // A fatal failure being said still ends it.
+        var fatal = listening()
+        _ = fatal.handle(.utterance(wav), at: t0)
+        _ = fatal.handle(.turn("t1", .failed(.unreachable)), at: t0)
+        _ = fatal.handle(.background, at: t0 + 1)
+        _ = fatal.handle(.start, at: t0 + 1.5)
+        #expect(fatal.handle(.drained, at: t0 + 2).contains(.stopAudio))
+        #expect(fatal.phase == .idle)
+    }
+
+    /// A finished reply whose playback never reports the end (a lost route): it doesn't stay on "Speaking".
+    @Test func aReplyThatNeverDrainsStillEnds() {
+        var m = listening()
+        _ = m.handle(.utterance(wav), at: t0)
+        _ = m.handle(.playing, at: t0)
+        _ = m.handle(done("t1"), at: t0 + 1)
+        #expect(m.handle(.tick, at: t0 + 30).isEmpty)
+        #expect(m.handle(.tick, at: t0 + 61) == [.stopPlayback, .openMic])
+        #expect(m.phase == .listening)
+        // A reply still streaming is not cut.
+        var streaming = listening()
+        _ = streaming.handle(.utterance(wav), at: t0)
+        _ = streaming.handle(.playing, at: t0)
+        #expect(streaming.handle(.tick, at: t0 + 300).isEmpty)
+    }
+
+    /// Error codes from a refusal or from an `error` event in the stream, to what the conversation does.
+    @Test func bridgeErrorCodesMapToFailures() {
+        typealias F = ConversationMachine.Failure
+        #expect(F(code: "assistant_unavailable") == .unavailable("assistant_unavailable"))
+        #expect(F(code: "transcribe_permission", status: 503) == .unavailable("transcribe_permission"))
+        #expect(F(code: "unauthorized") == .unauthorized)
+        #expect(F(code: "whatever", status: 401) == .unauthorized)
+        #expect(F(code: "assistant_busy", status: 409) == .busy)
+        #expect(F(code: "not_found", status: 404) == .outdated)
+        #expect(F(code: "conversation_not_found", status: 404) == .failed(code: "conversation_not_found", message: ""))
+        #expect(F(code: "assistant_timeout", message: "slow", status: 504) == .failed(code: "assistant_timeout", message: "slow"))
+        #expect(F(code: "assistant_unavailable").isFatal)
+        #expect(!F(code: "assistant_interrupted").isFatal)
+        // Tools may have acted before the voice dropped: never "try again".
+        #expect(F(code: "assistant_interrupted").spoken == "Sorry, I got cut off partway through that.")
+    }
+
+    /// A fatal `error` event mid-stream (the assistant went away on the Mac): said, then the conversation ends.
+    @Test func aFatalErrorInTheStreamEndsTheConversation() {
+        var m = listening()
+        _ = m.handle(.utterance(wav), at: t0)
+        _ = m.handle(.playing, at: t0)
+        let effects = m.handle(.turn("t1", .failed(ConversationMachine.Failure(code: "assistant_unavailable"))), at: t0)
+        #expect(effects == [.stopPlayback, .closeMic, .speak("The assistant isn't available on your Mac right now."),
+                            .haptic(.failure)])
+        // The caption says it too, and the exchange is marked failed.
+        #expect(m.exchanges.last?.say == "The assistant isn't available on your Mac right now.")
+        #expect(m.exchanges.last?.failed == true)
+        // The bridge's `done` after its error is ignored.
+        #expect(m.handle(done("t1"), at: t0).isEmpty)
+        _ = m.handle(.playing, at: t0)
+        #expect(m.handle(.drained, at: t0 + 3) == [.stopPlayback, .closeMic, .stopAudio, .announcements(false)])
+        #expect(m.problem == "Assistant unavailable on the Mac")
+    }
+
+    /// The Mac forgot the conversation (it restarted): said, and the next turn starts a new one.
+    @Test func aConversationTheMacForgotStartsANewOne() {
+        var m = listening()
+        _ = m.handle(.utterance(wav), at: t0)
+        let effects = m.handle(.turn("t1", .failed(.failed(code: "conversation_not_found", message: ""))), at: t0)
+        #expect(effects == [.closeMic, .speak("Sorry, I lost our conversation. Say that again?"), .haptic(.failure)])
+        #expect(m.handle(.drained, at: t0 + 2) == [.openMic])
+        #expect(m.handle(.utterance(wav), at: t0 + 3).contains(.send(.init(turnId: "t2", conversationId: nil,
+                                                                             input: .audio(wav)))))
     }
 
     @Test func aCallOrSiriPausesTheConversation() {

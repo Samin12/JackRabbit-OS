@@ -19,8 +19,13 @@ final class WatchConversationTests: XCTestCase {
     }
 
     override func tearDownWithError() throws {
-        fake("assistant", ["mode": "ok", "delay": 0.35, "pace": 0.5])
+        // Everything a test may have changed, even when it failed halfway (the next test expects the defaults).
+        fake("assistant", ["mode": "ok", "delay": 0.35, "pace": 0.5, "hold": 0, "ping": 0, "busyFor": 0,
+                           "code": "assistant_failed", "heard": Self.heard, "say": Self.say])
     }
+
+    nonisolated static let heard = "Draft the release notes for build 2.4"
+    nonisolated static let say = "Okay, I started the release notes for build 2.4 in Hermes. Anything else?"
 
     // MARK: - Helpers
 
@@ -82,6 +87,21 @@ final class WatchConversationTests: XCTestCase {
     }
 
     private var assistant: [String: Any] { fakeGet("assistant") }
+    private var refused: [[String: Any]] { assistant["refused"] as? [[String: Any]] ?? [] }
+
+    /// Waits until the fake bridge has `count` turns (short exchanges can be over before the state line is read).
+    @discardableResult
+    private func waitForTurns(_ count: Int, timeout: TimeInterval = 25, file: StaticString = #filePath,
+                              line: UInt = #line) -> [[String: Any]] {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            let seen = turns
+            if seen.count >= count { return seen }
+            Thread.sleep(forTimeInterval: 0.3)
+        }
+        XCTFail("the Mac got \(turns.count) turns, not \(count)", file: file, line: line)
+        return turns
+    }
     private var turns: [[String: Any]] { assistant["turns"] as? [[String: Any]] ?? [] }
 
     private func state(_ app: XCUIApplication) -> XCUIElement { app.staticTexts["assistant-state"] }
@@ -330,5 +350,90 @@ final class WatchConversationTests: XCTestCase {
         XCTAssertEqual(audio(again), "audio on")
         stop(again)
         waitFor(again, state: "Tap to talk", timeout: 5)
+    }
+
+    /// A tool that runs for a long while (45 s here) with no word on the stream, not even a keep-alive (an older
+    /// bridge): the watch waits (90 s) instead of giving up at 40 s, then plays the reply.
+    func test14_ALongQuietToolCallIsWaitedFor() throws {
+        fake("assistant", ["hold": 45, "ping": 0])
+        let app = try launch(turns: 1)
+        waitFor(app, state: "Thinking", timeout: 20)
+        pause(30)
+        XCTAssertTrue(state(app).label.hasPrefix("Thinking"), "still waiting: \(state(app).label)")
+        snap("watch-18-long-tool-call")
+        waitFor(app, state: "Speaking", timeout: 40)
+        waitFor(app, state: "Listening", timeout: 20)
+        XCTAssertTrue(app.staticTexts["assistant-say"].label.hasPrefix("Okay, I started"))
+        XCTAssertEqual(turns.count, 1)
+    }
+
+    /// The Digital Crown while a reply plays, then straight back to the app: the conversation goes on (it listens
+    /// after the reply) instead of ending.
+    func test15_CrownDuringAReplyThenBack() throws {
+        fake("assistant", ["pace": 1.0])
+        let app = try launch(turns: 1)
+        waitFor(app, state: "Speaking", timeout: 20)
+        XCUIDevice.shared.press(.home)
+        pause(1)
+        app.activate()
+        XCTAssertEqual(waitFor(app, state: "Listening", "Tap to talk", timeout: 20), "Listening",
+                       "back while it spoke: the conversation goes on")
+        snap("watch-19-back-after-the-crown")
+        let ends = assistant["ends"] as? [[String: Any]] ?? []
+        XCTAssertTrue(ends.isEmpty, "the Mac wasn't told it ended")
+    }
+
+    /// The assistant goes away on the Mac in the middle of a turn (an `error` event that can't get better): the watch
+    /// says so, then the conversation ends with the problem shown and the microphone off.
+    func test16_AFatalErrorInTheStreamEndsIt() throws {
+        fake("assistant", ["mode": "error", "code": "assistant_unavailable"])
+        let app = try launch(turns: 1)
+        waitFor(app, state: "Speaking", timeout: 25)
+        XCTAssertEqual(app.staticTexts["assistant-say"].label, "The assistant isn't available on your Mac right now.")
+        waitFor(app, state: "Assistant unavailable on the Mac", timeout: 15)
+        pause(1)
+        XCTAssertEqual(audio(app), "audio off")
+        snap("watch-20-fatal-stream-error")
+    }
+
+    /// A short "yes" (about 0.2 s of voice) is sent like any utterance: it confirms approvals.
+    func test17_AShortYesIsSent() throws {
+        fake("assistant", ["heard": "Yes", "say": "Okay, approved."])
+        let app = try launch(turns: 1, extra: ["-SamRabbitFixtureLength", "0.22"])
+        let turn = try XCTUnwrap(waitForTurns(1).last)
+        XCTAssertEqual(turn["kind"] as? String, "audio")
+        let seconds = try XCTUnwrap(turn["seconds"] as? Double)
+        XCTAssertTrue(seconds > 0.4 && seconds < 1.0, "0.22 s of voice with its pre-roll and tail: \(seconds)")
+        waitFor(app, state: "Listening", timeout: 20)
+        XCTAssertTrue(app.staticTexts["assistant-say"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.staticTexts["assistant-say"].label, "Okay, approved.")
+        snap("watch-21-short-yes")
+    }
+
+    /// Through the iPhone while the Mac still finishes the last thing (409 for 2 s from the first try): the watch
+    /// retries, the phone sends the turn to the Mac again, and the reply plays.
+    func test18_ABusyMacThroughTheIPhone() throws {
+        fake("assistant", ["busyFor": 2])
+        let app = try launch(turns: 1, route: "phone")
+        waitFor(app, state: "Speaking", timeout: 40)
+        waitFor(app, state: "Listening", timeout: 25)
+        // The reply, not "One moment, I'm still on the last thing".
+        XCTAssertTrue(app.staticTexts["assistant-say"].label.hasPrefix("Okay, I started"))
+        XCTAssertGreaterThanOrEqual(refused.count, 1, "the Mac said 409 first")
+        XCTAssertEqual(turns.count, 1, "then answered the turn once")
+        XCTAssertEqual(turns.last?["platform"] as? String, "watchos")
+        snap("watch-22-busy-through-the-iphone")
+    }
+
+    /// An announcement whose own clip the watch can't read (an MP3 from the Claude path): its words are said by the
+    /// watch instead of being skipped.
+    func test19_AnUnreadableAnnouncementClipIsSpoken() throws {
+        let app = try launch(turns: 0)
+        waitFor(app, state: "Listening")
+        fake("announce", ["say": "“Deploy staging” needs your approval.", "kind": "needs_you", "audio": "broken"])
+        waitFor(app, state: "Heads up", timeout: 30)
+        XCTAssertEqual(app.staticTexts["assistant-say"].label, "“Deploy staging” needs your approval.")
+        snap("watch-23-unreadable-clip-spoken")
+        waitFor(app, state: "Listening", timeout: 15)
     }
 }

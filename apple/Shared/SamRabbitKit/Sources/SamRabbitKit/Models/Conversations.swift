@@ -11,7 +11,8 @@ public struct ConversationSummary: Codable, Sendable, Equatable, Identifiable {
     public var messageCount: Int
     public var preview: String?
     public var device: String?
-    public var cursor: Int
+    /// The store's cursor at this conversation's last event (64-bit: the watch's `Int` is 32 bits).
+    public var cursor: Int64
 
     public var id: String { conversationId }
 
@@ -20,7 +21,7 @@ public struct ConversationSummary: Codable, Sendable, Equatable, Identifiable {
 
     public init(conversationId: String, title: String? = nil, startedAt: Date? = nil, lastAt: Date? = nil,
                 endedAt: Date? = nil, live: Bool = false, messageCount: Int = 0, preview: String? = nil,
-                device: String? = nil, cursor: Int = 0) {
+                device: String? = nil, cursor: Int64 = 0) {
         self.conversationId = conversationId
         self.title = title
         self.startedAt = startedAt
@@ -48,18 +49,19 @@ public struct ConversationSummary: Codable, Sendable, Equatable, Identifiable {
         messageCount = c.int("messageCount")
         preview = c.text("preview")
         device = c.text("device")
-        cursor = c.int("cursor")
+        cursor = c.int64("cursor")
     }
 }
 
 /// `GET /v1/mobile/conversations` -> `{conversations, cursor, nextBefore?}`
 public struct ConversationPage: Codable, Sendable, Equatable {
     public var conversations: [ConversationSummary]
-    public var cursor: Int
-    /// Pass as `before` for the next (older) page; `nil` on the last page.
-    public var nextBefore: Int?
+    public var cursor: Int64
+    /// Pass as `before` for the next (older) page; `nil` on the last page. The last conversation's `lastAt` in epoch
+    /// milliseconds (about 1.8e12): never fits the Apple Watch's 32-bit `Int`.
+    public var nextBefore: Int64?
 
-    public init(conversations: [ConversationSummary], cursor: Int = 0, nextBefore: Int? = nil) {
+    public init(conversations: [ConversationSummary], cursor: Int64 = 0, nextBefore: Int64? = nil) {
         self.conversations = conversations
         self.cursor = cursor
         self.nextBefore = nextBefore
@@ -68,8 +70,8 @@ public struct ConversationPage: Codable, Sendable, Equatable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: AnyKey.self)
         conversations = c.list(ConversationSummary.self, "conversations")
-        cursor = c.int("cursor")
-        nextBefore = c.optionalInt("nextBefore")
+        cursor = c.int64("cursor")
+        nextBefore = c.optionalInt64("nextBefore")
     }
 }
 
@@ -89,7 +91,9 @@ public struct SyncEvent: Codable, Sendable, Equatable, Identifiable {
     }
 
     public var type: String { raw["type"].string ?? "" }
-    public var cursor: Int? { raw["cursor"].int }
+    public var cursor: Int64? { raw["cursor"].int64 }
+    /// The sender's sequence number (64-bit: the R1's numbers go up to 2^53).
+    public var seq: Int64? { raw["seq"].int64 }
     public var at: Date? { raw["at"].date }
 
     /// `conversationId`, or the `c_<id>:` prefix of the event id.
@@ -104,10 +108,11 @@ public struct SyncEvent: Codable, Sendable, Equatable, Identifiable {
     /// The event id, or a stable fallback built from its fields.
     public var id: String {
         if let value = raw["id"].string, !value.isEmpty { return value }
-        if let value = raw["id"].double { return String(Int(value)) }
-        let seq = raw["seq"].int.map(String.init) ?? ""
+        // Numbers as digits without `Int(...)`: `at` is epoch milliseconds, which traps `Int` on the watch.
+        if let value = raw["id"].double { return JSONNumbers.text(value) }
+        let seq = seq.map(String.init) ?? ""
         let extra = raw["messageId"].string ?? raw["artifactId"].string ?? ""
-        let at = raw["at"].double.map { String(Int($0)) } ?? raw["at"].string ?? ""
+        let at = raw["at"].double.map(JSONNumbers.text) ?? raw["at"].string ?? ""
         return "\(type):\(at):\(seq):\(extra)"
     }
 }
@@ -115,10 +120,10 @@ public struct SyncEvent: Codable, Sendable, Equatable, Identifiable {
 /// `GET /v1/mobile/conversations/<id>/events?after=` -> `{events, cursor, more}`
 public struct EventPage: Codable, Sendable, Equatable {
     public var events: [SyncEvent]
-    public var cursor: Int
+    public var cursor: Int64
     public var more: Bool
 
-    public init(events: [SyncEvent], cursor: Int, more: Bool = false) {
+    public init(events: [SyncEvent], cursor: Int64, more: Bool = false) {
         self.events = events
         self.cursor = cursor
         self.more = more
@@ -127,7 +132,7 @@ public struct EventPage: Codable, Sendable, Equatable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: AnyKey.self)
         events = c.list(SyncEvent.self, "events")
-        cursor = c.int("cursor")
+        cursor = c.int64("cursor")
         more = c.bool("more")
     }
 }

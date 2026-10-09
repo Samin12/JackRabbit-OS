@@ -63,14 +63,19 @@ The voice assistant (CONTRACTS-WAVE5, "Streaming turn protocol"), with canned an
   ``GET /v1/mobile/assistant/announcements?conversationId=&since=`` -> ``{items: [{id, say, audio | null, kind,
   threadId, title}], cursor}`` (each once per conversation); a turn ``{"announce": id}`` says it.
 * The summary says ``assistant: {available, brain, reason?, model, chatgpt: {connected}}``.
-* ``POST /__fake/assistant {mode?, say?, heard?, delay?, brain?, pace?}`` / ``GET /__fake/assistant`` (the mode and
-  what arrived: turns, sessions, cancels, ends). Modes: ``ok``; ``noaudio`` (no audio: the watch speaks the text
-  itself); ``noise`` (nothing heard: keep listening); ``end`` (``endConversation``); ``error`` (an ``error`` event);
+* ``POST /__fake/assistant {mode?, say?, heard?, delay?, brain?, pace?, code?, hold?, ping?, busyFor?}`` /
+  ``GET /__fake/assistant`` (the mode and what arrived: turns, sessions, cancels, ends, and turns refused 409). ``hold``: seconds the
+  stream stays quiet after ``heard`` (a long tool call), with a ``{"type": "ping"}`` event every ``ping`` seconds
+  (0: none, like an older bridge); ``busyFor``: turns are refused 409 ``assistant_busy`` for that many seconds,
+  counted from the first turn that arrives after it was set (the Mac still finishing the last one). Modes: ``ok``; ``noaudio`` (no audio: the watch speaks the text
+  itself); ``noise`` (nothing heard: keep listening); ``end`` (``endConversation``); ``error`` (an ``error`` event
+  with ``code``, default ``assistant_failed``, then ``done``, like the real bridge);
   ``slow`` (4 s before the answer starts); ``busy`` (409); ``unavailable`` (503 ``assistant_unavailable``); ``drop``
   (the connection closes without an answer: "can't reach your Mac"); ``buffered`` (answers buffered JSON even when a
   stream was asked for, like the Claude fallback) and ``buffered_clip`` (the same with an AAC clip, ``audio/mp4``,
   instead of WAV); ``missing`` (an older bridge: 404 and no ``assistant`` in the summary).
-  ``POST /__fake/announce {say?, kind?, threadId?, title?, audio?}`` queues an announcement.
+  ``POST /__fake/announce {say?, kind?, threadId?, title?, audio?}`` queues an announcement (``audio: true`` with its
+  own WAV clip, ``"broken"`` with a clip no player can read).
 Stdlib only, Python 3.9.
 """
 
@@ -421,8 +426,13 @@ class FakeBridge:
             self.assistant_delay = 0.35
             self.assistant_pace = 0.5  # seconds of sending per second of audio
             self.assistant_brain = "realtime"
+            self.assistant_code = "assistant_failed"
+            self.assistant_hold = 0.0
+            self.assistant_ping = 0.0
+            self.assistant_busy_until = 0.0
+            self.assistant_busy_for = 0.0
             self.assistant_log: Dict[str, List[Dict[str, Any]]] = {"turns": [], "sessions": [], "cancels": [],
-                                                                    "ends": []}
+                                                                    "ends": [], "refused": []}
             self.assistant_conversations: Dict[str, Dict[str, Any]] = {}
             self.assistant_turns: Dict[Tuple[str, str], Dict[str, Any]] = {}
             self.announcements: List[Dict[str, Any]] = []
@@ -854,12 +864,20 @@ class FakeBridge:
             return found
 
     def add_announcement(self, say: str, kind: str, thread_id: Optional[str], title: Optional[str],
-                         audio: bool) -> Dict[str, Any]:
+                         audio: Any) -> Dict[str, Any]:
         with self.lock:
             self.announcement_seq += 1
+            if audio == "broken":
+                # An MP3 the watch can't read (the Claude path's voice, an unsupported encoder).
+                clip: Optional[Dict[str, Any]] = {"mime": "audio/mpeg", "b64": base64.b64encode(
+                    b"ID3\x03\x00\x00\x00\x00\x00\x00" + bytes(range(256)) * 8).decode("ascii")}
+            elif audio:
+                clip = {"mime": "audio/wav",
+                        "b64": base64.b64encode(wav_bytes(speech_pcm(spoken_seconds(say)))).decode("ascii")}
+            else:
+                clip = None
             item = {"id": self.announcement_seq, "say": say, "kind": kind, "threadId": thread_id, "title": title,
-                    "audio": {"mime": "audio/wav",
-                              "b64": base64.b64encode(wav_bytes(speech_pcm(spoken_seconds(say)))).decode("ascii")} if audio else None}
+                    "audio": clip}
             self.announcements.append(item)
             return item
 
@@ -1114,6 +1132,15 @@ class Handler(BaseHTTPRequestHandler):
                         b.assistant_pace = max(0.0, min(2.0, float(body.get("pace") or 0)))
                     if body.get("brain") in ("realtime", "claude"):
                         b.assistant_brain = str(body["brain"])
+                    if "code" in body:
+                        b.assistant_code = str(body.get("code") or "assistant_failed")
+                    if "hold" in body:
+                        b.assistant_hold = max(0.0, min(120.0, float(body.get("hold") or 0)))
+                    if "ping" in body:
+                        b.assistant_ping = max(0.0, min(60.0, float(body.get("ping") or 0)))
+                    if "busyFor" in body:
+                        b.assistant_busy_for = max(0.0, min(60.0, float(body.get("busyFor") or 0)))
+                        b.assistant_busy_until = 0.0
                     if body.get("clear"):
                         for log in b.assistant_log.values():
                             del log[:]
@@ -1121,12 +1148,17 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(200, {"mode": b.assistant_mode, "say": b.assistant_say,
                                             "heard": b.assistant_heard, "delay": b.assistant_delay,
                                             "pace": b.assistant_pace, "brain": b.assistant_brain,
+                                            "code": b.assistant_code, "hold": b.assistant_hold,
+                                            "ping": b.assistant_ping,
+                                            "busy": max(b.assistant_busy_for, b.assistant_busy_until - time.time()),
                                             **{k: list(v) for k, v in b.assistant_log.items()}})
         if path == "/__fake/announce" and method == "POST":
             body = self.body()
+            audio = body.get("audio")
             item = b.add_announcement(str(body.get("say") or "“Fix login redirect” in Hermes finished."),
                                       str(body.get("kind") or "done"), body.get("threadId") or "t_login",
-                                      body.get("title") or "Fix login redirect", bool(body.get("audio")))
+                                      body.get("title") or "Fix login redirect",
+                                      "broken" if audio == "broken" else bool(audio))
             return self.send_json(200, {"ok": True, "id": item["id"]})
         if path == "/__fake/t3" and method == "POST":
             with b.lock:
@@ -1711,7 +1743,15 @@ class Handler(BaseHTTPRequestHandler):
             return
         if mode == "unavailable":
             raise ApiError(503, "assistant_unavailable", "Connect ChatGPT on the Mac first.")
-        if mode == "busy":
+        with b.lock:
+            if b.assistant_busy_for:
+                b.assistant_busy_until = time.time() + b.assistant_busy_for
+                b.assistant_busy_for = 0.0
+            busy = time.time() < b.assistant_busy_until
+        if mode == "busy" or busy:
+            with b.lock:
+                b.assistant_log["refused"].append(dict(record, turnId=turn_id, code="assistant_busy"))
+                del b.assistant_log["refused"][:-40]
             raise ApiError(409, "assistant_busy", "Still answering the last thing you said.", retryable=True)
         conversation = b.assistant_conversation(conversation_id, device)
         key = (device["deviceId"], turn_id)
@@ -1769,6 +1809,7 @@ class Handler(BaseHTTPRequestHandler):
                 say = "Next up is the design review at three. Want me to block time before it?"
         return {"heard": heard, "say": say, "end": end, "actions": actions, "cards": cards,
                 "audio": mode not in ("noaudio", "noise", "error"), "error": mode == "error",
+                "code": b.assistant_code, "hold": b.assistant_hold, "ping": b.assistant_ping,
                 "delay": 4.0 if mode == "slow" else b.assistant_delay, "brain": b.assistant_brain}
 
     def buffered_answer(self, answer: Dict[str, Any], clip: bool) -> Dict[str, Any]:
@@ -1780,7 +1821,8 @@ class Handler(BaseHTTPRequestHandler):
                 audio = {"mime": "audio/wav",
                          "b64": base64.b64encode(wav_bytes(speech_pcm(spoken_seconds(answer["say"])))).decode()}
         if answer["error"]:
-            raise ApiError(502, "assistant_failed", "The assistant could not answer.", retryable=True)
+            status = 503 if answer["code"] == "assistant_unavailable" else 502
+            raise ApiError(status, answer["code"], "The assistant could not answer.", retryable=True)
         return {"conversationId": answer["conversationId"], "turnId": answer["turnId"], "heard": answer["heard"],
                 "say": answer["say"], "audio": audio, "expectReply": answer["say"].rstrip().endswith("?"),
                 "endConversation": answer["end"], "actions": answer["actions"], "cards": answer["cards"],
@@ -1805,8 +1847,16 @@ class Handler(BaseHTTPRequestHandler):
         first_audio = None
         try:
             write(event_frame({"type": "heard", "text": answer["heard"]}))
+            # A long tool call: nothing to say for a while, only keep-alive pings (none from an older bridge).
+            quiet_until = time.time() + answer["hold"]
+            next_ping = time.time() + (answer["ping"] or answer["hold"] + 1)
+            while time.time() < quiet_until and not conversation["cancel"].is_set():
+                time.sleep(max(0.0, min(0.1, quiet_until - time.time())))
+                if answer["ping"] and time.time() >= next_ping:
+                    write(event_frame({"type": "ping"}))
+                    next_ping += answer["ping"]
             if answer["error"]:
-                write(event_frame({"type": "error", "code": "assistant_failed",
+                write(event_frame({"type": "error", "code": answer["code"],
                                    "message": "The realtime session failed."}))
             else:
                 say = answer["say"]
@@ -1839,8 +1889,8 @@ class Handler(BaseHTTPRequestHandler):
                                                 "total": int((time.time() - started) * 1000)}}
             if interrupted:
                 done["interrupted"] = True
-            if not answer["error"]:
-                write(event_frame(done))
+            # Like the real bridge (``TurnSink.finish``): an error event is followed by ``done``.
+            write(event_frame(done))
             self.wfile.write(b"0\r\n\r\n")
             self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError, OSError):

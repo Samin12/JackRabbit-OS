@@ -92,19 +92,21 @@ public enum WAV {
         func u32(_ value: UInt32) { withUnsafeBytes(of: value.littleEndian) { data.append(contentsOf: $0) } }
         func u16(_ value: UInt16) { withUnsafeBytes(of: value.littleEndian) { data.append(contentsOf: $0) } }
         let blockAlign = channels * 2
+        // Sizes as UInt32 without an `Int` sum that could overflow on the watch (arm64_32: 32-bit `Int`).
+        let size = UInt32(clamping: pcm.count)
         data.append(contentsOf: Array("RIFF".utf8))
-        u32(UInt32(36 + pcm.count))
+        u32(size > UInt32.max - 36 ? UInt32.max : size + 36)
         data.append(contentsOf: Array("WAVE".utf8))
         data.append(contentsOf: Array("fmt ".utf8))
         u32(16)
         u16(1) // PCM
-        u16(UInt16(channels))
-        u32(UInt32(sampleRate))
-        u32(UInt32(sampleRate * blockAlign))
-        u16(UInt16(blockAlign))
+        u16(UInt16(clamping: channels))
+        u32(UInt32(clamping: sampleRate))
+        u32(UInt32(clamping: Int64(sampleRate) * Int64(blockAlign)))
+        u16(UInt16(clamping: blockAlign))
         u16(16)
         data.append(contentsOf: Array("data".utf8))
-        u32(UInt32(pcm.count))
+        u32(size)
         data.append(pcm)
         return data
     }

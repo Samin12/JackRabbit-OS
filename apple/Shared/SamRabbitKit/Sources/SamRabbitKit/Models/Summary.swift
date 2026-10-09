@@ -25,6 +25,11 @@ extension KeyedDecodingContainer where Key == AnyKey {
         guard let raw = lenient(JSONValue.self, AnyKey(name)) else { return nil }
         return raw.int
     }
+    func int64(_ name: String, default value: Int64 = 0) -> Int64 { int64(AnyKey(name), default: value) }
+    func optionalInt64(_ name: String) -> Int64? {
+        guard let raw = lenient(JSONValue.self, AnyKey(name)) else { return nil }
+        return raw.int64
+    }
     func value<T: Decodable>(_ type: T.Type, _ names: String...) -> T? {
         lenient(type, any: names.map(AnyKey.init))
     }

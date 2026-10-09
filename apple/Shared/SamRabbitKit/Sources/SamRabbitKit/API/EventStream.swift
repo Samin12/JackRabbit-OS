@@ -7,10 +7,11 @@ public struct ServerSentEvent: Sendable, Equatable {
     public var data: String
     /// A comment line (`: heartbeat`, `: ready 42`); `data` is empty then.
     public var comment: String?
-    public var retry: Int?
+    /// Reconnection time in milliseconds (64-bit like every millisecond value).
+    public var retry: Int64?
 
     public init(id: String? = nil, event: String = "message", data: String = "", comment: String? = nil,
-                retry: Int? = nil) {
+                retry: Int64? = nil) {
         self.id = id
         self.event = event
         self.data = data
@@ -27,7 +28,7 @@ public struct ServerSentEventParser: Sendable {
     private var eventType = ""
     private var dataLines: [String] = []
     private var lastId: String?
-    private var retry: Int?
+    private var retry: Int64?
 
     public init() {}
 
@@ -83,7 +84,7 @@ public struct ServerSentEventParser: Sendable {
         case "event": eventType = value
         case "data": dataLines.append(value)
         case "id": if !value.contains("\0") { lastId = value }
-        case "retry": retry = Int(value)
+        case "retry": retry = Int64(value)
         default: break
         }
         return []
@@ -92,14 +93,14 @@ public struct ServerSentEventParser: Sendable {
 
 /// What `/v1/mobile/stream` sends: a ready marker with the starting cursor, sync events and heartbeats.
 public enum SyncStreamItem: Sendable, Equatable {
-    case ready(cursor: Int?)
+    case ready(cursor: Int64?)
     case event(SyncEvent)
     case heartbeat
 
     init?(_ message: ServerSentEvent) {
         if let comment = message.comment {
             if comment.hasPrefix("ready") {
-                self = .ready(cursor: Int(comment.dropFirst(5).trimmingCharacters(in: .whitespaces)))
+                self = .ready(cursor: Int64(comment.dropFirst(5).trimmingCharacters(in: .whitespaces)))
             } else {
                 self = .heartbeat
             }
@@ -128,7 +129,7 @@ public enum SyncStreamItem: Sendable, Equatable {
 /// the last cursor, until the consuming task is cancelled.
 public struct LiveSyncFeed: Sendable {
     public enum Update: Sendable, Equatable {
-        case connected(cursor: Int?)
+        case connected(cursor: Int64?)
         case event(SyncEvent)
         case disconnected(String)
     }
@@ -137,7 +138,7 @@ public struct LiveSyncFeed: Sendable {
 
     public init(client: BridgeClient) { self.client = client }
 
-    public func updates(after start: Int?) -> AsyncStream<Update> {
+    public func updates(after start: Int64?) -> AsyncStream<Update> {
         let client = self.client
         return AsyncStream { continuation in
             let task = Task {

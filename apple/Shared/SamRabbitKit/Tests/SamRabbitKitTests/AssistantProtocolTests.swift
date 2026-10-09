@@ -310,8 +310,8 @@ struct SpeechDetectorTests {
 
     @Test func dropsBlipsAndCutsLongSpeech() {
         var detector = SpeechDetector()
-        // 0.25 s loud: speech starts after 0.15 s but 0.3 s are needed: discarded.
-        let blip = detector.feed(Signal.noise(0.5, dbfs: -60) + Signal.tone(0.25, dbfs: -20) + Signal.noise(1.2, dbfs: -60))
+        // 0.15 s loud (a click, a tap on the case): speech starts, but 0.18 s are needed: discarded.
+        let blip = detector.feed(Signal.noise(0.5, dbfs: -60) + Signal.tone(0.15, dbfs: -20) + Signal.noise(1.2, dbfs: -60))
         #expect(blip == [.speechStarted, .discarded])
         // 35 s of talking: cut at 30 s, then a new utterance starts.
         let long = detector.feed(Signal.speech(35, dbfs: -20))
@@ -324,6 +324,24 @@ struct SpeechDetectorTests {
         #expect(utterances(flushed).count == 1)
         #expect(!detector.inSpeech)
         #expect(detector.flush().isEmpty)
+    }
+
+    /// A short "yes" or "ok" confirms an approval: about 0.2 s of voice must get through (it used to need 0.3 s).
+    @Test func aShortYesIsKept() {
+        var detector = SpeechDetector()
+        let yes = detector.feed(Signal.noise(0.5, dbfs: -60) + Signal.tone(0.2, dbfs: -22) + Signal.noise(1.3, dbfs: -60, seed: 5))
+        #expect(yes.first == .speechStarted)
+        let found = utterances(yes)
+        #expect(found.count == 1)
+        // With the pre-roll and the tail around it.
+        #expect(abs(Double(found.first?.count ?? 0) / 16_000 - (0.3 + 0.05 + 0.25)) < 0.06)
+        // "O-kay": a short first syllable, the stop of the "k", then "kay": one utterance, the "o" in its pre-roll.
+        var okay = SpeechDetector()
+        let events = okay.feed(Signal.noise(0.5, dbfs: -60) + Signal.tone(0.1, dbfs: -22)
+                               + Signal.noise(0.05, dbfs: -60, seed: 6) + Signal.tone(0.2, dbfs: -22)
+                               + Signal.noise(1.3, dbfs: -60, seed: 7))
+        #expect(utterances(events).count == 1)
+        #expect(!events.contains(.discarded))
     }
 
     /// The noise-floor fix: digital silence (-160 dBFS, a microphone starting up) is ignored and the floor never goes

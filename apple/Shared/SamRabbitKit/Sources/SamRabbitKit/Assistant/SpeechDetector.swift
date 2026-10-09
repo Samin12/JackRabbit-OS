@@ -34,7 +34,10 @@ public struct NoiseFloor: Sendable, Equatable {
 /// noise floor for a moment starts speech, about a second of quiet after it ends the utterance.
 ///
 /// * speech: 10 dB above the floor (and above -50 dBFS) for 150 ms;
-/// * an utterance needs 0.3 s of speech (shorter is a cough or a tap: discarded);
+/// * an utterance needs 0.18 s from the start of speech to the end of its last loud moment (dips inside a word,
+///   like the stop in "o-kay", count): a short "yes" or "ok" (about 0.2 s voiced) confirms an approval and must get
+///   through; shorter is a click or a tap (discarded). Noise that gets through is harmless: the Mac hears no words,
+///   the conversation keeps listening, and noise never keeps a conversation open;
 /// * it ends 1 s after the last speech, or at 30 s;
 /// * it keeps the 300 ms before speech started (the first syllable) and a short quiet tail.
 ///
@@ -50,8 +53,9 @@ public struct SpeechDetector: Sendable {
         public var quietest: Double = -50
         /// Loud this long starts speech.
         public var attack: TimeInterval = 0.15
-        /// An utterance needs this much speech.
-        public var minimumSpeech: TimeInterval = 0.3
+        /// An utterance needs this much speech: from where speech started to the end of its last loud window. Just
+        /// above `attack`, so a "yes" of about 0.2 s counts and a click that barely started speech doesn't.
+        public var minimumSpeech: TimeInterval = 0.18
         /// Quiet this long after speech ends the utterance (the hangover).
         public var hangover: TimeInterval = 1.0
         /// Utterances are cut here.
@@ -88,7 +92,8 @@ public struct SpeechDetector: Sendable {
     private var utterance: [Int16] = []
     private var loudRun = 0
     private var quietRun = 0
-    private var voiced = 0
+    /// Where speech started in `utterance` (the first window of the loud run that started it).
+    private var onset = 0
     private var lastLoudEnd = 0
     private var ignoring = 0
 
@@ -110,7 +115,7 @@ public struct SpeechDetector: Sendable {
         inSpeech = false
         loudRun = 0
         quietRun = 0
-        voiced = 0
+        onset = 0
         lastLoudEnd = 0
         level = 0
         ignoring = settings.samples(seconds)
@@ -165,14 +170,13 @@ public struct SpeechDetector: Sendable {
             inSpeech = true
             utterance = preRoll
             preRoll.removeAll(keepingCapacity: true)
-            voiced = loudRun
+            onset = max(0, utterance.count - loudRun)
             quietRun = 0
             lastLoudEnd = utterance.count
             return [.speechStarted]
         }
         utterance.append(contentsOf: window)
         if loud {
-            voiced += size
             quietRun = 0
             lastLoudEnd = utterance.count
         } else {
@@ -185,13 +189,13 @@ public struct SpeechDetector: Sendable {
 
     private mutating func finish(cut: Bool) -> Event {
         let keep = cut ? utterance.count : min(utterance.count, lastLoudEnd + settings.samples(settings.tail))
-        let event: Event = voiced >= settings.samples(settings.minimumSpeech)
+        let event: Event = lastLoudEnd - onset >= settings.samples(settings.minimumSpeech)
             ? .utterance(Array(utterance.prefix(keep))) : .discarded
         utterance.removeAll(keepingCapacity: true)
         inSpeech = false
         loudRun = 0
         quietRun = 0
-        voiced = 0
+        onset = 0
         lastLoudEnd = 0
         return event
     }

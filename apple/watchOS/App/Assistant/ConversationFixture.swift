@@ -24,6 +24,7 @@ final class SilentInput: ConversationInput {
 ///     -SamRabbitVoiceFixture quiet       never speaks
 ///     -SamRabbitFixtureTurns 2           how many times it speaks (default 2)
 ///     -SamRabbitFixtureLead 0.8          seconds of quiet before it speaks
+///     -SamRabbitFixtureLength 1.6        seconds it speaks each time (0.22: a short "yes")
 ///     -SamRabbitVoicePermission denied   the microphone was refused
 ///     -SamRabbitFixtureMicDelay 3        seconds before the microphone is allowed (the first launch's prompt,
 ///                                        Siri still holding it): the window where Stop or a failed warm-up comes
@@ -38,7 +39,7 @@ final class ConversationFixture: ConversationInput {
     let turns: Int
     let lead: TimeInterval
     let micDelay: TimeInterval
-    let length: TimeInterval = 1.6
+    let length: TimeInterval
     private var timer: Task<Void, Never>?
     /// Samples since the microphone last opened.
     private var position = 0
@@ -50,12 +51,13 @@ final class ConversationFixture: ConversationInput {
     var isFixture: Bool { true }
 
     init(mode: VoiceFixtureSource.Mode, permitted: Bool = true, turns: Int = 2, lead: TimeInterval = 0.8,
-         micDelay: TimeInterval = 0) {
+         micDelay: TimeInterval = 0, length: TimeInterval = 1.6) {
         self.mode = mode
         self.permitted = permitted
         self.turns = turns
         self.lead = lead
         self.micDelay = micDelay
+        self.length = length
     }
 
     static func fromLaunchArguments(_ defaults: UserDefaults = .standard) -> ConversationFixture? {
@@ -66,8 +68,10 @@ final class ConversationFixture: ConversationInput {
         let turns = defaults.object(forKey: "SamRabbitFixtureTurns") == nil ? 2 : defaults.integer(forKey: "SamRabbitFixtureTurns")
         let lead = defaults.object(forKey: "SamRabbitFixtureLead") == nil ? 0.8 : defaults.double(forKey: "SamRabbitFixtureLead")
         let micDelay = defaults.double(forKey: "SamRabbitFixtureMicDelay")
+        let length = defaults.object(forKey: "SamRabbitFixtureLength") == nil ? 1.6 : defaults.double(forKey: "SamRabbitFixtureLength")
         return ConversationFixture(mode: VoiceFixtureSource.Mode(rawValue: raw) ?? .speech, permitted: !denied,
-                                   turns: max(0, turns), lead: max(0, lead), micDelay: min(30, max(0, micDelay)))
+                                   turns: max(0, turns), lead: max(0, lead), micDelay: min(30, max(0, micDelay)),
+                                   length: min(20, max(0.05, length)))
     }
 
     func allowed() async -> Bool {

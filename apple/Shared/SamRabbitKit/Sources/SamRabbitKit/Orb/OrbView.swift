@@ -119,7 +119,8 @@ struct OrbDisc: View {
 
     var body: some View {
         // About one sample per point (the surface is soft); bilinear filtering does the rest.
-        let samples = Int(min(176, max(40, diameter * min(scale, 3) * 0.42)))
+        let size = diameter * min(scale, 3) * 0.42
+        let samples = size.isFinite ? Int(min(176, max(40, size))) : 40
         Group {
             if let image = OrbRenderer.field(pixels: samples, time: time, energy: energy, base: mood.base) {
                 Image(decorative: image, scale: 1)
