@@ -122,25 +122,27 @@ class CliChoiceTest(unittest.TestCase):
         for choice in ("dry-run", " dry-run ", None, ""):
             with self.subTest(choice=choice):
                 self.assertIsInstance(bridge.cli_for(choice, here=str(ROOT)), bridge.DryRunHeptabaseCli)
-        auto = bridge.cli_for("auto", here=str(ROOT))
+        self.assertIsInstance(bridge.cli_for("auto", here=str(ROOT)), bridge.DryRunHeptabaseCli,
+                              "on a copy run from a checkout, auto is a dry run too")
+        auto = bridge.cli_for("auto", installed=True)
         self.assertIsInstance(auto, bridge.HeptabaseCli)
-        self.assertEqual(str(self.path_cli), auto.executable(), "auto finds the CLI on PATH")
+        self.assertEqual(str(self.path_cli), auto.executable(), "for the installed copy, auto finds the CLI on PATH")
+        self.assertIsInstance(bridge.cli_for(None, installed=True), bridge.HeptabaseCli)
+        self.assertIsInstance(bridge.cli_for("dry-run", installed=True), bridge.DryRunHeptabaseCli)
         explicit = bridge.cli_for(str(self.path_cli), here=str(ROOT))
         self.assertEqual(str(self.path_cli), explicit.executable(), "an explicit path is used as given")
         self.assertEqual("real", explicit.mode)
 
-    def test_the_real_cli_is_used_only_when_asked_for(self) -> None:
-        # "auto" resolves the CLI on PATH: the hermetic PATH and the missing fallback (setUp) leave only the fake,
-        # and that is checked before the health check (which runs --version) and before the append.
+    def test_auto_on_a_dev_copy_is_a_dry_run(self) -> None:
+        # A copy run from a checkout given --cli auto (what the LaunchAgent used to pass) still never runs a CLI,
+        # even with a heptabase first on PATH: only an explicit path does (next test).
         base = self.start(cli="auto")
-        self.assertIsInstance(self.server.cli, bridge.HeptabaseCli)
-        self.assert_runs_only_the_fake(self.server.cli)
+        self.assertIsInstance(self.server.cli, bridge.DryRunHeptabaseCli)
         health = self.call(base, "GET", "/health")
-        self.assertEqual(("real", False), (health["cli"]["mode"], health["dryRun"]))
-        self.assert_runs_only_the_fake(self.server.cli)
-        written = self.call(base, "POST", "/v1/heptabase/journal/append", {"date": "2026-10-08", "content": "Explicit."})
-        self.assertNotIn("dryRun", written)
-        self.assertTrue(any(line.startswith("journal append 2026-10-08") for line in self.real_calls()))
+        self.assertEqual(("dryRun", True, "dev"), (health["cli"]["mode"], health["dryRun"], health["copy"]))
+        written = self.call(base, "POST", "/v1/heptabase/journal/append", {"date": "2026-10-08", "content": "Auto."})
+        self.assertIs(True, written["dryRun"])
+        self.assertEqual([], self.real_calls(), "the heptabase CLI on PATH was never run")
 
     def test_an_explicit_path_is_the_cli_that_runs(self) -> None:
         base = self.start(cli=str(self.path_cli))
@@ -190,7 +192,7 @@ class CliChoiceTest(unittest.TestCase):
         subprocess.run([str(ROOT / "install.sh")], env=env, capture_output=True, text=True, timeout=60, check=True)
         with (home / "Library/LaunchAgents/com.samrabbit.bridge.plist").open("rb") as handle:
             arguments = plistlib.load(handle)["ProgramArguments"]
-        self.assertEqual("auto", arguments[arguments.index("--cli") + 1])
+        self.assertNotIn("--cli", arguments, "the install marker, not a flag, makes the installed copy use the CLI")
         app_dir = home / "Library/Application Support/SamRabbit/bridge"
         self.assertTrue(arguments[2].startswith(str(app_dir)))
         # The marker the installed copy is recognised by: right for an account whose home this is, but this

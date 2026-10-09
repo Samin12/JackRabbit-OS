@@ -50,7 +50,9 @@ DESKTOP = "desktop-token-" + "j" * 32
 NOTE = "a note that must stay in the dry run"
 ISOLATED = ("SAMRABBIT_T3_URL", "SAMRABBIT_T3_CLI", "SAMRABBIT_HEPTABASE_CLI", "SAMRABBIT_T3_TOKEN_FILE",
             "SAMRABBIT_MOBILE_DEVICES_FILE", "SAMRABBIT_DESKTOP_TOKEN_FILE", "SAMRABBIT_SYNC_DIR",
-            "SAMRABBIT_BRIDGE_TOKEN_FILE", "SAMRABBIT_TRANSCRIBE_HELPER", "SAMRABBIT_GOOGLE_ACCOUNT")
+            "SAMRABBIT_BRIDGE_TOKEN_FILE", "SAMRABBIT_TRANSCRIBE_HELPER", "SAMRABBIT_GOOGLE_ACCOUNT",
+            "SAMRABBIT_CLAUDE", "SAMRABBIT_ASSISTANT_DIR", "SAMRABBIT_ASSISTANT_MODEL", "SAMRABBIT_ASSISTANT_VOICE",
+            "SAMRABBIT_ELEVENLABS_KEY_FILE", "SAMRABBIT_ELEVENLABS_URL")
 
 # Runs a copy of the bridge (or its T3 command line) from <folder> as its own process, with the T3 app CLI, the
 # default T3 address and the Heptabase / Composio fallbacks replaced by fakes before anything starts.
@@ -224,6 +226,10 @@ class FakesMixin:
         self.assertEqual((False, "calendar_dev_copy"), (health["calendarWrite"]["available"],  # type: ignore
                                                         health["calendarWrite"]["lastError"]))
         self.assertEqual({"paired": False, "ok": False, "reason": "t3_dev_copy"}, health["mobile"]["t3"])  # type: ignore
+        # The watch assistant: no agent without an explicit claude (here a missing one), never the ElevenLabs key.
+        self.assertFalse(health["assistant"]["available"])  # type: ignore
+        self.assertEqual(("dev", "voice_dev_copy"), (health["assistant"]["copy"],  # type: ignore
+                                                     health["assistant"]["voice"]["reason"]))
         # The R1's own routes: the journal stays in the dry run, the calendar is refused.
         status, written = _call(base, "POST", "/v1/heptabase/journal/append", {"date": "2026-10-08", "content": NOTE},
                                 token=TOKEN)

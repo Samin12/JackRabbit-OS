@@ -25,7 +25,8 @@ signed-in Composio CLI: ``POST /v1/calendar/events`` (+ ``/update``, ``/delete``
 
 The iPhone app, its widgets and the Apple Watch (``samrabbit_mobile.py``, T3 through ``samrabbit_t3.py``) use
 ``/v1/mobile/*`` with their own per-device tokens (see that module; speech to text for them is
-``samrabbit_transcribe.py``); ``/health`` reports ``mobile``.
+``samrabbit_transcribe.py``, the watch's voice assistant ``samrabbit_assistant.py`` with its tools in
+``samrabbit_assistant_mcp.py``); ``/health`` reports ``mobile`` and ``assistant``.
 
 Every route needs ``Authorization: Bearer <token>`` (the token lives in
 ``~/.config/samrabbit/bridge-token``, mode 0600). Journal text and the token are
@@ -92,17 +93,23 @@ except Exception:  # noqa: BLE001  # pragma: no cover
     mobile = None  # type: ignore[assignment]
     t3 = None  # type: ignore[assignment]
 
+try:  # the watch's voice assistant (/v1/mobile/assistant/*); optional so the bridge runs without it
+    import samrabbit_assistant as assistant  # noqa: E402
+except Exception:  # noqa: BLE001  # pragma: no cover
+    assistant = None  # type: ignore[assignment]
+
 VERSION = "1.2.0"
 SERVICE = "samrabbit-bridge"
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 3780
 DEFAULT_TOKEN_FILE = "~/.config/samrabbit/bridge-token"
 FALLBACK_CLI = "/opt/homebrew/bin/heptabase"
-# Which Heptabase CLI a bridge uses (``--cli`` / SAMRABBIT_HEPTABASE_CLI): a path, ``auto`` (the real CLI on PATH
-# or FALLBACK_CLI) or ``dry-run`` (nothing reaches Heptabase). Without a choice, only the installed LaunchAgent
-# copy uses the real CLI: the folder install.sh writes in the account's own home (from the password database, never
-# $HOME) with its ``.samrabbit-installed`` marker (``samrabbit_installed``). A copy run from a checkout, a test or a
-# temp HOME is dry-run, so a stray test or dev bridge can never write to the user's journal.
+# Which Heptabase CLI a bridge uses (``--cli`` / SAMRABBIT_HEPTABASE_CLI): a path, ``auto`` or ``dry-run`` (nothing
+# reaches Heptabase). Only the installed LaunchAgent copy uses the real CLI by itself: the folder install.sh writes in
+# the account's own home (from the password database, never $HOME) with its ``.samrabbit-installed`` marker
+# (``samrabbit_installed``); for it, ``auto`` and no choice both mean the real CLI on PATH (or FALLBACK_CLI). A copy run
+# from a checkout, a test or a temp HOME is dry-run, ``auto`` included, so a stray test or dev bridge can never write to
+# the user's journal; only an explicit path to a CLI makes such a copy use one.
 CLI_AUTO = "auto"
 CLI_DRY_RUN = "dry-run"
 # ``/health`` ``cli.mode`` of a dry-run bridge. Its health also says ``dryRun: true`` and ``app.reachable: false``
@@ -296,13 +303,16 @@ def default_cli_choice(here: Optional[str] = None, **decision: Any) -> str:
     return CLI_AUTO if is_installed_copy(here, **decision) else CLI_DRY_RUN
 
 
-def cli_for(choice: Optional[str], *, here: Optional[str] = None) -> Any:
-    """The CLI for ``--cli``: a path (used as given), ``auto``, ``dry-run``, or nothing (``default_cli_choice``)."""
-    value = (choice or "").strip() or default_cli_choice(here)
+def cli_for(choice: Optional[str], *, here: Optional[str] = None, installed: Optional[bool] = None) -> Any:
+    """The CLI for ``--cli``: a path (used as given), ``dry-run``, ``auto`` or nothing. ``auto`` and nothing are the
+    real CLI on PATH for the installed copy only (``installed``, default: ``is_installed_copy(here)``), a dry run for
+    any other copy: there only an explicit path reaches a CLI."""
+    value = (choice or "").strip()
     if value == CLI_DRY_RUN:
         return DryRunHeptabaseCli()
-    if value == CLI_AUTO:
-        return HeptabaseCli(None)
+    if value in ("", CLI_AUTO):
+        installed_copy = is_installed_copy(here) if installed is None else installed
+        return HeptabaseCli(None) if installed_copy else DryRunHeptabaseCli()
     return HeptabaseCli(os.path.expanduser(value))
 
 
@@ -601,6 +611,13 @@ class BridgeServer(ThreadingHTTPServer):
             except Exception:  # the mobile API must never break the journal's health check
                 _LOG.warning("mobile health failed")
                 mobile_health = {"available": False}
+            helper = getattr(self.mobile, "assistant", None) if self.mobile is not None else None
+            try:
+                assistant_health: Dict[str, Any] = helper.health() if helper is not None \
+                    else {"available": False, "reason": "assistant_missing"}
+            except Exception:  # the assistant must never break the journal's health check
+                _LOG.warning("assistant health failed")
+                assistant_health = {"available": False, "reason": "check_failed"}
             value: Dict[str, Any] = {
                 "ok": True, "service": SERVICE, "version": VERSION,
                 "cli": {"available": version is not None, "version": version,
@@ -613,6 +630,7 @@ class BridgeServer(ThreadingHTTPServer):
                 "genui": generated_ui,
                 "calendarWrite": calendar_write,
                 "mobile": mobile_health,
+                "assistant": assistant_health,
                 "checkedAt": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
             }
             self._health = (time.monotonic(), value)
@@ -859,6 +877,15 @@ def _dev_calendar() -> Any:
                                   "explicitly.")
 
 
+def t3_cli_for(choice: Optional[str], *, installed: bool) -> Optional[str]:
+    """The T3 CLI a bridge may pair with: the installed copy uses ``choice`` (``auto``: the T3 Code app's own CLI);
+    any other copy only an explicit path, never ``auto`` (``--t3-url`` alone never opts into the real T3 app CLI)."""
+    value = (choice or "").strip()
+    if installed:
+        return value or None
+    return value if value and value != t3.CLI_AUTO else t3.CLI_NONE
+
+
 def make_server(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, *, token_file: str = DEFAULT_TOKEN_FILE,
                 cli: Optional[str] = None, cli_timeout: float = CLI_TIMEOUT_SECONDS,
                 allow_any_client: bool = False, driver: Optional[str] = None,
@@ -872,13 +899,19 @@ def make_server(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, *, token_fil
                 t3_cli: Optional[str] = None, t3_token_file: Optional[str] = None, t3_hub: Any = None,
                 mobile_timezone: Optional[str] = None, google_account: Optional[str] = None,
                 mobile_hosts: Optional[List[str]] = None, mobile_service: Any = None,
-                transcribe_helper: Optional[str] = None) -> BridgeServer:
+                transcribe_helper: Optional[str] = None, assistant_dir: Optional[str] = None,
+                assistant_model: Optional[str] = None, assistant_voice: Optional[str] = None,
+                elevenlabs_key_file: Optional[str] = None, elevenlabs_url: Optional[str] = None,
+                assistant_settings_file: Optional[str] = None) -> BridgeServer:
     """Conversation sync runs only with a ``sync_dir`` (the command line passes the default one). ``cli`` is a
-    path, ``auto`` or ``dry-run``; without it only the installed copy uses the real CLI (``cli_for``). T3 for the
-    mobile API: the installed copy (or one given ``t3_url``) pairs with T3 Code itself; any other copy (a checkout,
-    a test, a copy in a temp HOME) answers ``t3_dev_copy`` and never reaches T3, and ``calendar_dev_copy`` unless
-    given ``composio``. ``transcribe_helper``: the speech-to-text helper for
-    ``/v1/mobile/transcribe`` (default: ``samrabbit-transcribe`` next to this script, which install.sh builds)."""
+    path, ``auto`` or ``dry-run``; only the installed copy uses the real CLI without a path (``cli_for``). T3 for the
+    mobile API: the installed copy pairs with T3 Code itself; any other copy (a checkout, a test, a copy in a temp
+    HOME) answers ``t3_dev_copy`` and never reaches T3 unless given ``t3_url``, and even then pairs only through an
+    explicit ``t3_cli`` path (never the T3 Code app's own CLI); it is ``calendar_dev_copy`` unless given ``composio``.
+    ``transcribe_helper``: the speech-to-text helper for ``/v1/mobile/transcribe`` (default: ``samrabbit-transcribe``
+    next to this script, which install.sh builds). The watch's assistant (``samrabbit_assistant.make_service``): a dev
+    copy runs it only with an explicit ``claude``, and speaks with ElevenLabs only with an explicit
+    ``elevenlabs_key_file``."""
     installed_copy = is_installed_copy()  # decided once: the journal, T3 and the calendar agree
     if calendar_writer is None and gcal is not None and composio is None and not installed_copy:
         # A dev copy (a checkout, a test, a temp HOME) never changes the real Google Calendar unless given --composio.
@@ -889,14 +922,21 @@ def make_server(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, *, token_fil
     if mobile_service is None and mobile is not None:
         if t3_hub is None and (t3_url or installed_copy):
             t3_hub = t3.make_hub(t3_url or t3.DEFAULT_SERVER_URL, token_file=t3_token_file or t3.DEFAULT_TOKEN_FILE,
-                                 cli=t3_cli)
+                                 cli=t3_cli_for(t3_cli, installed=installed_copy))
+        helper = None
+        if assistant is not None:
+            helper = assistant.make_service(installed=installed_copy, claude=claude, workdir=assistant_dir,
+                                            key_file=elevenlabs_key_file, tts_url=elevenlabs_url,
+                                            model=assistant_model, voice=assistant_voice,
+                                            settings_file=assistant_settings_file or assistant.DEFAULT_SETTINGS_FILE)
         mobile_service = mobile.MobileService(devices_file=mobile_devices_file or mobile.DEFAULT_DEVICES_FILE,
                                               t3_hub=t3_hub, desktop_token_file=desktop_token_file,
                                               timezone_name=mobile_timezone,
                                               google_account=google_account, hosts=mobile_hosts,
-                                              bridge_version=VERSION, transcribe_helper=transcribe_helper)
+                                              bridge_version=VERSION, transcribe_helper=transcribe_helper,
+                                              assistant=helper)
     return BridgeServer((host, port), token=TokenFile(token_file),
-                        cli=cli_for((cli or "").strip() or (CLI_AUTO if installed_copy else CLI_DRY_RUN)),
+                        cli=cli_for(cli, installed=installed_copy),
                         cli_timeout=cli_timeout, allow_any_client=allow_any_client,
                         mac_control=mac_control or mac.MacControl(mac.CuaDriver(driver)),
                         sync_dir=sync_dir, desktop_token_file=desktop_token_file,
@@ -913,8 +953,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--port", type=int, default=int(os.environ.get("SAMRABBIT_BRIDGE_PORT", DEFAULT_PORT)))
     parser.add_argument("--token-file", default=os.environ.get("SAMRABBIT_BRIDGE_TOKEN_FILE", DEFAULT_TOKEN_FILE))
     parser.add_argument("--cli", default=os.environ.get("SAMRABBIT_HEPTABASE_CLI") or None,
-                        help="the heptabase CLI: a path, 'auto' (the real one on PATH) or 'dry-run' (never writes "
-                             "to Heptabase). Default: 'auto' for the installed LaunchAgent copy, else 'dry-run'")
+                        help="the heptabase CLI: a path, 'auto' or 'dry-run' (never writes to Heptabase). The "
+                             "installed LaunchAgent copy uses the real one on PATH ('auto', the default there); any "
+                             "other copy is a dry run ('auto' included) unless given a path")
     parser.add_argument("--cli-timeout", type=float, default=CLI_TIMEOUT_SECONDS)
     parser.add_argument("--cua-driver", default=os.environ.get("SAMRABBIT_CUA_DRIVER") or None,
                         help="path to the cua-driver CLI (default: found on PATH or in the usual install folders)")
@@ -944,12 +985,26 @@ def main(argv: Optional[List[str]] = None) -> int:
                         help="T3 Code server for the mobile API (default http://127.0.0.1:3773 for the installed "
                              "copy; a copy run from a checkout talks to T3 only when given this)")
     parser.add_argument("--t3-cli", default=os.environ.get("SAMRABBIT_T3_CLI") or None,
-                        help="the T3 CLI used to pair: 'auto' (inside the T3 Code app) or a path")
+                        help="the T3 CLI used to pair: 'auto' (inside the T3 Code app; the installed copy only) or a "
+                             "path (a copy run from a checkout pairs only through an explicit path)")
     parser.add_argument("--t3-token-file", default=os.environ.get("SAMRABBIT_T3_TOKEN_FILE") or None,
                         help="the bridge's own T3 token (default ~/.config/samrabbit/t3-token)")
     parser.add_argument("--transcribe-helper", default=os.environ.get("SAMRABBIT_TRANSCRIBE_HELPER") or None,
                         help="speech-to-text helper for the watch and the phone (default: samrabbit-transcribe next "
                              "to this script, built by install.sh)")
+    parser.add_argument("--assistant-dir", default=os.environ.get("SAMRABBIT_ASSISTANT_DIR") or None,
+                        help="the watch assistant's working folder (default ~/Library/Application Support/SamRabbit/"
+                             "assistant for the installed copy, a temp folder for any other)")
+    parser.add_argument("--assistant-model", default=os.environ.get("SAMRABBIT_ASSISTANT_MODEL") or None,
+                        help="the watch assistant's model (default claude-haiku-5-5, or assistant.model in "
+                             "~/.config/samrabbit/assistant.json)")
+    parser.add_argument("--assistant-voice", default=os.environ.get("SAMRABBIT_ASSISTANT_VOICE") or None,
+                        help="the ElevenLabs voice id (default Jarvis, or assistant.voice in assistant.json)")
+    parser.add_argument("--elevenlabs-key-file", default=os.environ.get("SAMRABBIT_ELEVENLABS_KEY_FILE") or None,
+                        help="the ElevenLabs key (default ~/.config/samrabbit/elevenlabs-key for the installed copy; "
+                             "a copy run from a checkout speaks with ElevenLabs only when given this)")
+    parser.add_argument("--elevenlabs-url", default=os.environ.get("SAMRABBIT_ELEVENLABS_URL") or None,
+                        help=argparse.SUPPRESS)  # a stand-in ElevenLabs (tests)
     options = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stderr)
     try:
@@ -962,7 +1017,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                              composio=options.composio, calendar_id=options.calendar_id,
                              mobile_devices_file=options.mobile_devices_file, t3_url=options.t3_url,
                              t3_cli=options.t3_cli, t3_token_file=options.t3_token_file,
-                             transcribe_helper=options.transcribe_helper)
+                             transcribe_helper=options.transcribe_helper, assistant_dir=options.assistant_dir,
+                             assistant_model=options.assistant_model, assistant_voice=options.assistant_voice,
+                             elevenlabs_key_file=options.elevenlabs_key_file, elevenlabs_url=options.elevenlabs_url)
     except (OSError, ValueError) as error:
         _LOG.error("cannot start: %s", error)
         return 2
@@ -979,7 +1036,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     cli_path = server.cli.executable()
     if server.dry_run:
         _LOG.warning("heptabase CLI: dry-run, journal writes stay in this process and never reach Heptabase "
-                     "(pass --cli auto for the real CLI)")
+                     "(pass --cli <path to the heptabase CLI> to use one)")
     composio_found = server.calendar is not None and server.calendar.cli.executable() is not None
     mobile_line = "off"
     if server.mobile is not None:
@@ -987,6 +1044,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         voice = mobile_health.get("transcribe") or {}
         mobile_line = f"{mobile_health['devices']} devices, T3 {'paired' if mobile_health['t3']['paired'] else 'not paired'}" \
             f", transcription {'on' if voice.get('available') else 'off (' + str(voice.get('reason')) + ')'}"
+        helper = getattr(server.mobile, "assistant", None)
+        if helper is not None:
+            state = helper.health()
+            speech = state.get("voice") or {}
+            mobile_line += f", assistant {'on' if state.get('available') else 'off (' + str(state.get('reason')) + ')'}" \
+                f" voice {'on' if speech.get('available') else 'off (' + str(speech.get('reason')) + ')'}"
     _LOG.info("%s %s listening on %s:%d (%s copy, cli %s, cua-driver %s, sync %s, composio %s, mobile %s)", SERVICE,
               VERSION, options.host, server.server_address[1], "installed" if server.installed_copy else "dev",
               cli_path or "missing",

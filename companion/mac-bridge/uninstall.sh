@@ -12,6 +12,8 @@ TOKEN_FILE="$HOME_DIR/.config/samrabbit/bridge-token"
 DESKTOP_TOKEN_FILE="$HOME_DIR/.config/samrabbit/desktop-token"
 MOBILE_DEVICES_FILE="$HOME_DIR/.config/samrabbit/mobile-devices.json"
 T3_TOKEN_FILE="$HOME_DIR/.config/samrabbit/t3-token"
+ELEVENLABS_KEY_FILE="$HOME_DIR/.config/samrabbit/elevenlabs-key"
+ASSISTANT_DIR="$HOME_DIR/Library/Application Support/SamRabbit/assistant"  # the watch assistant's working files
 PURGE=0
 [ "${1:-}" = "--purge" ] && PURGE=1
 
@@ -19,11 +21,12 @@ if [ "${SAMRABBIT_SKIP_LAUNCHCTL:-0}" != 1 ]; then
   launchctl bootout "gui/$(id -u)/$LABEL" >/dev/null 2>&1 || true
 fi
 rm -f "$PLIST"
-rm -rf "$APP_DIR"
+rm -rf "$APP_DIR" "$ASSISTANT_DIR"
 rmdir "$(dirname "$APP_DIR")" 2>/dev/null || true
 if [ $PURGE = 1 ]; then
-  rm -f "$TOKEN_FILE" "$DESKTOP_TOKEN_FILE" "$MOBILE_DEVICES_FILE" "$T3_TOKEN_FILE"
-  echo "removed the bridge, desktop and T3 tokens and the paired phones (revoke \"SamRabbit bridge\" in T3 Code >"
-  echo "Settings > Connections to end its T3 session now; it would expire by itself within 30 days)"
+  rm -f "$TOKEN_FILE" "$DESKTOP_TOKEN_FILE" "$MOBILE_DEVICES_FILE" "$T3_TOKEN_FILE" "$ELEVENLABS_KEY_FILE"
+  echo "removed the bridge, desktop and T3 tokens, the copy of the ElevenLabs key and the paired phones (revoke"
+  echo "\"SamRabbit bridge\" in T3 Code > Settings > Connections to end its T3 session now; it would expire by itself"
+  echo "within 30 days)"
 fi
 echo "SamRabbit bridge uninstalled (log kept at ~/Library/Logs/samrabbit-bridge.log)"

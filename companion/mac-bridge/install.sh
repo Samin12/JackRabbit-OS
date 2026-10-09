@@ -5,11 +5,13 @@
 #
 #   companion/mac-bridge/install.sh [--port 3780] [--host 0.0.0.0] [--python /usr/bin/python3]
 #                                   [--google-account you@example.com] [--t3-orchestration-project <T3 project id>]
+#                                   [--assistant-model claude-haiku-5-5|claude-sonnet-5-5] [--assistant-voice <id>]
 #
 # --google-account: the Google account that links opened from the phone are pinned to (authuser=); without it the
 # bridge learns it from the calendar. --t3-orchestration-project: where the phone's non-coding tasks go (default:
 # T3's own agent project). Both are kept in the agent's environment (SAMRABBIT_GOOGLE_ACCOUNT,
-# SAMRABBIT_T3_ORCHESTRATION_PROJECT) across later runs; pass an empty value to remove one.
+# SAMRABBIT_T3_ORCHESTRATION_PROJECT) across later runs; pass an empty value to remove one. --assistant-model and
+# --assistant-voice (the watch assistant's model and ElevenLabs voice) are kept in ~/.config/samrabbit/assistant.json.
 #
 # Environment (tests): SAMRABBIT_HOME (default $HOME), SAMRABBIT_SKIP_LAUNCHCTL=1, SAMRABBIT_COMPOSIO (the Composio
 # CLI to record instead of searching PATH, ~/.local/bin, /opt/homebrew/bin and /usr/local/bin), SAMRABBIT_T3_CLI /
@@ -26,9 +28,16 @@
 # Speech to text for the watch and the phone (POST /v1/mobile/transcribe) uses a small Swift helper built here from
 # transcribe/ with Xcode or the Command Line Tools (macOS's on-device SpeechAnalyzer, macOS 26+). Without it that one
 # route answers transcribe_unavailable and everything else works; this script prints "transcription: on|off (...)".
+#
+# The watch's voice assistant (/v1/mobile/assistant/*) runs the Claude Code CLI with SamRabbit's own tools and speaks
+# with ElevenLabs (the Jarvis voice): this script copies ELEVENLABS_API_KEY from ~/.hermes/.env, when it is there, to
+# ~/.config/samrabbit/elevenlabs-key (0600; never printed). Without it the watch speaks with its own voice. It prints
+# "assistant: on (Claude Haiku 5.5, Jarvis voice)" or why it is off.
 set -euo pipefail
 
 LABEL=com.samrabbit.bridge
+ASSISTANT_MODEL=""
+ASSISTANT_VOICE=""
 PORT=3780
 HOST=0.0.0.0
 PYTHON=${SAMRABBIT_PYTHON:-/usr/bin/python3}
@@ -39,7 +48,9 @@ while [ $# -gt 0 ]; do
     --python) PYTHON=$2; shift 2 ;;
     --google-account) SAMRABBIT_GOOGLE_ACCOUNT=$2; export SAMRABBIT_GOOGLE_ACCOUNT; shift 2 ;;
     --t3-orchestration-project) SAMRABBIT_T3_ORCHESTRATION_PROJECT=$2; export SAMRABBIT_T3_ORCHESTRATION_PROJECT; shift 2 ;;
-    -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
+    --assistant-model) ASSISTANT_MODEL=$2; shift 2 ;;
+    --assistant-voice) ASSISTANT_VOICE=$2; shift 2 ;;
+    -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
     *) echo "install.sh: unknown option $1" >&2; exit 64 ;;
   esac
 done
@@ -52,6 +63,9 @@ TOKEN_FILE="$CONFIG_DIR/bridge-token"
 DESKTOP_TOKEN_FILE="$CONFIG_DIR/desktop-token"
 MOBILE_DEVICES_FILE="$CONFIG_DIR/mobile-devices.json"
 T3_TOKEN_FILE="$CONFIG_DIR/t3-token"
+ELEVENLABS_KEY_FILE="$CONFIG_DIR/elevenlabs-key"
+ASSISTANT_SETTINGS="$CONFIG_DIR/assistant.json"
+HERMES_ENV="$HOME_DIR/.hermes/.env"
 SYNC_DIR="$HOME_DIR/Library/Application Support/SamRabbit/sync"
 APP_DIR="$HOME_DIR/Library/Application Support/SamRabbit/bridge"
 LOG_FILE="$HOME_DIR/Library/Logs/samrabbit-bridge.log"
@@ -68,7 +82,8 @@ if ! command -v cua-driver >/dev/null 2>&1 && [ ! -x /Applications/CuaDriver.app
   echo "install.sh: warning: cua-driver was not found; Mac control from the R1 stays off until it is installed." >&2
 fi
 if ! command -v claude >/dev/null 2>&1 && [ ! -x "$HOME/.local/bin/claude" ]; then
-  echo "install.sh: warning: the Claude Code CLI was not found; generated UIs stay off until it is installed." >&2
+  echo "install.sh: warning: the Claude Code CLI was not found; generated UIs and the watch assistant stay off until" \
+    "it is installed." >&2
 fi
 # The Composio CLI (Google Calendar changes from the R1). A LaunchAgent has a minimal PATH, so its absolute
 # path is recorded in the agent's environment (SAMRABBIT_COMPOSIO); the bridge still searches if it moves.
@@ -106,6 +121,80 @@ if [ ! -s "$DESKTOP_TOKEN_FILE" ]; then
 fi
 chmod 600 "$DESKTOP_TOKEN_FILE"
 mkdir -p "$SYNC_DIR"; chmod 700 "$SYNC_DIR"
+# The watch assistant's voice: the ElevenLabs key from ~/.hermes/.env, copied (0600) when it is there; the key is
+# never printed. Its model and voice settings (--assistant-model / --assistant-voice) go to assistant.json.
+"$PYTHON" -I - "$HERMES_ENV" "$ELEVENLABS_KEY_FILE" "$ASSISTANT_SETTINGS" "$ASSISTANT_MODEL" "$ASSISTANT_VOICE" <<'PYEOF'
+import json, os, re, sys, tempfile
+source, target, settings, model, voice = sys.argv[1:6]
+
+
+def write_private(path, text):
+    handle, temp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".tmp-")
+    os.fchmod(handle, 0o600)
+    with os.fdopen(handle, "w", encoding="utf-8") as file:
+        file.write(text)
+    os.replace(temp, path)
+
+
+key = None
+try:
+    with open(source, encoding="utf-8") as handle:
+        lines = handle.read().splitlines()
+except (OSError, UnicodeDecodeError):
+    lines = []
+for line in lines:
+    found = re.match(r"^\s*(?:export\s+)?ELEVENLABS_API_KEY\s*=\s*(.*?)\s*$", line)
+    if found:
+        value = found.group(1)
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+            value = value[1:-1]
+        else:
+            value = value.split(" #", 1)[0]
+        key = value.strip() or None
+if key is not None and (not 16 <= len(key) <= 256 or any(ord(char) <= 0x20 or ord(char) >= 0x7F for char in key)):
+    print("install.sh: warning: ELEVENLABS_API_KEY in " + source + " does not look like a key; not copied",
+          file=sys.stderr)
+    key = None
+if key is None:
+    if os.path.isfile(target):
+        os.chmod(target, 0o600)
+        print("voice key: keeping the ElevenLabs key in " + target)
+    else:
+        print("voice key: none (no ELEVENLABS_API_KEY in " + source + "); the watch speaks with its own voice")
+else:
+    try:
+        with open(target, encoding="utf-8") as handle:
+            current = handle.read().strip()
+    except OSError:
+        current = None
+    if current != key:
+        write_private(target, key + "\n")
+        print("voice key: copied ELEVENLABS_API_KEY from " + source + " to " + target)
+    else:
+        os.chmod(target, 0o600)
+        print("voice key: up to date in " + target)
+changes = {}
+if model:
+    if re.match(r"^claude-[a-z0-9][a-z0-9.\-]{1,60}$", model):
+        changes["model"] = model
+    else:
+        print("install.sh: warning: --assistant-model is not a Claude model id; not recorded", file=sys.stderr)
+if voice:
+    if re.match(r"^[A-Za-z0-9]{8,40}$", voice):
+        changes["voice"] = voice
+    else:
+        print("install.sh: warning: --assistant-voice is not an ElevenLabs voice id; not recorded", file=sys.stderr)
+if changes:
+    try:
+        with open(settings, encoding="utf-8") as handle:
+            current = json.load(handle)
+    except (OSError, ValueError):
+        current = {}
+    current = current if isinstance(current, dict) else {}
+    current.update(changes)
+    write_private(settings, json.dumps(current, indent=1) + "\n")
+    print("assistant settings: " + ", ".join(f"{name} {value}" for name, value in sorted(changes.items())))
+PYEOF
 
 # 2. The bridge script, copied so the agent does not depend on this checkout.
 umask 022
@@ -119,6 +208,8 @@ install -m 0644 "$SOURCE_DIR/samrabbit_mobile.py" "$APP_DIR/samrabbit_mobile.py"
 install -m 0644 "$SOURCE_DIR/samrabbit_t3.py" "$APP_DIR/samrabbit_t3.py"          # its T3 Code client
 install -m 0644 "$SOURCE_DIR/samrabbit_transcribe.py" "$APP_DIR/samrabbit_transcribe.py"  # speech to text
 install -m 0644 "$SOURCE_DIR/samrabbit_installed.py" "$APP_DIR/samrabbit_installed.py"  # "is this the installed copy?"
+install -m 0644 "$SOURCE_DIR/samrabbit_assistant.py" "$APP_DIR/samrabbit_assistant.py"  # the watch's voice assistant
+install -m 0644 "$SOURCE_DIR/samrabbit_assistant_mcp.py" "$APP_DIR/samrabbit_assistant_mcp.py"  # its tools (MCP)
 rm -rf "$APP_DIR/genui"; mkdir -p "$APP_DIR/genui"
 for asset in "$SOURCE_DIR"/genui/*; do install -m 0644 "$asset" "$APP_DIR/genui/"; done
 install -m 0644 "$SOURCE_DIR/samrabbit_app.py" "$APP_DIR/samrabbit_app.py"  # desktop web UI at /app/
@@ -263,10 +354,10 @@ for key, pattern in checks.items():
         environment[key] = value
 value = {
     "Label": label,
-    # --cli auto: the installed bridge is the one that writes to the real Heptabase journal (any other copy
-    # of the bridge, e.g. a test or dev run from a checkout, defaults to a dry-run CLI).
+    # No --cli: the installed copy (the install marker in the account's own home) uses the real Heptabase CLI by
+    # itself; any other copy of the bridge (a test or a dev run from a checkout) is a dry run.
     "ProgramArguments": [python, "-I", script, "--host", host, "--port", port, "--token-file", token,
-                         "--sync-dir", sync_dir, "--desktop-token-file", desktop_token, "--cli", "auto",
+                         "--sync-dir", sync_dir, "--desktop-token-file", desktop_token,
                          "--mobile-devices-file", mobile_devices, "--t3-token-file", t3_token],
     "EnvironmentVariables": environment,
     "WorkingDirectory": workdir,
@@ -365,6 +456,14 @@ print(f"mobile: {'on' if phone.get('available') else 'OFF'} (T3 {'paired' if t3_
       f"{'' if t3_state.get('ok', True) or not t3_state.get('paired') else ', T3 not answering'}, "
       f"{devices} device{'' if devices == 1 else 's'}, "
       f"transcription {'on' if voice.get('available') else 'off: ' + str(voice.get('reason'))})")
+helper = health.get("assistant") or {}
+speech = helper.get("voice") or {}
+if helper.get("available"):
+    spoken = (f"{speech.get('voiceName') or 'ElevenLabs'} voice" if speech.get("available")
+              else f"the watch's own voice: ElevenLabs {speech.get('reason') or 'off'}")
+    print(f"assistant: on ({helper.get('modelName') or helper.get('model')}, {spoken})")
+else:
+    print(f"assistant: off ({helper.get('reason') or 'not installed'})")
 EOF
 IP=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || echo "<this Mac's IP>")
 echo "Bridge URL: http://$IP:$PORT"

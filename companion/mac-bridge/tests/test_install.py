@@ -85,10 +85,12 @@ class InstallTest(unittest.TestCase):
         config = token_file.parent
         self.assertEqual(["--host", "0.0.0.0", "--port", "3780", "--token-file", str(token_file),
                           "--sync-dir", str(sync_dir), "--desktop-token-file", str(desktop_token_file),
-                          "--cli", "auto", "--mobile-devices-file", str(config / "mobile-devices.json"),
+                          "--mobile-devices-file", str(config / "mobile-devices.json"),
                           "--t3-token-file", str(config / "t3-token")],
-                         plist["ProgramArguments"][3:], "the installed bridge, and only it, uses the real CLI")
-        for module in ("samrabbit_mobile.py", "samrabbit_t3.py", "samrabbit_transcribe.py", "samrabbit_installed.py"):
+                         plist["ProgramArguments"][3:],
+                         "no --cli: the installed copy's marker, not a flag, makes it use the real Heptabase CLI")
+        for module in ("samrabbit_mobile.py", "samrabbit_t3.py", "samrabbit_transcribe.py", "samrabbit_installed.py",
+                       "samrabbit_assistant.py", "samrabbit_assistant_mcp.py"):
             self.assertTrue((script.parent / module).is_file(), module)
         # The install marker names the installed folder: that (in the account's own home) is what makes a copy the
         # installed one. This throwaway home is not the account's, so the copy here is a dev copy, and says so.
@@ -124,6 +126,41 @@ class InstallTest(unittest.TestCase):
         self.assertFalse(token_file.exists())
         self.assertFalse(desktop_token_file.exists())
         self.assertEqual("kept", (sync_dir / "conversations.db").read_text(), "synced conversations are never deleted")
+
+    def test_install_copies_the_elevenlabs_key_privately_and_never_prints_it(self) -> None:
+        key = "sk_canary_" + "e" * 30
+        hermes = Path(self.home, ".hermes")
+        output = self.run_script("install.sh")
+        key_file = Path(self.home, ".config/samrabbit/elevenlabs-key")
+        self.assertIn("voice key: none", output)
+        self.assertFalse(key_file.exists(), "no key, no file")
+        hermes.mkdir()
+        (hermes / ".env").write_text(f"OPENAI_API_KEY=other\nexport ELEVENLABS_API_KEY=\"{key}\"  \nX=1\n")
+        output = self.run_script("install.sh")
+        self.assertIn("voice key: copied ELEVENLABS_API_KEY", output)
+        self.assertEqual(key + "\n", key_file.read_text())
+        self.assertEqual(0o600, stat.S_IMODE(key_file.stat().st_mode))
+        self.assertNotIn(key, output)
+        self.assertIn("voice key: up to date", self.run_script("install.sh"))
+        (hermes / ".env").write_text("ELEVENLABS_API_KEY=" + key[::-1] + " # rotated\n")
+        self.run_script("install.sh")
+        self.assertEqual(key[::-1] + "\n", key_file.read_text(), "a changed key is copied again")
+        (hermes / ".env").unlink()
+        self.assertIn("voice key: keeping", self.run_script("install.sh"))
+        self.assertTrue(key_file.exists())
+        # The assistant's settings and modules.
+        output = self.run_script("install.sh", "--assistant-model", "claude-sonnet-5-5", "--assistant-voice",
+                                 "abcdefgh12345678")
+        settings = Path(self.home, ".config/samrabbit/assistant.json")
+        self.assertEqual({"model": "claude-sonnet-5-5", "voice": "abcdefgh12345678"}, json.loads(settings.read_text()))
+        self.assertEqual(0o600, stat.S_IMODE(settings.stat().st_mode))
+        self.assertIn("not a Claude model id", self.run_script("install.sh", "--assistant-model", "gpt-9"))
+        self.assertEqual("claude-sonnet-5-5", json.loads(settings.read_text())["model"])
+        app = Path(self.home, "Library/Application Support/SamRabbit/bridge")
+        for module in ("samrabbit_assistant.py", "samrabbit_assistant_mcp.py"):
+            self.assertTrue((app / module).is_file(), module)
+        self.run_script("uninstall.sh", "--purge")
+        self.assertFalse(key_file.exists(), "--purge removes the copy of the key")
 
     def test_install_records_the_composio_cli_for_the_agent(self) -> None:
         fake = Path(self.home, "tools", "composio")

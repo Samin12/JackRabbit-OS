@@ -45,10 +45,13 @@ You can run it again at any time. It:
 
 1. creates `~/.config/samrabbit/bridge-token` (random, mode 0600) if it doesn't exist yet, and never prints it;
    the same for `~/.config/samrabbit/desktop-token` (the desktop app's own token), and creates the conversation store
-   folder `~/Library/Application Support/SamRabbit/sync/` (0700);
+   folder `~/Library/Application Support/SamRabbit/sync/` (0700). It copies `ELEVENLABS_API_KEY` from
+   `~/.hermes/.env`, when it is there, to `~/.config/samrabbit/elevenlabs-key` (0600, never printed; the watch
+   assistant's voice) and prints `voice key: copied …`, `up to date`, `keeping …` or `none …`; `--assistant-model`
+   and `--assistant-voice` are recorded in `~/.config/samrabbit/assistant.json`;
 2. copies the bridge (`samrabbit_bridge.py` and its modules: `samrabbit_mac.py`, `samrabbit_sync.py`, `samrabbit_genui.py`,
    `samrabbit_calendar.py`, `samrabbit_app.py`, `samrabbit_mobile.py`, `samrabbit_t3.py`, `samrabbit_transcribe.py`,
-   `samrabbit_installed.py`) to `~/Library/Application Support/SamRabbit/bridge/`, writes the install marker
+   `samrabbit_installed.py`, `samrabbit_assistant.py`, `samrabbit_assistant_mcp.py`) to `~/Library/Application Support/SamRabbit/bridge/`, writes the install marker
    `.samrabbit-installed` there (the folder's path; see "Which copy is the installed one" below) and prints
    `bridge copy: installed` (or `dev (<reason>)` for an install into another home), and builds the speech-to-text
    helper `samrabbit-transcribe` there (only when its source or the compiler changed), downloads the en-US speech
@@ -56,8 +59,8 @@ You can run it again at any time. It:
    (SpeechTranscriber, en-US, a test clip took 0.2 s)` or `transcription: off (<reason>)`. A failed build never fails
    the install;
 3. writes `~/Library/LaunchAgents/com.samrabbit.bridge.plist` (RunAtLoad, KeepAlive, a PATH that includes
-   `/opt/homebrew/bin`, `--sync-dir`, `--desktop-token-file` and `--cli auto` (the real Heptabase CLI; see "Which
-   Heptabase CLI" below), the Composio CLI's absolute path as
+   `/opt/homebrew/bin`, `--sync-dir`, `--desktop-token-file` (no `--cli`: the install marker makes the installed copy
+   use the real Heptabase CLI; see "Which Heptabase CLI" below), the Composio CLI's absolute path as
    `SAMRABBIT_COMPOSIO` when it is found, `--mobile-devices-file` and `--t3-token-file`, and logs to
    `~/Library/Logs/samrabbit-bridge.log`). `--google-account` / `--t3-orchestration-project` (or the same
    `SAMRABBIT_GOOGLE_ACCOUNT` / `SAMRABBIT_T3_ORCHESTRATION_PROJECT` in the environment) are recorded in the agent's
@@ -65,8 +68,8 @@ You can run it again at any time. It:
 4. pairs the bridge with T3 Code once (`samrabbit_t3.py ensure-paired`: only when there is no good token yet; see
    "Mobile API" below), printing `T3 paired (expires …)` or a warning (the bridge then pairs by itself later);
 5. reloads the agent (`launchctl bootout`/`bootstrap`/`kickstart`), waits for `/health`, prints one status line per
-   feature (ending with `mobile: on (T3 paired, N devices, transcription on)`), the bridge URL, and how to pair an
-   iPhone.
+   feature (ending with `mobile: on (T3 paired, N devices, transcription on)` and `assistant: on (Claude Haiku 5.5,
+   Jarvis voice)` or why it is off), the bridge URL, and how to pair an iPhone.
 
 Then point the R1 at the bridge from the R1's management page (Connections > Heptabase journal >
 "Connect through your Mac"), and paste the URL and token.
@@ -389,6 +392,60 @@ summary's `transcribe` says the same. The bridge finds the helper next to its sc
 (`SAMRABBIT_TRANSCRIBE_HELPER`) points it elsewhere. By hand:
 `samrabbit-transcribe --check | --prepare | --file clip.m4a [--locale en-US] [--deadline <seconds>]` prints one JSON
 object (its own deadlines without `--deadline`: 40 s for a file, 20 s for a check, 15 minutes for a download).
+A later recording that works, in any language, clears a `permission_denied` the status still remembered.
+
+### Voice assistant (the watch)
+
+The watch talks to SamRabbit like the R1: it listens, sends one utterance at a time, plays the answer and listens
+again (`samrabbit_assistant.py`). The Mac turns the recording into words (the speech-to-text helper above), runs one
+agent turn with the headless Claude Code CLI (Claude Haiku 5.5 by default) and SamRabbit's own tools, and speaks the
+answer with ElevenLabs (the Jarvis voice). Every route takes the mobile token, from a LAN or Tailscale peer.
+
+| Route | Answer |
+|---|---|
+| `POST /v1/mobile/assistant/turn` | audio body (`audio/wav`, `audio/mp4`, `audio/x-m4a`; ≤ 2 MiB and 60 s) with `X-SamRabbit-Conversation` (an id, or empty for a new conversation), `X-SamRabbit-Turn` (a uuid; a retry gets the same answer and the agent runs once), optional `X-SamRabbit-Device-Time`, optional `?lang=`; or JSON `{text, conversationId?, turnId}` → `{conversationId, turnId, heard, say, audio: {mime: "audio/mpeg", b64} \| null, expectReply, endConversation, actions: [{kind, title, threadId?, artifactId?, eventId?, project?}], timings: {stt, agent, tts}}` |
+| `GET /v1/mobile/assistant/announcements?conversationId=&since=` | `{items: [{id, say, audio \| null, kind: needs_you \| done \| error, threadId, title}], cursor}`: T3 tasks that started needing Samin, finished or failed since the conversation began, each once per conversation; the next turn tells the agent what was announced ("approve it") |
+| `POST /v1/mobile/assistant/end {conversationId}` | optional: the watch stopped listening (`conversation.ended`) |
+
+- Nothing heard, or only "uh" / "hmm": `{heard: "", say: "", audio: null, expectReply: true}` without the agent.
+  "Bye", "stop", "never mind", "thanks, that's all": a short goodbye with `endConversation: true`, without the agent.
+  `expectReply` is true when the answer asks a question. `actions` lists what the tools changed (`task_started`,
+  `task_replied`, `task_answered`, `task_stopped`, `event_created`, `journal_added`, `mac_opened`, `ui_generated`).
+- Limits: speech to text 45 s, the agent 25 s (504 `assistant_timeout`; the CLI's whole process group is killed), the
+  voice 10 s (then `audio: null` and the watch speaks `say` itself). One turn per conversation at a time (409
+  `assistant_busy`, retryable). Errors: 503 `assistant_unavailable` with `reason` (`claude_missing`,
+  `claude_signed_out`, `claude_busy`, `claude_failed`, `model_unavailable`, `assistant_dev_copy`, …), `transcribe_*`,
+  `invalid_*`.
+- The agent: `claude -p --model <assistant.model> --output-format stream-json --verbose --setting-sources ""
+  --strict-mcp-config --mcp-config <0600 file> --tools "" --allowedTools mcp__samrabbit --permission-mode dontAsk
+  --disable-slash-commands --max-turns 6 --system-prompt-file <file>`, `--session-id <uuid>` on a conversation's
+  first turn and `--resume <uuid>` after it, the utterance on stdin (prefixed `[Now: Thursday, October 8, 2026, 2:37
+  PM America/New_York · device: watch]`), in an empty folder of its own
+  (`~/Library/Application Support/SamRabbit/assistant/cwd`), with only `HOME USER LOGNAME TMPDIR LANG PATH` and
+  `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 DISABLE_AUTOUPDATER=1`. No user or
+  project settings, hooks, plugins, CLAUDE.md or MCP servers load (the user's hooks would upload utterances); never
+  `--bare` (no login) or `--safe-mode` (no MCP servers). Its session files are pruned after two weeks.
+- Its tools (`samrabbit_assistant_mcp.py`, a stdio MCP server: `get_status`, `list_tasks`, `read_task`,
+  `start_task`, `reply_task`, `respond_task`, `stop_task`, `calendar_agenda`, `calendar_block`, `calendar_create`,
+  `journal_add`, `mac_open`, `mac_look` (an image the model sees), `generate_ui`, `recent_conversations`) call this
+  bridge's own mobile API over loopback with an internal assistant token (made at start, in a 0600 file; loopback
+  only; a short list of routes, never pairing, the stream or the assistant itself).
+- Settings: `~/.config/samrabbit/assistant.json` `{"model": "claude-haiku-5-5" | "claude-sonnet-5-5", "voice":
+  "<ElevenLabs voice id>"}` (re-read every turn), or `--assistant-model` / `--assistant-voice`
+  (`SAMRABBIT_ASSISTANT_MODEL` / `SAMRABBIT_ASSISTANT_VOICE`). The voice: `POST
+  https://api.elevenlabs.io/v1/text-to-speech/<voice>?output_format=mp3_44100_64`, `eleven_flash_v2_5`, stability
+  0.5, similarity 0.75, style 0, numbers written out in words first; the key from `--elevenlabs-key-file` (default
+  `~/.config/samrabbit/elevenlabs-key`); a rejected key pauses it for 10 minutes.
+- Every turn is recorded in the sync store as a "Watch" conversation (`watch-<conversationId>`, titled `Watch: <first
+  words>`): `conversation.started`, `message.user`, `tool.completed` (a `mac_look` screenshot as an image),
+  `message.assistant.done`, `conversation.ended` (after a goodbye, `/end`, or 5 minutes without a turn), and
+  announcements as `host.t3_update`, all with origin `watch`. Visuals made from the watch land in the same
+  conversation. Utterances, replies, tool inputs and outputs, tokens, keys and audio are never logged.
+- `/health` adds `assistant: {available, reason?, model, modelName, claude, copy, voice: {available, reason?, voice,
+  voiceName, model}, conversations, lastTurn?}`; the summary adds `assistant: {available, reason?, model}`.
+- A dev copy (see "Which copy is the installed one") runs the agent only with an explicit `--claude`, speaks with
+  ElevenLabs only with an explicit `--elevenlabs-key-file` (never the real key, never ElevenLabs credits), keeps its
+  working files in a temp folder (`--assistant-dir` to choose one), and its tools only reach its own dev-safe answers.
 
 **T3 Code.** The bridge has its own T3 session ("SamRabbit bridge", scopes `orchestration:read orchestration:operate`),
 separate from the R1's. It mints a pairing credential with the CLI inside the T3 Code app
@@ -406,9 +463,12 @@ an hour. `/health` then says `mobile.t3: {paired: false, ok: false, reason}`. `i
 `--t3-url`, `--t3-cli`, `--t3-token-file` (`SAMRABBIT_T3_URL`, `SAMRABBIT_T3_CLI`, `SAMRABBIT_T3_TOKEN_FILE`).
 A copy of the bridge that is not the installed one (a checkout, a test, a copy installed into a temp HOME; see "Which
 copy is the installed one") never talks to T3 unless given `--t3-url` (it answers 503 `t3_dev_copy`), just as it
-never changes Google Calendar unless given `--composio` (`calendar_dev_copy`) or writes the journal (dry run).
-`samrabbit_t3.py ensure-paired` follows the same rule: from any other copy it pairs only with a server given by
-`--url` (or `SAMRABBIT_T3_URL`), and otherwise prints `T3 not paired: t3_dev_copy`.
+never changes Google Calendar unless given `--composio` (`calendar_dev_copy`) or writes the journal (dry run). Even
+with `--t3-url` (or `SAMRABBIT_T3_URL`) it pairs only through an explicit `--t3-cli <path>`: the T3 Code app's own CLI
+(`auto`) is for the installed copy only, so a server address alone never mints a credential on the real T3 Code
+(pairing answers `t3_dev_copy`). `samrabbit_t3.py ensure-paired` follows the same rule: from any other copy it pairs
+only with a server given by `--url` (or `SAMRABBIT_T3_URL`) and a `--cli` path, and otherwise prints `T3 not paired:
+t3_dev_copy`.
 
 **Placement compared with the R1.** New tasks from the phone follow the R1's `placement.py` (a project the request
 names wins; the same coding and everyday word lists) with three differences:
@@ -464,21 +524,24 @@ where `<home>` is the account's home from the password database (`pwd.getpwuid(o
 `.samrabbit-installed` (a regular file, not a link, owned by the user), naming exactly that folder. Every other copy
 is a **dev copy**: a checkout, a test, a second bridge on another port, or a copy `install.sh` put into a temp HOME
 (`SAMRABBIT_HOME` or `HOME` pointing elsewhere), even when started with that temp HOME. A dev copy's Heptabase CLI is
-a dry run, its T3 answers `t3_dev_copy` and its calendar `calendar_dev_copy`, unless it is given `--cli`,
-`--t3-url` or `--composio` explicitly. `/health` says `copy: "installed"` or `"dev"`, the start log line says
+a dry run, its T3 answers `t3_dev_copy` and its calendar `calendar_dev_copy`, unless it is given a `--cli` path,
+`--t3-url` with a `--t3-cli` path, or `--composio` explicitly; its watch assistant needs an explicit `--claude` and
+speaks with ElevenLabs only with an explicit `--elevenlabs-key-file`. `/health` says `copy: "installed"` or `"dev"`, the start log line says
 `(installed copy, …)` or `(dev copy, …)`, and `python3 -I samrabbit_installed.py [<folder>]` prints `installed` or
 `dev (<reason>)`. `install.sh` warns when the bridge it started does not say `installed`.
 
 ### Which Heptabase CLI
 
-`--cli` (or `SAMRABBIT_HEPTABASE_CLI`) picks it: a path (used as given), `auto` (the real `heptabase` on `PATH` or
-`/opt/homebrew/bin/heptabase`) or `dry-run` (nothing reaches Heptabase: appends stay in the bridge's memory and are
-answered with `dryRun: true`; reads return them, also with `dryRun: true`). Without a choice, only the installed
-copy (above) uses the real CLI; every other copy, such as a second bridge run from a checkout on another port, is
-`dry-run`. `install.sh` also passes `--cli auto` in the LaunchAgent. `/health` reports it as `cli.mode` (`real` or `dryRun`) and `dryRun`; a dry-run bridge's `app` is
+`--cli` (or `SAMRABBIT_HEPTABASE_CLI`) picks it: a path (used as given), `auto` or `dry-run` (nothing reaches
+Heptabase: appends stay in the bridge's memory and are answered with `dryRun: true`; reads return them, also with
+`dryRun: true`). For the installed copy (above), `auto` and no choice both mean the real `heptabase` on `PATH` (or
+`/opt/homebrew/bin/heptabase`); every other copy, such as a second bridge run from a checkout on another port, is
+`dry-run` even with `--cli auto`: only a path to a CLI makes it use one. The LaunchAgent passes no `--cli` (the install
+marker decides). `/health` reports it as `cli.mode` (`real` or `dryRun`) and `dryRun`; a dry-run bridge's `app` is
 `{reachable: false, detail: "bridge_dry_run"}`, and it logs a warning at start. An R1 paired with a dry-run bridge
 keeps its journal entries queued (never "sent") and shows "test copy (dry run)" on its Heptabase card. To test against
-a fake CLI, pass its path; pass `--cli auto` only when you really want writes in your Heptabase journal.
+a fake CLI, pass its path; pass the real CLI's path only when you really want a dev copy to write to your Heptabase
+journal.
 
 ## Tests
 
@@ -504,7 +567,13 @@ real helper and transcribes clips made with `say -o` (skipped without Xcode or t
 `tests/test_installed_copy.py` points HOME at a temp folder (and installs a copy there with `install.sh`, then runs
 it) and checks that every such copy is a dev copy for the journal, T3 and the calendar, with recording fakes standing
 in for every real service in case it were not. `tests/test_t3.py` covers the T3 port and a Python 3.9 `-I` import
-check. `tests/test_sync.py` covers the conversation store, dedupe, drafts, blobs, the auth matrix (R1 token vs desktop token, loopback vs a real
+check. `tests/test_assistant.py` drives the watch assistant against the same fakes plus a fake Claude Code
+(`tests/fake_assistant_claude.py`, which starts the real MCP server and calls its tools against the test bridge), a
+fake ElevenLabs server and the fake speech-to-text helper: the isolation flags and environment, sessions (new,
+resumed, lost), the MCP protocol (`server/discover`, `initialize`, `tools/list`, `tools/call`, the image block),
+empty and noise turns, goodbyes, timeouts (the process group is killed), voice failures, idempotent turn ids, one turn
+per conversation, announcements (once each), the "Watch" conversation in the sync store, and that a dev copy reaches
+no real Claude, ElevenLabs, T3, journal or calendar. `tests/test_sync.py` covers the conversation store, dedupe, drafts, blobs, the auth matrix (R1 token vs desktop token, loopback vs a real
 LAN peer through this Mac's own address), SSE and screenshots.
 
 ## Troubleshooting

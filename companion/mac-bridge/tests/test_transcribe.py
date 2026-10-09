@@ -453,6 +453,28 @@ class TranscribeRouteTest(TranscribeBase):
         self.assertEqual(200, self.post(m4a(2))[0])
         self.assertEqual({"available": True}, self.call("GET", "/v1/mobile/summary", token=self.phone)[1]["transcribe"])
 
+    def test_a_later_recording_in_any_language_clears_a_stale_permission_denied(self) -> None:
+        self.assertTrue(self.transcriber.status(refresh=True)["available"])
+        self.fake("mode", "permission")
+        self.assertEqual((503, "transcribe_permission"), (lambda answer: (answer[0], answer[1]["error"]["code"]))(
+            self.post(m4a(3))))
+        expected = {"available": False, "reason": "permission_denied"}
+        self.assertEqual(expected, self.call("GET", "/v1/mobile/summary", token=self.phone)[1]["transcribe"])
+        # Speech Recognition is allowed again, and the next recording is in French (not the default en-US).
+        self.fake("mode", "ok")
+        status, value = self.post(m4a(2), query="?lang=fr")
+        self.assertEqual((200, "fr-FR"), (status, value["locale"]))
+        self.assertNotEqual("permission_denied", self.transcriber.status().get("reason"),
+                            "a recording that worked proves permission")
+        self.assertEqual({"available": True}, self.call("GET", "/v1/mobile/summary", token=self.phone)[1]["transcribe"])
+        self.server._health = None  # noqa: SLF001
+        self.assertTrue(self.call("GET", "/health", token=TOKEN)[1]["mobile"]["transcribe"]["available"])
+        # Without a stale denial, a recording in another language changes nothing (and costs no new check).
+        checks = len(self.helper_calls("--check"))
+        self.assertEqual(200, self.post(m4a(2), query="?lang=de")[0])
+        self.transcriber.status()
+        self.assertEqual(checks, len(self.helper_calls("--check")))
+
     def test_the_summary_says_whether_the_mac_transcribes(self) -> None:
         value = self.call("GET", "/v1/mobile/summary", token=self.phone)[1]
         self.assertEqual({"available": True}, value["transcribe"])

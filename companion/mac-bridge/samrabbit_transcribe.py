@@ -496,7 +496,7 @@ class Transcriber:
     def status(self, *, refresh: bool = False) -> Dict[str, Any]:
         """``{available, engine?, locale?, reason?}`` for the default language, checked at most every 10 minutes.
         ``reason: permission_denied`` when Speech Recognition is off for the helper (seen by the check, or by a
-        transcription that failed with ``transcribe_permission``)."""
+        transcription that failed with ``transcribe_permission``), until a later recording in any language works."""
         if self.executable() is None:
             return {"available": False, "reason": "helper_missing"}
         value = None if refresh else self._cached()
@@ -557,6 +557,15 @@ class Transcriber:
     def _remember(self, value: Optional[Dict[str, Any]]) -> None:
         with self._lock:
             self._status = (self._monotonic(), value) if value is not None else None
+
+    def _permission_works(self) -> None:
+        """A recording (in a language other than the default) just worked, so Speech Recognition is allowed: a
+        ``permission_denied`` the status still remembers is stale. It is dropped, so the next ``status()`` checks
+        the default language again (what the recording proves about permission, not about that language's model)."""
+        with self._lock:
+            cached = self._status
+            if cached is not None and cached[1].get("reason") == "permission_denied":
+                self._status = None
 
     # ------------------------------------------------------------------ the model
     def _prepare_later(self, language: str) -> bool:
@@ -642,6 +651,8 @@ class Transcriber:
                 _LANGUAGE.match(answer["locale"]) else language
             if language == DEFAULT_LANGUAGE:
                 self._remember({"available": True, "engine": engine, "locale": locale})
+            else:
+                self._permission_works()
             return {"text": text, "durationMs": int(duration) if isinstance(duration, (int, float)) and
                     not isinstance(duration, bool) and duration >= 0 else 0, "engine": engine, "locale": locale}
         code = answer.get("code") if answer is not None and answer.get("ok") is False else None

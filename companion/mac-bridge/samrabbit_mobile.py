@@ -28,6 +28,10 @@ Routes (CONTRACTS-WAVE4 "Mobile API"):
 * ``POST /v1/mobile/transcribe[?lang=en-US]``: a raw recording (``audio/mp4``, ``audio/x-m4a``, ``audio/wav`` or
   ``audio/aac``; at most 2 MiB and 90 s) turned into words on the Mac (``samrabbit_transcribe``, on-device macOS
   speech recognition) -> ``{text, durationMs, engine, locale}``. The audio and the words are never logged or kept.
+* The voice assistant (``samrabbit_assistant``): ``POST /v1/mobile/assistant/turn`` (one utterance: audio or JSON
+  text -> what to say, with the Jarvis voice's mp3), ``GET /v1/mobile/assistant/announcements``,
+  ``POST /v1/mobile/assistant/end``; the summary's ``assistant: {available, reason?, model}``. Its tools come back
+  here with the bridge's internal assistant token (loopback only, and only the routes in ``INTERNAL_ROUTES``).
 
 Errors are ``{"error": {"code", "message", "retryable"}}``. Times in the routes this module answers itself are ISO
 8601 (``...Z`` or with the calendar's offset); the reused sync routes keep their epoch milliseconds. Tokens, codes,
@@ -75,6 +79,11 @@ try:  # speech to text for the watch and the phone; mobile works without it (tra
     import samrabbit_transcribe as _transcribe  # type: ignore
 except Exception:  # noqa: BLE001
     _transcribe = None  # type: ignore[assignment]
+
+try:  # the voice assistant (its routes answer 503 without it)
+    import samrabbit_assistant as _assistant  # type: ignore
+except Exception:  # noqa: BLE001
+    _assistant = None  # type: ignore[assignment]
 
 import samrabbit_t3 as t3  # noqa: E402
 
@@ -657,7 +666,15 @@ ROUTES: Tuple[_Route, ...] = (
     _Route(r"/v1/mobile/mac/open", "/v1/mobile/mac/open", {"POST": ("mac_open", DEVICE)}),
     _Route(r"/v1/mobile/mac/screenshot", "/v1/mobile/mac/screenshot", {"GET": ("mac_screenshot", DEVICE)}),
     _Route(r"/v1/mobile/transcribe", "/v1/mobile/transcribe", {"POST": ("transcribe", DEVICE)}),
+    _Route(r"/v1/mobile/assistant/turn", "/v1/mobile/assistant/turn", {"POST": ("assistant_turn", DEVICE)}),
+    _Route(r"/v1/mobile/assistant/announcements", "/v1/mobile/assistant/announcements",
+           {"GET": ("assistant_announcements", DEVICE)}),
+    _Route(r"/v1/mobile/assistant/end", "/v1/mobile/assistant/end", {"POST": ("assistant_end", DEVICE)}),
 )
+# What the assistant's own tools (the internal token, from loopback) may call: reads, and the actions its tools take.
+INTERNAL_ROUTES = frozenset({"summary", "sync", "t3_threads", "t3_thread", "t3_action", "t3_create", "t3_projects",
+                             "agenda", "block", "event", "journal", "mac_state", "mac_open", "mac_screenshot",
+                             "ui_generate", "ui_artifact"})
 
 
 class _Bytes:
@@ -684,9 +701,10 @@ class MobileService:
                  desktop_token_file: Optional[str] = None,
                  timezone_name: Optional[str] = None, google_account: Optional[str] = None,
                  hosts: Optional[List[str]] = None, bridge_version: str = "",
-                 transcriber: Any = None, transcribe_helper: Optional[str] = None,
+                 transcriber: Any = None, transcribe_helper: Optional[str] = None, assistant: Any = None,
                  clock: Callable[[], float] = time.time, monotonic: Callable[[], float] = time.monotonic) -> None:
         self.devices = DeviceRegistry(devices_file, clock=clock)
+        self.assistant = assistant  # samrabbit_assistant.AssistantService (or None: its routes answer 503)
         # Speech to text (POST /v1/mobile/transcribe): the Swift helper install.sh builds next to the bridge.
         self.transcriber = transcriber if transcriber is not None else (
             _transcribe.Transcriber(transcribe_helper) if _transcribe is not None else None)
@@ -722,6 +740,8 @@ class MobileService:
     # ------------------------------------------------------------------ lifecycle
     def attach(self, server: Any) -> None:
         self.server = server
+        if self.assistant is not None:
+            self.assistant.attach(server, self)
 
     def start(self) -> None:
         """The background refresher (summary caches). Pre-warms when devices are already paired. Also removes the
@@ -736,6 +756,8 @@ class MobileService:
         self._worker = threading.Thread(target=self._work, name="samrabbit-mobile", daemon=True)
         self._worker.start()
         self._wake.set()
+        if self.assistant is not None:
+            self.assistant.start()
 
     def close(self) -> None:
         self._stopping.set()
@@ -745,6 +767,8 @@ class MobileService:
             self._worker = None
         if self.transcriber is not None:
             self.transcriber.close()
+        if self.assistant is not None:
+            self.assistant.close()
 
     @staticmethod
     def handles(route: str) -> bool:
@@ -798,6 +822,9 @@ class MobileService:
                 raise MobileError(405, "method_not_allowed", "Use " + "/".join(sorted(spec.methods)) + ".")
             name, auth = entry
             device = self._authorize(handler, auth)
+            if device is not None and device.get("internal") and (
+                    name not in INTERNAL_ROUTES or (name == "sync" and route != PREFIX + "conversations")):
+                raise MobileError(403, "forbidden", "The assistant's tools cannot use this route.")
             result = getattr(self, "_r_" + name)(handler, params, device, route)
             if isinstance(result, _Written):
                 return result.status, None
@@ -828,7 +855,12 @@ class MobileService:
     def _device(self, handler: Any) -> Dict[str, Any]:
         header = handler.headers.get("Authorization", "")
         scheme, _, value = header.partition(" ")
-        device = self.devices.authenticate(value.strip()) if scheme.lower() == "bearer" else None
+        device = None
+        if scheme.lower() == "bearer" and self.assistant is not None:
+            # The assistant's tools (samrabbit_assistant_mcp.py): the internal token, from loopback only.
+            device = self.assistant.internal_device(value.strip(), str(handler.client_address[0]))
+        if device is None and scheme.lower() == "bearer":
+            device = self.devices.authenticate(value.strip())
         if device is None:
             raise MobileError(401, "unauthorized", "Pair this device with the Mac again.")
         self._demand_at = self._monotonic()
@@ -1084,6 +1116,7 @@ class MobileService:
                         **({"reason": journal["reason"]} if journal.get("reason") and not journal.get("available")
                            else {})},
             "transcribe": self._transcribe_part(parts["transcribe"]),
+            "assistant": self._assistant_part(),
         }
         value["r1"], value["latestConversation"] = self._r1_part()
         with self._lock:
@@ -1109,6 +1142,16 @@ class MobileService:
         reason = value.get("reason")
         return {"available": available,
                 **({"reason": reason} if not available and isinstance(reason, str) and reason else {})}
+
+    def _assistant_part(self) -> Dict[str, Any]:
+        """``{available, reason?, model}``: can the watch talk to the assistant?"""
+        if self.assistant is None:
+            return {"available": False, "reason": "assistant_missing"}
+        try:
+            return self.assistant.summary_part()
+        except Exception:  # noqa: BLE001 - never fails the summary
+            _LOG.warning("assistant status failed")
+            return {"available": False, "reason": "check_failed"}
 
     def _r1_part(self) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
         r1: Dict[str, Any] = {"lastSeenAt": None, "live": False, "liveConversationId": None, "liveTitle": None}
@@ -1233,7 +1276,8 @@ class MobileService:
         genui = getattr(self.server, "genui", None)
         if genui is None:
             raise MobileError(503, "genui_unavailable", "Generated UIs are off on the Mac.")
-        request_id = "phone:" + (client_id or uuid.uuid4().hex)
+        internal = bool(_device and _device.get("internal"))
+        request_id = ("watch:" if internal else "phone:") + (client_id or uuid.uuid4().hex)
         existing = None
         if _genui is not None and hasattr(_genui, "artifact_id_for"):
             existing = genui.store.meta(_genui.artifact_id_for(request_id))
@@ -1244,7 +1288,9 @@ class MobileService:
             if queued >= int(getattr(_genui, "MAX_QUEUE", 8)):
                 raise MobileError(503, "genui_busy", "The Mac is already making several visuals. Try again in a "
                                   "minute.", retryable=True)
-            conversation = self._phone_conversation(prompt, request_id + ":prompt")
+            # From the watch (the assistant's tool): its own conversation, which already has the spoken request.
+            conversation = self.assistant.sync_conversation(handler) if internal and self.assistant is not None \
+                else self._phone_conversation(prompt, request_id + ":prompt")
         request: Dict[str, Any] = {"requestId": request_id, "prompt": prompt, "size": "r1"}
         if data is not None:
             request["data"] = data
@@ -1516,6 +1562,40 @@ class MobileService:
                            {"X-Image-Width": str(shot.get("width") or 0), "X-Image-Height": str(shot.get("height") or 0)})
 
     # ------------------------------------------------------------------ voice
+    def transcription_changed(self) -> None:
+        """After a recording (here or in an assistant turn): the summary's ``transcribe`` part is what the transcriber
+        knows now (a recording that worked clears a stale ``permission_denied``, whatever its language), or is checked
+        again."""
+        known = None
+        try:
+            if self.transcriber is not None and callable(getattr(self.transcriber, "cached_status", None)):
+                known = self.transcriber.cached_status()
+        except Exception:  # noqa: BLE001
+            known = None
+        with self._lock:
+            if known is not None:
+                self._cache["transcribe"] = (self._monotonic(), dict(known))
+            else:
+                self._cache.pop("transcribe", None)
+            self._summary = None
+
+    def _assistant(self) -> Any:
+        if self.assistant is None:
+            raise MobileError(503, "assistant_unavailable", "The voice assistant is not installed on the Mac bridge.")
+        return self.assistant
+
+    def _r_assistant_turn(self, handler: Any, _params: Dict[str, str], device: Dict[str, Any],
+                          _route: str) -> Tuple[int, Any]:
+        return self._assistant().turn(handler, device)
+
+    def _r_assistant_announcements(self, handler: Any, _params: Dict[str, str], device: Dict[str, Any],
+                                   _route: str) -> Tuple[int, Any]:
+        return self._assistant().announcements(handler, device)
+
+    def _r_assistant_end(self, handler: Any, _params: Dict[str, str], device: Dict[str, Any],
+                         _route: str) -> Tuple[int, Any]:
+        return self._assistant().end(handler, device)
+
     def _r_transcribe(self, handler: Any, _params: Dict[str, str], _device: Any, _route: str) -> Tuple[int, Any]:
         """A recording from the watch or the phone (the raw body) -> ``{text, durationMs, engine, locale}``. Checked
         before anything runs: the Content-Type, ``?lang=``, the size (2 MiB), the container's own bytes and its
@@ -1537,8 +1617,7 @@ class MobileService:
         try:
             result = self.transcriber.transcribe(data, kind, language)
         finally:
-            with self._lock:
-                self._summary = None  # the summary's "transcribe" part reflects what this recording showed
+            self.transcription_changed()  # the summary's "transcribe" part reflects what this recording showed
         _LOG.info("mobile transcription done (%s, %d ms of audio)", result.get("engine"), result.get("durationMs", 0))
         return 200, result
 

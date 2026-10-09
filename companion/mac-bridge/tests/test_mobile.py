@@ -209,10 +209,11 @@ class MobileBase(unittest.TestCase):
             hub = t3.T3Hub(session, monotonic=self.clock.monotonic, clock=self.clock.dt)
         self.hub = hub
         self.transcriber = self.make_transcriber(bin_dir)
+        self.assistant = self.make_assistant(bin_dir)
         self.service = mobile.MobileService(devices_file=str(self.devices_file), t3_hub=hub,
                                             timezone_name="America/New_York", google_account="owner@example.com",
                                             hosts=["192.168.1.50"], bridge_version=bridge.VERSION,
-                                            transcriber=self.transcriber,
+                                            transcriber=self.transcriber, assistant=self.assistant,
                                             clock=self.clock.time, monotonic=self.clock.monotonic)
         self.log = io.StringIO()
         handler = logging.StreamHandler(self.log)
@@ -233,6 +234,10 @@ class MobileBase(unittest.TestCase):
         """Speech to text: no helper here (deterministic, whatever is built in the checkout); test_transcribe.py
         gives its tests a fake one."""
         return transcribe.Transcriber(str(bin_dir / "samrabbit-transcribe-not-built"))
+
+    def make_assistant(self, bin_dir: Path) -> Any:
+        """The watch's voice assistant: none here; test_assistant.py gives its tests one with fakes."""
+        return None
 
     def _stop(self) -> None:
         self.server.shutdown()
@@ -525,8 +530,10 @@ class SummaryTest(MobileBase):
         phone = self.pair()["token"]
         status, value = self.call("GET", "/v1/mobile/summary", token=phone)
         self.assertEqual(200, status, value)
-        self.assertEqual({"generatedAt", "mac", "r1", "t3", "calendar", "latestConversation", "journal", "transcribe"},
-                         set(value))
+        self.assertEqual({"generatedAt", "mac", "r1", "t3", "calendar", "latestConversation", "journal", "transcribe",
+                          "assistant"}, set(value))
+        self.assertEqual({"available": False, "reason": "assistant_missing"}, value["assistant"],
+                         "no assistant on this test bridge (test_assistant.py has one)")
         self.assertEqual({"available": False, "reason": "helper_missing"}, value["transcribe"],
                          "the phone and the watch know whether the Mac transcribes (no helper here)")
         self.assertEqual(mobile.iso_utc(NOW), value["generatedAt"])

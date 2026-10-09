@@ -28,8 +28,9 @@ Command line (used by install.sh)::
 
 ``ensure-paired`` pairs with the default T3 server (``http://127.0.0.1:3773``) only from the installed copy of the
 bridge (``samrabbit_installed``: the account's own home, never $HOME, plus install.sh's marker). Any other copy (a
-checkout, a test, a copy installed into a temp HOME) answers ``t3_dev_copy`` unless given ``--url`` (or
-``SAMRABBIT_T3_URL``) explicitly, so a test never mints a credential on the real T3 Code.
+checkout, a test, a copy installed into a temp HOME) answers ``t3_dev_copy`` unless given both ``--url`` (or
+``SAMRABBIT_T3_URL``) and an explicit ``--cli`` path (or ``SAMRABBIT_T3_CLI``): a server address alone never runs the
+T3 Code app's own CLI, so a test never mints a credential on the real T3 Code.
 """
 
 from __future__ import annotations
@@ -66,6 +67,7 @@ T3_EXECUTABLE = T3_APP + "/Contents/MacOS/T3 Code (Alpha)"
 T3_ASAR = T3_APP + "/Contents/Resources/app.asar"
 T3_SERVER_BIN = T3_ASAR + "/apps/server/dist/bin.mjs"  # inside the asar archive (Electron reads it)
 CLI_AUTO = "auto"
+CLI_NONE = "none"  # no pairing at all (a dev copy of the bridge that was not given a CLI path)
 CLIENT_LABEL = "SamRabbit bridge"
 PAIRING_TTL = "10m"
 REQUESTED_SCOPES = "orchestration:read orchestration:operate"
@@ -350,13 +352,16 @@ def _child_env() -> Dict[str, str]:
 
 class T3Cli:
     """``auth pairing create`` of the CLI inside the T3 Code app. ``choice`` is ``auto`` (the app in
-    /Applications) or the path of an executable that takes the CLI arguments itself (tests)."""
+    /Applications), ``none`` (never pairs: a dev copy of the bridge without a CLI path) or the path of an executable
+    that takes the CLI arguments itself (tests)."""
 
     def __init__(self, choice: Optional[str] = None, *, timeout: float = CLI_TIMEOUT_SECONDS) -> None:
         self.choice = (choice or "").strip() or CLI_AUTO
         self.timeout = timeout
 
     def command(self) -> Optional[List[str]]:
+        if self.choice == CLI_NONE:
+            return None
         if self.choice == CLI_AUTO:
             if os.access(T3_EXECUTABLE, os.X_OK) and os.path.isfile(T3_ASAR):
                 return [T3_EXECUTABLE, T3_SERVER_BIN]
@@ -369,6 +374,9 @@ class T3Cli:
 
     def create_credential(self, base_url: str, label: str) -> str:
         command = self.command()
+        if self.choice == CLI_NONE:
+            raise T3Error(503, "t3_dev_copy", "This copy of the Mac bridge is not the installed one, so it pairs with "
+                          "T3 Code only through an explicit T3 CLI path (--t3-cli).", retryable=False)
         if command is None:
             raise T3Error(503, "t3_app_missing", "The T3 Code app was not found on the Mac, so the bridge can't pair "
                           "with it.", retryable=False)
@@ -1752,12 +1760,13 @@ def main(argv: Optional[List[str]] = None) -> int:
                         help=f"the T3 Code server (default {DEFAULT_SERVER_URL}; a copy that is not the installed "
                              "bridge pairs only with a server given here)")
     parser.add_argument("--cli", default=os.environ.get("SAMRABBIT_T3_CLI") or CLI_AUTO,
-                        help="'auto' (the T3 Code app) or a path to a stand-in CLI")
+                        help="'auto' (the T3 Code app; the installed copy only) or a path to a stand-in CLI")
     parser.add_argument("--label", default=CLIENT_LABEL)
     options = parser.parse_args(argv)
-    if options.command == "ensure-paired" and not options.url and not _installed_copy():
+    explicit_cli = (options.cli or "").strip() not in ("", CLI_AUTO, CLI_NONE)
+    if options.command == "ensure-paired" and not (options.url and explicit_cli) and not _installed_copy():
         print("T3 not paired: t3_dev_copy (this copy of the bridge is not the installed one, so it pairs with T3 "
-              "Code only when given --url)")
+              "Code only when given --url and a --cli path)")
         return 3
     try:
         session = T3Session(T3Http(options.url or DEFAULT_SERVER_URL), TokenStore(options.token_file),
