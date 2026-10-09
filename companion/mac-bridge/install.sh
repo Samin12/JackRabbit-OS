@@ -123,7 +123,8 @@ chmod 600 "$DESKTOP_TOKEN_FILE"
 mkdir -p "$SYNC_DIR"; chmod 700 "$SYNC_DIR"
 # The watch assistant's voice: the ElevenLabs key from ~/.hermes/.env, copied (0600) when it is there; the key is
 # never printed. Its model and voice settings (--assistant-model / --assistant-voice) go to assistant.json.
-"$PYTHON" -I - "$HERMES_ENV" "$ELEVENLABS_KEY_FILE" "$ASSISTANT_SETTINGS" "$ASSISTANT_MODEL" "$ASSISTANT_VOICE" <<'PYEOF'
+"$PYTHON" -I - "$HERMES_ENV" "$ELEVENLABS_KEY_FILE" "$ASSISTANT_SETTINGS" "$ASSISTANT_MODEL" "$ASSISTANT_VOICE" <<'PYEOF' \
+    || echo "install.sh: warning: the voice key or the assistant settings were not written; the watch speaks with its own voice" >&2
 import json, os, re, sys, tempfile
 source, target, settings, model, voice = sys.argv[1:6]
 
