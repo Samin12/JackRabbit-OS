@@ -68,34 +68,40 @@ public struct OrbView: View {
     public var phase: Double
     /// Frames per second while animated (the watch uses fewer).
     public var frameRate: Double
+    /// 0...1: a live input level (the watch's voice capture). The orb swells and its waves stir with it.
+    public var level: Double
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.displayScale) private var displayScale
     @State private var start = Date()
 
     public init(mood: OrbMood = .idle, animated: Bool = true, halo: Bool = true, phase: Double = 7.3,
-                frameRate: Double = 30) {
+                frameRate: Double = 30, level: Double = 0) {
         self.mood = mood
         self.animated = animated
         self.halo = halo
         self.phase = phase
         self.frameRate = frameRate
+        self.level = min(1, max(0, level.isFinite ? level : 0))
     }
+
+    private var energy: Double { mood.energy + level * 0.75 }
 
     public var body: some View {
         GeometryReader { geometry in
             let diameter = min(geometry.size.width, geometry.size.height)
             ZStack {
-                if halo { OrbHalo(mood: mood, radius: diameter / 2) }
+                if halo { OrbHalo(mood: mood, radius: diameter / 2, boost: level) }
                 if animated, !reduceMotion {
                     TimelineView(.animation(minimumInterval: 1.0 / max(1, frameRate))) { context in
                         let t = phase + context.date.timeIntervalSince(start) * mood.speed
-                        OrbDisc(mood: mood, time: t, diameter: diameter, scale: displayScale)
+                        OrbDisc(mood: mood, energy: energy, time: t, diameter: diameter, scale: displayScale)
                     }
                 } else {
-                    OrbDisc(mood: mood, time: phase, diameter: diameter, scale: displayScale)
+                    OrbDisc(mood: mood, energy: energy, time: phase, diameter: diameter, scale: displayScale)
                 }
             }
+            .scaleEffect(1 + level * 0.14)
             .frame(width: geometry.size.width, height: geometry.size.height)
         }
         .aspectRatio(1, contentMode: .fit)
@@ -106,6 +112,7 @@ public struct OrbView: View {
 /// The orb's surface for one moment.
 struct OrbDisc: View {
     var mood: OrbMood
+    var energy: Double
     var time: Double
     var diameter: CGFloat
     var scale: CGFloat
@@ -114,7 +121,7 @@ struct OrbDisc: View {
         // About one sample per point (the surface is soft); bilinear filtering does the rest.
         let samples = Int(min(176, max(40, diameter * min(scale, 3) * 0.42)))
         Group {
-            if let image = OrbRenderer.field(pixels: samples, time: time, energy: mood.energy, base: mood.base) {
+            if let image = OrbRenderer.field(pixels: samples, time: time, energy: energy, base: mood.base) {
                 Image(decorative: image, scale: 1)
                     .resizable()
                     .interpolation(.high)
@@ -132,11 +139,13 @@ struct OrbDisc: View {
 struct OrbHalo: View {
     var mood: OrbMood
     var radius: CGFloat
+    /// 0...1: a live level brightens and widens the glow.
+    var boost: Double = 0
 
     var body: some View {
-        let glowRadius = radius * (1.55 + mood.energy * 0.25)
+        let glowRadius = radius * (1.55 + mood.energy * 0.25 + boost * 0.3)
         let base = Color(red: Double(mood.base.r), green: Double(mood.base.g), blue: Double(mood.base.b))
-        let g = mood.glow
+        let g = mood.glow * (1 + boost * 0.6)
         Circle()
             .fill(RadialGradient(stops: [
                 .init(color: base.opacity(0.431 * g), location: 0),

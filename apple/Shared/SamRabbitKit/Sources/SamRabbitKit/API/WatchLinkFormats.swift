@@ -169,4 +169,16 @@ public protocol BridgeRelay: Sendable {
     /// the relay could not reach the bridge either). Throws `BridgeError.unreachable` only when the
     /// relay itself is down and nothing was sent.
     func relay(_ request: BridgeRequest) async throws -> (status: Int, body: Data)
+    /// Sends a recording for `POST /v1/mobile/transcribe` through the relay (the watch: in chunks to the
+    /// iPhone, `VoiceRelay`) and returns the bridge's status and body (status 0: the relay could not reach
+    /// the bridge either). Throws `BridgeError.unreachable` when the relay itself is down.
+    func relayTranscription(_ audio: Data, contentType: String, language: String?) async throws -> (status: Int, body: Data)
+}
+
+extension BridgeRelay {
+    /// A relay without a voice route.
+    public func relayTranscription(_ audio: Data, contentType: String,
+                                   language: String?) async throws -> (status: Int, body: Data) {
+        throw BridgeError.unreachable("no voice relay")
+    }
 }

@@ -13,11 +13,16 @@ private let log = Logger(subsystem: "com.samrabbit.mobile", category: "watch")
 ///   (`WatchContext.requestKey`) with the same context;
 /// * relays bridge requests the watch sends with `sendMessage` when it cannot reach the Mac itself,
 ///   performed with the watch's own token, never the phone's (`BridgeAccount.performRelayed`;
-///   `WatchRelay` in SamRabbitKit describes both messages).
+///   `WatchRelay` in SamRabbitKit describes both messages);
+/// * passes on the watch's voice recordings the same way: they arrive in chunks (`VoiceRelay`), are put
+///   back together here and uploaded for transcription with the watch's token
+///   (`BridgeAccount.performRelayedTranscription`); the reply to the last chunk is the bridge's answer.
 final class WatchLink: NSObject, WCSessionDelegate, @unchecked Sendable {
     static let shared = WatchLink()
 
     private let account = BridgeAccount.shared
+    /// The watch's recordings while their chunks arrive.
+    private let recordings = VoiceRelay.Assembler()
     /// The last provisioning run: runs never overlap (two at once would issue two child tokens).
     private let lastRun = Mutex<Task<Provisioning, Never>?>(nil)
 
@@ -78,6 +83,7 @@ final class WatchLink: NSObject, WCSessionDelegate, @unchecked Sendable {
     /// Forgets the watch's token here and tells the watch (on unpair: the bridge revoked it with the phone).
     func reset() {
         account.forgetWatch()
+        recordings.reset()
         if WCSession.isSupported(), WCSession.default.activationState == .activated {
             try? WCSession.default.updateApplicationContext([WatchContext.unpairedKey: true])
         }
@@ -109,6 +115,16 @@ final class WatchLink: NSObject, WCSessionDelegate, @unchecked Sendable {
                 case .unpaired: reply([WatchContext.unpairedKey: true])
                 case .failed: reply([:])
                 }
+            }
+            return
+        }
+        if let chunk = VoiceRelay.Chunk(message: message) {
+            switch recordings.add(chunk) {
+            case .waiting: reply([VoiceRelay.ackKey: chunk.seq])
+            case .refused(let response): reply(response.message)
+            case .complete(let upload):
+                // With the watch's own token, like every relayed request.
+                Task { reply(await account.performRelayedTranscription(upload).message) }
             }
             return
         }

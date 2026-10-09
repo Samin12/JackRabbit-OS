@@ -196,18 +196,53 @@ public final class BridgeAccount: Sendable {
             return WatchRelay.Response(status: 0, body: Data())
         }
     }
+
+    /// Uploads a recording the Apple Watch sent through this iPhone in chunks (`VoiceRelay`) to
+    /// `POST /v1/mobile/transcribe`, with the watch's own token (never the phone's), and answers with the
+    /// bridge's status and body. Status 0: the Mac could not be reached.
+    public func performRelayedTranscription(_ upload: VoiceRelay.Upload, timeout: TimeInterval = 60) async -> WatchRelay.Response {
+        guard isPaired else { return .refusal(409, "not_paired", "Pair the iPhone first.") }
+        guard let client = watchClient() else {
+            return .refusal(401, "unauthorized", "Reconnect your watch through the iPhone.")
+        }
+        guard upload.data.count <= VoiceFormat.maxBytes else {
+            return .refusal(413, "body_too_large", "Recordings can be at most 2 MB.")
+        }
+        do {
+            let (status, body) = try await client.rawTranscription(audio: upload.data, contentType: upload.contentType,
+                                                                    language: upload.language, timeout: timeout)
+            return WatchRelay.Response(status: status, body: body)
+        } catch {
+            return WatchRelay.Response(status: 0, body: Data())
+        }
+    }
 }
 
 /// Pairs with a bridge: tries each address of the link in order (LAN, then Tailscale) and keeps
 /// the one that answered first in the saved pairing.
 public enum Pairer {
+    /// Pairing again while paired with the same bridge (an address in common) retires the old device
+    /// first: once the bridge accepted the new code, the old token unpairs itself
+    /// (`POST /v1/mobile/unpair`, best effort; the bridge drops the old iPhone and its watch), before the
+    /// new token replaces it here. A wrong code keeps the old pairing working. Another bridge's pairing is
+    /// only forgotten here.
     public static func pair(link: PairLink, deviceName: String, platform: DevicePlatform = .ios,
                             account: BridgeAccount = .shared, timeout: TimeInterval = 8) async throws -> BridgePairing {
         var lastError: Error = BridgeError.unreachable("no address")
+        let previous = account.isPaired ? account.pairing : nil
+        let previousToken = previous == nil ? nil : account.token
         for (index, host) in link.hosts.enumerated() {
             let client = BridgeClient(hosts: [host], token: nil, timeout: timeout)
             do {
                 let answer = try await client.pair(code: link.code, deviceName: deviceName, platform: platform)
+                if let previous, let previousToken, sameBridge(previous, link) {
+                    let old = BridgeClient(hosts: previous.hosts, token: previousToken, timeout: 6)
+                    do {
+                        try await old.unpair(timeout: 6)
+                    } catch {
+                        kitLog.notice("re-pair: the old device was not unpaired")
+                    }
+                }
                 var hosts = link.hosts
                 hosts.remove(at: index)
                 hosts.insert(host, at: 0)
@@ -226,6 +261,11 @@ public enum Pairer {
         }
         throw lastError
     }
+
+    /// The new link reaches the bridge of the current pairing (an address in common).
+    static func sameBridge(_ pairing: BridgePairing, _ link: PairLink) -> Bool {
+        !Set(pairing.hosts).isDisjoint(with: link.hosts)
+    }
 }
 
 /// The last summary, shared with the widgets (`summary.json` in the App Group).
@@ -239,9 +279,11 @@ public final class SummaryCache: Sendable {
         public var savedAt: Date
     }
 
-    /// What the widgets were last reloaded for (`generatedAt` cleared).
+    /// What the widgets were last reloaded for: the summary's encoded bytes (`generatedAt` cleared).
+    /// Compared as bytes, never as a decoded summary: dates keep only milliseconds through a save, so a
+    /// decoded copy can differ from the fresh one in memory while saying the same thing.
     struct Reload: Codable, Sendable, Equatable {
-        var summary: MobileSummary
+        var content: Data
         var at: Date
     }
 
@@ -269,13 +311,12 @@ public final class SummaryCache: Sendable {
     public func publish(_ summary: MobileSummary, at date: Date = .now,
                         reload: () -> Void = SamRabbitActions.reloadWidgets) -> Bool {
         save(summary, at: date)
-        var content = summary
-        content.generatedAt = nil
-        if let last = container.load(Reload.self, from: Self.reloadFile), last.summary == content,
+        let content = Self.content(of: summary)
+        if let last = container.load(Reload.self, from: Self.reloadFile), last.content == content,
            date.timeIntervalSince(last.at) < Self.refreshFacesAfter {
             return false
         }
-        container.save(Reload(summary: content, at: date), as: Self.reloadFile)
+        container.save(Reload(content: content, at: date), as: Self.reloadFile)
         reload()
         return true
     }
@@ -283,5 +324,12 @@ public final class SummaryCache: Sendable {
     public func clear() {
         container.remove(Self.file)
         container.remove(Self.reloadFile)
+    }
+
+    /// What a summary says, as bytes: encoded with sorted keys, without `generatedAt`.
+    static func content(of summary: MobileSummary) -> Data {
+        var content = summary
+        content.generatedAt = nil
+        return (try? BridgeJSON.encoder().encode(content)) ?? Data()
     }
 }

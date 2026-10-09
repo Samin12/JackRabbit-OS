@@ -246,6 +246,28 @@ struct WidgetReloadTests {
         #expect(cache.publish(summary(needsYou: 3, at: later), at: later.addingTimeInterval(60)) { reloads += 1 })
         #expect(reloads == 5)
     }
+
+    /// Dates finer than a millisecond (the bridge sends microseconds) don't survive a save; the cache
+    /// compares what it saved as bytes, so the same summary is still "the same" after a round trip.
+    @Test func subMillisecondDatesDoNotReloadEveryTime() throws {
+        let cache = SummaryCache(container: .temporary())
+        var reloads = 0
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let seen = Date(timeIntervalSince1970: 1_800_000_000.123456)
+        var fresh = summary(needsYou: 1, at: start)
+        fresh.r1 = R1Status(lastSeenAt: seen, live: false)
+        fresh.transcribe = TranscribeStatus(available: true)
+        let decoded = try BridgeJSON.decode(MobileSummary.self, from: BridgeJSON.encoder().encode(fresh))
+        #expect(decoded != fresh) // the round trip keeps milliseconds only
+        #expect(cache.publish(fresh, at: start) { reloads += 1 })
+        for step in 1...5 {
+            let date = start.addingTimeInterval(TimeInterval(step * 20))
+            #expect(!cache.publish(fresh, at: date) { reloads += 1 })
+        }
+        #expect(reloads == 1)
+        fresh.transcribe = TranscribeStatus(available: false, reason: "model_downloading")
+        #expect(cache.publish(fresh, at: start.addingTimeInterval(200)) { reloads += 1 })
+    }
 }
 
 @Suite("Links")

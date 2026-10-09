@@ -53,7 +53,7 @@ struct WorkingRow: View {
     }
 }
 
-/// A task's latest messages with Reply (dictation), Approve / Deny when it waits, and Stop.
+/// A task's latest messages with Reply (voice), Approve / Deny when it waits, and Stop.
 struct ThreadDetailView: View {
     @Environment(WatchModel.self) private var model
     let route: ThreadRoute
@@ -109,18 +109,13 @@ struct ThreadDetailView: View {
             }
             .disabled(busy)
         }
-        DictationButton(title: thread.status == .needsInput ? "Answer" : "Reply",
-                        prompt: "Reply to “\(Formatting.clip(thread.title, 30))”",
-                        colors: [SamTheme.orb2, SamTheme.orb], height: 40, busy: busy) { text in
-            Task {
-                if thread.status == .needsInput {
-                    await model.answer(thread, text, pending: detail.pending)
-                } else {
-                    await model.reply(thread, text)
-                }
-                await load()
-            }
+        let answering = thread.status == .needsInput && detail.pending?.canRespond == true
+        VoiceButton(title: answering ? "Answer" : "Reply",
+                    purpose: answering ? .answer(thread, detail.pending) : .reply(thread),
+                    colors: [SamTheme.orb2, SamTheme.orb], height: 40, busy: busy) {
+            await load()
         }
+        .accessibilityIdentifier("thread-voice")
         if thread.status == .working {
             Button(role: .destructive) {
                 Task { await model.stop(thread); await load() }

@@ -13,7 +13,7 @@ struct SamRabbitWatchWidgetsBundle: WidgetBundle {
 
 // MARK: - Control (Action Button, Control Center, Smart Stack)
 
-/// "Ask SamRabbit" on the watch: opens the watch app with dictation on for a new task. On Apple
+/// "Ask SamRabbit" on the watch: opens the watch app already listening for a new task. On Apple
 /// Watch Ultra: Settings > Action Button > Action > Control, then Control (says "Configure" until
 /// set) > SamRabbit > Ask SamRabbit. A single press then runs it. It runs on the watch (the iPhone's control opens the iPhone app, so watchOS
 /// doesn't offer that one here).
@@ -28,7 +28,7 @@ struct WatchAskControl: ControlWidget {
             }
         }
         .displayName("Ask SamRabbit")
-        .description("Opens SamRabbit on your watch with dictation on, for a new task.")
+        .description("Opens SamRabbit on your watch, listening for a new task.")
     }
 }
 

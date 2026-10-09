@@ -1,7 +1,7 @@
 import SamRabbitKit
 import SwiftUI
 
-/// Page 2: tasks waiting for you: Approve / Deny, the offered answers, or a dictated reply.
+/// Page 2: tasks waiting for you: Approve / Deny, the offered answers, or a spoken reply.
 struct NeedsYouPage: View {
     @Environment(WatchModel.self) private var model
 
@@ -88,10 +88,9 @@ struct NeedsYouCard: View {
                     .tint(SamTheme.red)
                     .accessibilityIdentifier("deny-\(thread.threadId)")
                 }
-                DictationButton(title: "Reply", prompt: "Reply to “\(Formatting.clip(thread.title, 30))”",
-                                colors: [Color.white.opacity(0.16), Color.white.opacity(0.10)], height: 36) { text in
-                    Task { await model.reply(thread, text) }
-                }
+                VoiceButton(title: "Reply", purpose: .reply(thread),
+                            colors: [Color.white.opacity(0.16), Color.white.opacity(0.10)], height: 36)
+                    .accessibilityIdentifier("reply-\(thread.threadId)")
             } else {
                 ForEach((thread.pending?.options ?? []).prefix(4)) { option in
                     Button {
@@ -102,10 +101,9 @@ struct NeedsYouCard: View {
                     .buttonStyle(.bordered)
                     .tint(SamTheme.violet)
                 }
-                DictationButton(title: "Answer", prompt: thread.pending?.text ?? "Your answer",
-                                colors: [SamTheme.violet.opacity(0.9), SamTheme.violet.opacity(0.6)], height: 38) { text in
-                    Task { await model.answer(thread, text, pending: pending) }
-                }
+                VoiceButton(title: "Answer", purpose: .answer(thread, pending),
+                            colors: [SamTheme.violet.opacity(0.9), SamTheme.violet.opacity(0.6)], height: 38)
+                    .accessibilityIdentifier("answer-\(thread.threadId)")
             }
         }
         .disabled(busy)

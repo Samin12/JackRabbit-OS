@@ -79,6 +79,12 @@ final class FakeBridgeProcess: @unchecked Sendable {
         return Set(devices.compactMap { $0["deviceId"].string })
     }
 
+    /// `GET /__fake/transcribe`: the mode and the recordings that arrived (size, type, lang, device).
+    func transcribeState() async throws -> JSONValue {
+        let (data, _) = try await URLSession.shared.data(from: base.appendingPathComponent("__fake/transcribe"))
+        return try JSONDecoder().decode(JSONValue.self, from: data)
+    }
+
     func journal() async throws -> [String] {
         let (data, _) = try await URLSession.shared.data(from: base.appendingPathComponent("__fake/journal"))
         return try JSONDecoder().decode(JSONValue.self, from: data)["lines"].array?.compactMap(\.string) ?? []

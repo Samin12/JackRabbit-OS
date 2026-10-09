@@ -1,7 +1,7 @@
 import SamRabbitKit
 import SwiftUI
 
-/// Page 1: the orb, one line of status, and a big Ask button (dictation -> a new T3 task).
+/// Page 1: the orb, one line of status, and a big Ask button (voice -> a new T3 task).
 struct StatusPage: View {
     @Environment(WatchModel.self) private var model
     @Environment(\.isLuminanceReduced) private var dimmed
@@ -37,11 +37,9 @@ struct StatusPage: View {
                 }
                 .buttonStyle(.plain)
             } else {
-                DictationButton(title: model.busy.contains("ask") ? "Starting…" : "Ask", prompt: "What should SamRabbit do?",
-                                colors: [SamTheme.orb2, SamTheme.orb], height: 48, busy: model.busy.contains("ask")) { text in
-                    Task { await model.ask(text) }
-                }
-                .accessibilityHint("Dictate a task for T3 Code")
+                VoiceButton(title: model.busy.contains("ask") ? "Starting…" : "Ask", purpose: .ask,
+                            colors: [SamTheme.orb2, SamTheme.orb], height: 48, busy: model.busy.contains("ask"))
+                    .accessibilityHint("Say a task for T3 Code")
             }
         }
         .padding(.horizontal, 6)

@@ -16,7 +16,8 @@ extension Notification.Name {
 ///   (`WatchContext`) and stores them like a pairing (App Group + Keychain), so the watch and its
 ///   complications call the bridge directly;
 /// * is the `BridgeRelay` of the watch's clients: when the Mac can't be reached directly, the
-///   request goes to the iPhone with `sendMessage` (`WatchRelay`) and the phone performs it.
+///   request goes to the iPhone with `sendMessage` (`WatchRelay`) and the phone performs it; a voice
+///   recording goes in chunks of at most 40 KB (`VoiceRelay`) and the phone uploads it for transcription.
 final class PhoneLink: NSObject, WCSessionDelegate, BridgeRelay, @unchecked Sendable {
     static let shared = PhoneLink()
 
@@ -85,6 +86,24 @@ final class PhoneLink: NSObject, WCSessionDelegate, BridgeRelay, @unchecked Send
         return (response.status, response.body)
     }
 
+    /// A recording through the iPhone (`VoiceRelay`): one `sendMessage` per chunk, in order, each
+    /// acknowledged; the phone answers the last one with the bridge's status and body (or refuses a
+    /// chunk with an error envelope). Throws `BridgeError.unreachable` when the phone can't be reached or
+    /// stops answering (transcribing changes nothing on the Mac, so that is safe to try another way).
+    func relayTranscription(_ audio: Data, contentType: String, language: String?) async throws -> (status: Int, body: Data) {
+        let chunks = VoiceRelay.chunks(of: audio, contentType: contentType, language: language)
+        for chunk in chunks {
+            // The last reply waits for the Mac's words (the bridge allows itself about 45 s).
+            let reply = try await exchange(timeout: chunk.isLast ? 75 : 15) { chunk.message }
+            if let data = reply.relay, let response = WatchRelay.Response(message: [WatchRelay.responseKey: data]) {
+                state.withLock { $0.lastRoute = .phone }
+                return (response.status, response.body)
+            }
+            guard !chunk.isLast, reply.ack == chunk.seq else { break }
+        }
+        throw BridgeError.unreachable("iPhone: the recording got no answer")
+    }
+
     // MARK: - Pairing from the phone
 
     /// Asks the iPhone for the pairing now (on launch without one, or "Reconnect" after the Mac
@@ -151,6 +170,8 @@ final class PhoneLink: NSObject, WCSessionDelegate, BridgeRelay, @unchecked Send
         var relay: Data?
         var context: Data?
         var unpaired: Bool
+        /// The phone kept a voice chunk (its `seq`).
+        var ack: Int?
     }
 
     /// One `sendMessage` round trip. Throws `BridgeError.unreachable` when nothing reached the
@@ -167,7 +188,8 @@ final class PhoneLink: NSObject, WCSessionDelegate, BridgeRelay, @unchecked Send
             session.sendMessage(payload, replyHandler: { answer in
                 once.resume(.success(Reply(relay: answer[WatchRelay.responseKey] as? Data,
                                            context: answer[WatchContext.key] as? Data,
-                                           unpaired: answer[WatchContext.unpairedKey] as? Bool == true)))
+                                           unpaired: answer[WatchContext.unpairedKey] as? Bool == true,
+                                           ack: answer[VoiceRelay.ackKey] as? Int)))
             }, errorHandler: { error in
                 let code = (error as? WCError)?.code
                 switch code {

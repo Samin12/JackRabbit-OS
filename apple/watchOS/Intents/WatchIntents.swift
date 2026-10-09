@@ -12,14 +12,14 @@ enum WatchDestination: String, AppEnum {
 
     static let typeDisplayRepresentation: TypeDisplayRepresentation = "SamRabbit page"
     static let caseDisplayRepresentations: [WatchDestination: DisplayRepresentation] = [
-        .ask: DisplayRepresentation(title: "Ask", synonyms: ["dictation", "new task"]),
+        .ask: DisplayRepresentation(title: "Ask", synonyms: ["voice", "new task"]),
         .needs: DisplayRepresentation(title: "Needs You", synonyms: ["approvals"]),
         .working: "Working",
         .upnext: DisplayRepresentation(title: "Up Next", synonyms: ["calendar"]),
         .quick: DisplayRepresentation(title: "Quick Actions", synonyms: ["quick"]),
     ]
 
-    /// The route the watch app follows: Ask opens the status page with dictation already on.
+    /// The route the watch app follows: Ask opens the status page with the voice capture already listening.
     var route: String {
         switch self {
         case .ask: PendingRoute.askListening
@@ -28,12 +28,12 @@ enum WatchDestination: String, AppEnum {
     }
 }
 
-/// Opens SamRabbit on the watch. With Ask (the default) it opens the dictation sheet for a new T3
+/// Opens SamRabbit on the watch. With Ask (the default) it opens the voice capture for a new T3
 /// task right away. This is what the Watch Ultra's Action Button runs (the "Ask SamRabbit" control)
 /// and what Siri on the watch runs ("Ask SamRabbit").
 struct OpenSamRabbitWatchIntent: OpenIntent {
     static let title: LocalizedStringResource = "Open SamRabbit"
-    static let description = IntentDescription("Opens SamRabbit on your watch. Ask starts dictation for a new task.")
+    static let description = IntentDescription("Opens SamRabbit on your watch. Ask listens for a new task.")
 
     @Parameter(title: "Page", default: .ask)
     var target: WatchDestination

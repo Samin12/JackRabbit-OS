@@ -19,6 +19,11 @@ What is in it:
   gets a new streamed exchange every minute.
 * An agenda relative to now, Block / new events, an in-memory journal, Mac state, open and a
   screenshot JPEG, and generated UIs (``/ui/generate`` is ready after about four seconds).
+* ``POST /v1/mobile/transcribe[?lang=]`` (the watch's voice input): checks a recording like the real bridge
+  (Content-Type, Content-Length, 2 MiB, the container's own bytes, 90 s from an m4a's header, ``lang``) and
+  answers canned words ``{text, durationMs, engine, locale}`` after a short pause; the summary says
+  ``transcribe: {available, reason?}``. Nothing is transcribed and the audio is not kept (only its size, type
+  and the device that sent it, for tests).
 
 Devices follow the real bridge's rules: a wrong or expired code answers 401 ``invalid_code`` and ten wrong
 codes in ten minutes 429 ``pairing_rate_limited``; ``POST /v1/mobile/devices/child`` works only with an
@@ -33,7 +38,12 @@ Fake-only helpers (loopback, no token): ``POST /__fake/reset``, ``GET /__fake/jo
 ``POST /__fake/chatter``, ``POST /__fake/settle`` (finish every pending simulated step now),
 ``POST /__fake/rerequest {threadId, text?}`` (the open request was answered elsewhere and T3 asks a new one:
 same thread, new ``requestId``), ``POST /__fake/t3 {available}`` (T3 Code stops or starts answering: the summary
-says ``t3.available=false`` and every ``/v1/mobile/t3/*`` route answers 503 ``t3_unavailable``).
+says ``t3.available=false`` and every ``/v1/mobile/t3/*`` route answers 503 ``t3_unavailable``),
+``POST /__fake/transcribe {mode?, text?, delay?}`` (what ``/transcribe`` answers: ``ok`` (the canned ``text``),
+``empty``, ``unavailable`` (503 ``transcribe_unavailable``, reason ``model_downloading``; the summary says
+unavailable), ``permission`` (503 ``transcribe_permission``), ``failed`` (502 ``transcribe_failed``), ``busy``
+(503 ``transcribe_busy``), ``no_speech`` (422) or ``missing`` (an older bridge: 404 and no ``transcribe`` in the
+summary)) and ``GET /__fake/transcribe`` (the mode and the uploads that arrived: bytes, type, lang, device).
 Stdlib only, Python 3.9.
 """
 
@@ -48,6 +58,7 @@ import os
 import re
 import secrets
 import socket
+import struct
 import sys
 import threading
 import time
@@ -64,6 +75,23 @@ DEFAULT_CODE = "SAMRABBT"
 DESKTOP_TOKEN = "fake-desktop-token"
 CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 HEARTBEAT_SECONDS = 15.0
+# Voice (the real bridge's limits and answers, samrabbit_transcribe.py)
+TRANSCRIBE_MAX_BYTES = 2 * 1024 * 1024
+TRANSCRIBE_MAX_SECONDS = 90.5
+TRANSCRIBE_TYPES = {"audio/mp4": "mp4", "audio/x-m4a": "mp4", "audio/m4a": "mp4", "audio/wav": "wav",
+                    "audio/x-wav": "wav", "audio/wave": "wav", "audio/aac": "aac", "audio/x-aac": "aac"}
+DEFAULT_TRANSCRIPT = "Draft the release notes for build 2.4 and post them in the team channel"
+TRANSCRIBE_FAILURES: Dict[str, Tuple[int, str, str, bool, Optional[str]]] = {
+    "unavailable": (503, "transcribe_unavailable", "The Mac is downloading the speech model for that language. "
+                    "Try again in a minute.", True, "model_downloading"),
+    "permission": (503, "transcribe_permission", "Speech Recognition is turned off for SamRabbit on the Mac "
+                   "(System Settings > Privacy & Security > Speech Recognition).", False, None),
+    "failed": (502, "transcribe_failed", "The Mac could not transcribe the recording.", True, None),
+    "busy": (503, "transcribe_busy", "The Mac is transcribing other recordings. Try again in a moment.", True, None),
+    "no_speech": (422, "no_speech", "No speech was heard in the recording.", False, None),
+}
+TRANSCRIBE_MODES = ("ok", "empty", "missing") + tuple(TRANSCRIBE_FAILURES)
+_LANG = re.compile(r"^[A-Za-z]{2,3}(?:[-_][A-Za-z0-9]{1,8}){0,3}$")
 
 
 def now_ms() -> int:
@@ -115,6 +143,56 @@ def read_fixture(name: str) -> bytes:
 
 
 # --------------------------------------------------------------------------- generated UI documents
+
+def sniff_audio(data: bytes) -> Optional[str]:
+    """``mp4`` (``ftyp`` first), ``wav`` (RIFF/WAVE) or ``aac`` (ADTS), from the bytes alone (as the real bridge)."""
+    if len(data) >= 12 and data[4:8] == b"ftyp":
+        return "mp4"
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WAVE":
+        return "wav"
+    if len(data) >= 7 and data[0] == 0xFF and (data[1] & 0xF6) == 0xF0:
+        return "aac"
+    return None
+
+
+def _mp4_boxes(data: bytes, start: int, end: int):  # type: ignore[no-untyped-def]
+    position = start
+    while position + 8 <= end:
+        size, kind = struct.unpack(">I4s", data[position:position + 8])
+        header = 8
+        if size == 1:
+            if position + 16 > end:
+                return
+            size = struct.unpack(">Q", data[position + 8:position + 16])[0]
+            header = 16
+        elif size == 0:
+            size = end - position
+        if size < header:
+            return
+        yield kind, position + header, min(position + size, end)
+        position += size
+
+
+def mp4_seconds(data: bytes) -> Optional[float]:
+    """An m4a's length from its ``moov/mvhd`` box (None when it doesn't say)."""
+    try:
+        for kind, start, end in _mp4_boxes(data, 0, len(data)):
+            if kind != b"moov":
+                continue
+            for inner, body, stop in _mp4_boxes(data, start, end):
+                if inner != b"mvhd" or body + 20 > stop:
+                    continue
+                if data[body] == 1:
+                    if body + 32 > stop:
+                        return None
+                    scale, duration = struct.unpack(">IQ", data[body + 20:body + 32])
+                else:
+                    scale, duration = struct.unpack(">II", data[body + 12:body + 20])
+                return duration / scale if scale else None
+    except struct.error:
+        return None
+    return None
+
 
 def chart_document(title: str, subtitle: str, labels: List[str], values: List[float], unit: str) -> str:
     """A self-contained interactive bar chart (no network), styled like the bridge's generated UIs."""
@@ -235,6 +313,10 @@ class FakeBridge:
             self.r1_seen = time.time() - 40
             self.t3_available = True
             self.request_seq = 0
+            self.transcribe_mode = "ok"
+            self.transcript = DEFAULT_TRANSCRIPT
+            self.transcribe_delay = 0.6
+            self.uploads: List[Dict[str, Any]] = []
             now = time.time()
             self.focus_jpg = self.put_blob(read_fixture("genui-focus.jpg"))
             self.release_jpg = self.put_blob(read_fixture("genui-release.jpg"))
@@ -618,7 +700,18 @@ class FakeBridge:
             "latestConversation": {"conversationId": latest["conversationId"], "title": latest["title"],
                                    "lastAt": latest["lastAt"], "preview": latest["preview"]} if latest else None,
             "journal": {"available": True},
+            **self.transcribe_part(),
         }
+
+    def transcribe_part(self) -> Dict[str, Any]:
+        """The summary's ``transcribe`` part (none for an older bridge, mode ``missing``)."""
+        if self.transcribe_mode == "missing":
+            return {}
+        if self.transcribe_mode == "unavailable":
+            return {"transcribe": {"available": False, "reason": "model_downloading"}}
+        if self.transcribe_mode == "permission":
+            return {"transcribe": {"available": False, "reason": "permission_denied"}}
+        return {"transcribe": {"available": True}}
 
     # ------------------------------------------------------------------ auth
 
@@ -701,6 +794,7 @@ class Handler(BaseHTTPRequestHandler):
         if length > 256 * 1024:
             raise ApiError(413, "too_large", "Request body too large.")
         raw = self.rfile.read(length) if length else b""
+        self.consumed = True
         if not raw:
             return {}
         try:
@@ -710,6 +804,22 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(value, dict):
             raise ApiError(400, "invalid_json", "The body must be a JSON object.")
         return value
+
+    def optional_body(self) -> Dict[str, Any]:
+        """Like the real bridge's ``_optional_body``: no body or whitespace is ``{}``, a JSON object is read,
+        anything else that is not JSON answers 400 ``invalid_json``."""
+        length = int(self.headers.get("Content-Length") or 0)
+        if length > 64 * 1024:
+            raise ApiError(413, "body_too_large", "The body must be at most 65536 bytes.")
+        raw = self.rfile.read(length) if length else b""
+        self.consumed = True
+        if not raw.strip():
+            return {}
+        try:
+            value = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            raise ApiError(400, "invalid_json", "The body must be a JSON object.") from None
+        return value if isinstance(value, dict) else {}
 
     def query(self) -> Dict[str, List[str]]:
         return parse_qs(urlsplit(self.path).query)
@@ -745,6 +855,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def dispatch(self, method: str) -> None:
         path = urlsplit(self.path).path
+        self.consumed = False
         try:
             if not private_peer(self.client_address[0]):
                 raise ApiError(403, "forbidden_peer", "Only devices on your own network can use the bridge.")
@@ -763,6 +874,26 @@ class Handler(BaseHTTPRequestHandler):
                 pass
         except (BrokenPipeError, ConnectionResetError):
             pass
+        finally:
+            self.finish_body()
+
+    def finish_body(self) -> None:
+        """Reads a request body no route read (``/__fake/reset {}``, a refused request), so the next request on a
+        kept-alive connection starts where it should; a body too large to read closes the connection instead."""
+        if self.consumed:
+            return
+        self.consumed = True
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = -1
+        if 0 < length <= TRANSCRIBE_MAX_BYTES:
+            try:
+                self.rfile.read(length)
+            except OSError:
+                self.close_connection = True
+        elif length:
+            self.close_connection = True
 
     def health(self) -> Dict[str, Any]:
         return {"ok": True, "service": "samrabbit-bridge", "version": VERSION, "fake": True,
@@ -800,6 +931,21 @@ class Handler(BaseHTTPRequestHandler):
                 t["status"] = "needs_input" if fresh["kind"] == "question" else "needs_approval"
                 t["updatedAt"] = time.time()
                 return self.send_json(200, {"ok": True, "requestId": fresh["requestId"]})
+        if path == "/__fake/transcribe":
+            if method == "POST":
+                body = self.body()
+                with b.lock:
+                    mode = str(body.get("mode") or b.transcribe_mode)
+                    if mode not in TRANSCRIBE_MODES:
+                        raise ApiError(400, "invalid_mode", "mode must be one of " + ", ".join(TRANSCRIBE_MODES))
+                    b.transcribe_mode = mode
+                    if "text" in body:
+                        b.transcript = str(body.get("text") or "")
+                    if "delay" in body:
+                        b.transcribe_delay = max(0.0, min(30.0, float(body.get("delay") or 0)))
+            with b.lock:
+                return self.send_json(200, {"mode": b.transcribe_mode, "text": b.transcript,
+                                            "delay": b.transcribe_delay, "uploads": list(b.uploads)})
         if path == "/__fake/t3" and method == "POST":
             with b.lock:
                 b.t3_available = bool(self.body().get("available", True))
@@ -846,13 +992,17 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(200, {"token": token, "deviceId": child["deviceId"], "bridgeName": b.mac_name,
                                         "bridgeVersion": VERSION})
         if rest == "unpair":
-            # A device forgets itself (an iPhone takes its watch with it).
+            # A device forgets itself (an iPhone takes its watch with it). The body is read like the real bridge
+            # does (an empty or JSON-object body), so a kept-alive connection stays in step.
             self.only(method, "POST")
+            self.optional_body()
             removed = b.revoke(device["deviceId"])
             return self.send_json(200, {"ok": True, "revoked": len(removed)})
         if rest == "summary":
             with b.lock:
                 return self.send_json(200, b.summary())
+        if rest == "transcribe":
+            return self.transcribe(method, device)
         if rest == "stream":
             return self.stream()
         if rest == "conversations" or rest.startswith("conversations/"):
@@ -1181,6 +1331,65 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(200, {"ok": True})
 
     # ------------------------------------------------------------------ calendar
+
+    # ------------------------------------------------------------------ voice
+
+    def transcribe(self, method: str, device: Dict[str, Any]) -> None:
+        """``POST /v1/mobile/transcribe``: the real bridge's checks, then canned words (see ``/__fake/transcribe``)."""
+        b = self.bridge
+        self.only(method, "POST")
+        with b.lock:
+            mode, text, delay = b.transcribe_mode, b.transcript, b.transcribe_delay
+        if mode == "missing":
+            self.drain()
+            raise ApiError(404, "not_found", "Not found.")
+        declared = TRANSCRIBE_TYPES.get((self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower())
+        if declared is None:
+            self.drain()
+            raise ApiError(415, "unsupported_audio", "Send the recording as audio/mp4, audio/x-m4a, audio/wav or "
+                           "audio/aac.")
+        lang = (self.q1("lang") or "").strip()
+        if lang and not _LANG.match(lang):
+            self.drain()
+            raise ApiError(400, "invalid_lang", "lang must be a language tag such as en-US.")
+        if self.headers.get("Transfer-Encoding"):
+            raise ApiError(411, "length_required", "Send a Content-Length body.")
+        length = int(self.headers.get("Content-Length") or 0)
+        if length > TRANSCRIBE_MAX_BYTES:
+            raise ApiError(413, "body_too_large", "The body must be at most %d bytes." % TRANSCRIBE_MAX_BYTES)
+        if not length:
+            raise ApiError(400, "invalid_audio", "Send the recording as the request body.")
+        data = self.rfile.read(length)
+        self.consumed = True
+        if len(data) != length:
+            raise ApiError(400, "invalid_audio", "The recording did not arrive completely.", retryable=True)
+        kind = sniff_audio(data)
+        if kind is None:
+            raise ApiError(415, "unsupported_audio", "The body is not an m4a, WAV or AAC recording.")
+        seconds = mp4_seconds(data) if kind == "mp4" else None
+        if seconds is not None and seconds > TRANSCRIBE_MAX_SECONDS:
+            raise ApiError(413, "audio_too_long", "Recordings can be at most 90 seconds.")
+        with b.lock:
+            b.uploads.append({"bytes": length, "contentType": self.headers.get("Content-Type"), "kind": kind,
+                              "lang": lang or None, "deviceId": device["deviceId"], "platform": device.get("platform"),
+                              "parentId": device.get("parentId"), "seconds": seconds})
+            del b.uploads[:-20]
+        if delay:
+            time.sleep(delay)
+        failure = TRANSCRIBE_FAILURES.get(mode)
+        if failure:
+            status, code, message, retryable, reason = failure
+            error: Dict[str, Any] = {"code": code, "message": message, "retryable": retryable}
+            if reason:
+                error["reason"] = reason
+            return self.send_json(status, {"error": error})
+        return self.send_json(200, {"text": "" if mode == "empty" else text,
+                                    "durationMs": int((seconds or 0) * 1000), "engine": "FakeTranscriber",
+                                    "locale": lang or "en-US"})
+
+    def drain(self) -> None:
+        """Reads a body that is refused before it is used (keeps a kept-alive connection in step)."""
+        self.finish_body()
 
     def calendar(self, method: str, rest: str) -> None:
         b = self.bridge

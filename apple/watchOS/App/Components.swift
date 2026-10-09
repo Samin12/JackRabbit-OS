@@ -2,8 +2,8 @@ import SamRabbitKit
 import SwiftUI
 import WatchKit
 
-// Small building blocks shared by the watch pages: cards, the page background, the dictation
-// buttons and the result banner.
+// Small building blocks shared by the watch pages: cards, the page background, the voice button and
+// the result banner.
 
 extension View {
     /// A watch card: a translucent night panel with a hairline rim and an optional tint bloom.
@@ -66,51 +66,27 @@ struct CapsuleFace: View {
     }
 }
 
-/// A button that opens the watch's text input (dictation first, then Scribble or the keyboard) and
-/// hands over what was said.
-struct DictationButton: View {
+/// A button that opens the voice capture (`VoiceCaptureView`): the watch takes text only by voice.
+struct VoiceButton: View {
+    @Environment(WatchModel.self) private var model
     var title: String
     var symbol: String = "mic.fill"
-    var prompt: String
+    var purpose: VoicePurpose
     var colors: [Color]
     var height: CGFloat = 44
     var busy = false
-    var onSubmit: (String) -> Void
+    /// Runs after the action was sent (the thread screen reloads).
+    var after: (@MainActor () async -> Void)?
 
     var body: some View {
-        TextFieldLink(prompt: Text(prompt)) {
+        Button {
+            model.listen(purpose, after: after)
+        } label: {
             CapsuleFace(title: title, symbol: symbol, colors: colors, height: height, busy: busy)
-        } onSubmit: { text in
-            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty { onSubmit(trimmed) }
         }
         .buttonStyle(.plain)
         .disabled(busy)
-    }
-}
-
-/// The watch's text input opened from code, for the Action Button: Ask opens without a tap. With no
-/// suggestions and plain text, a watch starts it with dictation. Returns nil when cancelled or empty,
-/// or when there is no interface to present it from.
-@MainActor
-enum SystemTextInput {
-    static func dictate() async -> String? {
-        var controller = currentController()
-        for _ in 0..<10 where controller == nil { // right after launch the interface isn't up yet
-            try? await Task.sleep(for: .milliseconds(200))
-            controller = currentController()
-        }
-        guard let controller else { return nil }
-        return await withCheckedContinuation { continuation in
-            controller.presentTextInputController(withSuggestions: nil, allowedInputMode: .plain) { results in
-                let text = (results?.first as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                continuation.resume(returning: text.isEmpty ? nil : text)
-            }
-        }
-    }
-
-    private static func currentController() -> WKInterfaceController? {
-        WKApplication.shared().visibleInterfaceController ?? WKApplication.shared().rootInterfaceController
+        .accessibilityLabel(title)
     }
 }
 

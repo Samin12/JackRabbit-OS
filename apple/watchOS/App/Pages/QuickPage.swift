@@ -1,7 +1,7 @@
 import SamRabbitKit
 import SwiftUI
 
-/// Page 5: one-tap actions: block the next 30 minutes, add a dictated journal note.
+/// Page 5: one-tap actions: block the next 30 minutes, add a spoken journal note.
 struct QuickPage: View {
     @Environment(WatchModel.self) private var model
 
@@ -19,12 +19,10 @@ struct QuickPage: View {
                 .disabled(model.busy.contains("block"))
                 .accessibilityIdentifier("block30")
 
-                DictationButton(title: "Journal note", symbol: "book.pages.fill", prompt: "What should I add to today's journal?",
-                                colors: [Color(hex: 0x3FBFA9), Color(hex: 0x2A9C8A)], height: 46,
-                                busy: model.busy.contains("note")) { text in
-                    Task { await model.note(text) }
-                }
-                .accessibilityIdentifier("journalNote")
+                VoiceButton(title: "Journal note", symbol: "book.pages.fill", purpose: .note,
+                            colors: [Color(hex: 0x3FBFA9), Color(hex: 0x2A9C8A)], height: 46,
+                            busy: model.busy.contains("note"))
+                    .accessibilityIdentifier("journalNote")
 
                 ConnectionFooter()
                     .padding(.top, 4)
@@ -40,7 +38,7 @@ struct QuickPage: View {
 }
 
 /// Where to set the Watch Ultra's Action Button (an app can't set it): a single press then opens
-/// Ask with dictation on.
+/// Ask, already listening.
 struct ActionButtonHint: View {
     var body: some View {
         HStack(alignment: .top, spacing: 8) {

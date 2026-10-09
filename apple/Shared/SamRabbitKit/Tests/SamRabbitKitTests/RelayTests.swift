@@ -41,6 +41,32 @@ final class PhoneRelayStandIn: BridgeRelay, @unchecked Sendable {
         let received = WatchRelay.Response(message: answer.message)!
         return (received.status, received.body)
     }
+
+    /// The watch's voice relay, like `PhoneLink` + `WatchLink`: the recording in chunks through the
+    /// `sendMessage` dictionaries, put together by the phone's `VoiceRelay.Assembler`, uploaded with the
+    /// watch's own token.
+    func relayTranscription(_ audio: Data, contentType: String, language: String?) async throws -> (status: Int, body: Data) {
+        let (down, zero) = state.withLock { ($0.down, $0.answerZero) }
+        if down { throw BridgeError.unreachable("phone not reachable") }
+        let assembler = VoiceRelay.Assembler()
+        let chunks = VoiceRelay.chunks(of: audio, contentType: contentType, language: language)
+        state.withLock { $0.relayed.append("VOICE \(chunks.count) chunks") }
+        for chunk in chunks {
+            guard let received = VoiceRelay.Chunk(message: chunk.message) else { return (400, Data()) }
+            switch assembler.add(received) {
+            case .waiting(let count):
+                guard count == chunk.seq + 1, !chunk.isLast else { return (400, Data()) }
+            case .refused(let response):
+                return (response.status, response.body)
+            case .complete(let upload):
+                if zero { return (0, Data()) }
+                let answer = await phone.performRelayedTranscription(upload)
+                let reply = WatchRelay.Response(message: answer.message)!
+                return (reply.status, reply.body)
+            }
+        }
+        return (0, Data())
+    }
 }
 
 /// A TCP port that accepts connections and never answers (a Mac that hangs), or a closed port.

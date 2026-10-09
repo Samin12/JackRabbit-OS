@@ -8,6 +8,7 @@ struct SamRabbitWatchApp: App {
 
     init() {
         PhoneLink.shared.start()
+        VoiceFormat.removeLeftovers() // recordings a stopped run left behind
         _model = State(initialValue: WatchModel())
     }
 
@@ -62,6 +63,10 @@ struct WatchRootView: View {
                     .navigationDestination(for: ThreadRoute.self) { route in
                         ThreadDetailView(route: route)
                     }
+                }
+                // Every text the watch takes comes from here: voice only, never a keyboard.
+                .sheet(item: $model.voice) { request in
+                    VoiceCaptureView(request: request, model: model)
                 }
             } else {
                 UnpairedView()

@@ -54,6 +54,8 @@ final class WatchModel {
     /// Thread ids (and "block" / "note" / "ask") with a request in flight.
     var busy: Set<String> = []
     var banner: WatchBanner?
+    /// The voice capture on screen (the only way the watch takes text).
+    var voice: VoiceRequest?
 
     private var loop: Task<Void, Never>?
     private var bannerTask: Task<Void, Never>?
@@ -201,28 +203,51 @@ final class WatchModel {
         }
     }
 
-    // MARK: - Actions
+    // MARK: - Voice
 
-    /// Ask with dictation already on, without a tap: the status page, then the watch's text input
-    /// (dictation first). This is what the Watch Ultra's Action Button runs (the "Ask SamRabbit" control).
-    func askByDictation() async {
-        // Jump to the status page without the paging animation: the text input presented over a page
-        // that is still scrolling leaves the pager where it started.
+    /// Opens the voice capture for `purpose` (it starts listening by itself). `after` runs once the
+    /// words were sent.
+    func listen(_ purpose: VoicePurpose, after: (@MainActor () async -> Void)? = nil) {
+        guard paired else { return }
+        if rejected {
+            show(.failure, "Watch removed", detail: "Reconnect through your iPhone.")
+            return
+        }
+        guard !busy.contains(purpose.busyKey) else { return }
+        voice = VoiceRequest(purpose: purpose, after: after)
+    }
+
+    /// Ask by voice without a tap: the status page, then the voice capture, already listening. This is
+    /// what the Watch Ultra's Action Button (the "Ask SamRabbit" control) and Siri ("Ask SamRabbit") run.
+    func askByVoice() async {
+        // Jump to the status page without the paging animation, then let it settle (right after launch
+        // the interface takes a moment) before the capture covers it.
         var jump = Transaction()
         jump.disablesAnimations = true
         withTransaction(jump) { page = .status }
-        guard paired, !rejected, !busy.contains("ask") else { return }
-        // Let the page settle first; right after launch the interface takes a moment. Cancelled, or no
-        // interface to present it from: the status page with its Ask button stays.
-        try? await Task.sleep(for: .milliseconds(600))
-        guard let text = await SystemTextInput.dictate() else { return }
-        await ask(text)
+        guard paired, !rejected, voice == nil else { return }
+        try? await Task.sleep(for: .milliseconds(400))
+        listen(.ask)
     }
 
-    func ask(_ text: String) async {
+    /// Performs what a voice capture was for, with its words. `sent` runs as soon as the bridge took it
+    /// (before the refresh), so the capture can close. Returns false when it failed (`banner` says why).
+    func send(_ purpose: VoicePurpose, _ text: String, sent: (@MainActor () -> Void)? = nil) async -> Bool {
+        switch purpose {
+        case .ask: await ask(text, sent: sent)
+        case .reply(let thread): await reply(thread, text, sent: sent)
+        case .answer(let thread, let pending): await answer(thread, text, pending: pending, sent: sent)
+        case .note: await note(text, sent: sent)
+        }
+    }
+
+    // MARK: - Actions
+
+    @discardableResult
+    func ask(_ text: String, sent: (@MainActor () -> Void)? = nil) async -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        await run("ask") {
+        guard !trimmed.isEmpty else { return false }
+        return await run("ask", sent: sent) {
             let created = try await self.actions.ask(trimmed)
             let title = created.title ?? Formatting.clip(trimmed, 40)
             self.show(.success, "Started", detail: created.projectName.map { "“\(title)” · \($0)" } ?? "“\(title)”")
@@ -244,14 +269,16 @@ final class WatchModel {
     }
 
     /// Answers exactly the question the card shows (see `approve`).
-    func answer(_ thread: TaskThread, _ text: String, pending: PendingAction? = nil) async {
+    @discardableResult
+    func answer(_ thread: TaskThread, _ text: String, pending: PendingAction? = nil,
+                sent: (@MainActor () -> Void)? = nil) async -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty else { return false }
         guard let requestId = (pending ?? thread.pending)?.requestId else {
             show(.failure, "Open the task", detail: "Check what it asks first.")
-            return
+            return false
         }
-        await run(thread.threadId) {
+        return await run(thread.threadId, sent: sent) {
             try await self.actions.answer(threadId: thread.threadId, requestId: requestId, trimmed)
             self.drop(thread.threadId)
             self.show(.success, "Answer sent", detail: thread.title)
@@ -259,10 +286,11 @@ final class WatchModel {
     }
 
     /// A message into the thread (a reply while it waits for approval, or a follow-up).
-    func reply(_ thread: TaskThread, _ text: String) async {
+    @discardableResult
+    func reply(_ thread: TaskThread, _ text: String, sent: (@MainActor () -> Void)? = nil) async -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        await run(thread.threadId) {
+        guard !trimmed.isEmpty else { return false }
+        return await run(thread.threadId, sent: sent) {
             try await self.account.requireClient().sendMessage(threadId: thread.threadId, text: trimmed)
             self.show(.success, "Reply sent", detail: thread.title)
         }
@@ -283,10 +311,11 @@ final class WatchModel {
         }
     }
 
-    func note(_ text: String) async {
+    @discardableResult
+    func note(_ text: String, sent: (@MainActor () -> Void)? = nil) async -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        await run("note") {
+        guard !trimmed.isEmpty else { return false }
+        return await run("note", sent: sent) {
             let result = try await self.actions.note(trimmed)
             self.show(.success, result.state == "queued" ? "Note queued" : "Added to journal",
                       detail: Formatting.clip(trimmed, 50))
@@ -295,17 +324,25 @@ final class WatchModel {
 
     /// Runs an action with the busy flag, haptics, a banner on failure and a refresh after (after a
     /// refusal from the bridge too, so a card that went stale is replaced by what is true now).
-    private func run(_ key: String, _ body: @escaping @MainActor () async throws -> Void) async {
-        guard !busy.contains(key) else { return }
+    /// `sent` runs right after the bridge took it, before the refresh. Returns whether it worked.
+    @discardableResult
+    private func run(_ key: String, sent: (@MainActor () -> Void)? = nil,
+                     _ body: @escaping @MainActor () async throws -> Void) async -> Bool {
+        guard !busy.contains(key) else {
+            if sent != nil { show(.failure, "Still sending", detail: "Wait a moment.") }
+            return false
+        }
         busy.insert(key)
         defer { busy.remove(key) }
         do {
             try await body()
             WKInterfaceDevice.current().play(.success)
+            sent?()
             route = link.lastRoute
             await refresh()
+            return true
         } catch let error as BridgeError {
-            if error == .cancelled { return }
+            if error == .cancelled { return false }
             WKInterfaceDevice.current().play(.failure)
             if error == .unauthorized { lastError = .unauthorized }
             if error.isStaleRequest {
@@ -319,9 +356,11 @@ final class WatchModel {
                 route = link.lastRoute
                 await refresh()
             }
+            return false
         } catch {
             WKInterfaceDevice.current().play(.failure)
             show(.failure, "Something went wrong")
+            return false
         }
     }
 
@@ -350,11 +389,11 @@ final class WatchModel {
     }
 
     /// `samrabbit://tab/<page>`, `samrabbit://ask`, `samrabbit://thread/<id>`. `fromApp`: the route
-    /// came from the watch's own intent; only then does `ask?listen=1` open dictation by itself.
+    /// came from the watch's own intent; only then does `ask?listen=1` open the voice capture by itself.
     func handle(url: URL, fromApp: Bool = false) {
         guard url.scheme?.lowercased() == SamRabbit.urlScheme else { return }
         if case .compose(.ask, listen: true)? = AppLink(url: url, fromApp: fromApp) {
-            Task { await askByDictation() }
+            Task { await askByVoice() }
             return
         }
         let target = (url.host ?? "").lowercased()

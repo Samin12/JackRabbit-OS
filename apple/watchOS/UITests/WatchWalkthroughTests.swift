@@ -12,9 +12,11 @@ final class WatchWalkthroughTests: XCTestCase {
         continueAfterFailure = false
     }
 
-    private func launch(page: String, route: String? = nil, intent: String? = nil) throws -> XCUIApplication {
+    /// `voice`: the debug build's made-up voice (`VoiceFixtureSource`) instead of the microphone.
+    private func launch(page: String, route: String? = nil, intent: String? = nil,
+                        voice: String = "speech") throws -> XCUIApplication {
         let app = XCUIApplication()
-        app.launchArguments = ["-SamRabbitPage", page]
+        app.launchArguments = ["-SamRabbitPage", page, "-SamRabbitVoiceFixture", voice]
         if let route { app.launchArguments += ["-SamRabbitRoute", route] }
         if let intent { app.launchArguments += ["-SamRabbitIntent", intent] }
         app.launch()
@@ -136,53 +138,85 @@ final class WatchWalkthroughTests: XCTestCase {
         snap("watch-5-quick-blocked")
     }
 
-    /// Types into the system text input sheet (on a watch it opens with dictation; the simulator
-    /// shows the keyboard) and submits it with Done.
-    private func enterText(_ app: XCUIApplication, _ text: String, snapshot name: String) {
-        let input = app.textViews.firstMatch
-        XCTAssertTrue(input.waitForExistence(timeout: 5))
-        snap("\(name)-input")
-        input.typeText(text)
+    /// The voice capture: it listens by itself, stops after the quiet that follows the (made-up) voice,
+    /// shows the Mac's words, and Send performs the action. No keyboard anywhere.
+    private func speakAndSend(_ app: XCUIApplication, snapshot name: String, tapStop: Bool = false) {
+        let stop = app.descendants(matching: .any)["voice-stop"]
+        XCTAssertTrue(stop.waitForExistence(timeout: 12), "listening")
+        snap("\(name)-listening")
+        if tapStop { stop.tap() }
+        let transcript = app.staticTexts["voice-transcript"]
+        XCTAssertTrue(transcript.waitForExistence(timeout: 20), "the words came back")
+        XCTAssertFalse(app.keyboards.firstMatch.exists)
+        XCTAssertFalse(app.textViews.firstMatch.exists)
+        XCTAssertFalse(app.textFields.firstMatch.exists)
         settle(0.5)
-        snap("\(name)-typed")
-        let done = app.buttons["Done"]
-        XCTAssertTrue(done.waitForExistence(timeout: 3))
-        done.tap()
+        snap("\(name)-review")
+        app.buttons["voice-send"].tap()
     }
 
-    func test6_JournalNoteByDictation() throws {
+    func test6_JournalNoteByVoice() throws {
+        fakeSync("transcribe", ["mode": "ok", "delay": 0.8, "text": "Walked the dog before standup"])
         let app = try launch(page: "quick")
         let note = app.buttons["journalNote"]
         XCTAssertTrue(note.waitForExistence(timeout: 10))
         note.tap()
-        enterText(app, "Walked the dog before standup", snapshot: "watch-6-journal-note")
+        speakAndSend(app, snapshot: "watch-6-journal-note")
         XCTAssertTrue(element(app, labelBeginsWith: "Added to journal").waitForExistence(timeout: 15))
         snap("watch-6-journal-note-added")
+        let journal = fakeGet("journal")["lines"] as? [String] ?? []
+        XCTAssertTrue(journal.last?.hasSuffix("Walked the dog before standup") == true)
     }
 
-    func test7_AskByDictation() throws {
+    func test7_AskByVoice() throws {
+        fakeSync("transcribe", ["mode": "ok", "delay": 0.8, "text": "Draft the release notes for 2.4"])
         let app = try launch(page: "status")
         let ask = app.buttons["Ask"]
         XCTAssertTrue(ask.waitForExistence(timeout: 10))
         ask.tap()
-        enterText(app, "Draft the release notes for 2.4", snapshot: "watch-7-ask")
+        speakAndSend(app, snapshot: "watch-7-ask")
         XCTAssertTrue(element(app, labelBeginsWith: "Started").waitForExistence(timeout: 20))
         settle(0.6)
         snap("watch-7-ask-started")
     }
 
     /// The Watch Ultra's Action Button runs the "Ask SamRabbit" control (`OpenSamRabbitWatchIntent`):
-    /// the app opens on the status page with the text input already up (dictation first on a watch),
-    /// no tap on Ask. This watch has no Action Button, so `-SamRabbitIntent ask` runs the same intent at
-    /// launch, from the Quick page.
-    func test7b_ActionButtonOpensAskWithDictation() throws {
-        let app = try launch(page: "quick", intent: "ask")
-        XCTAssertTrue(app.textViews.firstMatch.waitForExistence(timeout: 12), "the text input opens by itself")
-        enterText(app, "Summarize today's PRs", snapshot: "watch-7b-action-button")
+    /// the app opens on the status page with the voice capture already listening, no tap on Ask. This
+    /// watch has no Action Button, so `-SamRabbitIntent ask` runs the same intent at launch, from the
+    /// Quick page.
+    func test7b_ActionButtonOpensAskListening() throws {
+        fakeSync("transcribe", ["mode": "ok", "delay": 0.8, "text": "Summarize today's PRs"])
+        let app = try launch(page: "quick", intent: "ask", voice: "hold")
+        speakAndSend(app, snapshot: "watch-7b-action-button", tapStop: true)
         XCTAssertTrue(element(app, labelBeginsWith: "Started").waitForExistence(timeout: 20))
         settle(0.6)
         snap("watch-7b-action-button-started")
         XCTAssertTrue(app.buttons["Ask"].waitForExistence(timeout: 10), "on the status page")
+    }
+
+    /// The fake bridge's loopback helpers, synchronously (these tests stay synchronous: a UI failure in
+    /// an async test with `continueAfterFailure = false` can hang the run).
+    @discardableResult
+    private func fakeSync(_ name: String, _ body: [String: Any]) -> [String: Any] {
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:3799/__fake/\(name)")!)
+        request.httpMethod = "POST"
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        return exchange(request)
+    }
+
+    private func fakeGet(_ name: String) -> [String: Any] {
+        exchange(URLRequest(url: URL(string: "http://127.0.0.1:3799/__fake/\(name)")!))
+    }
+
+    private func exchange(_ request: URLRequest) -> [String: Any] {
+        nonisolated(unsafe) var answer: [String: Any] = [:]
+        let done = DispatchSemaphore(value: 0)
+        URLSession.shared.dataTask(with: request) { data, _, _ in
+            answer = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
+            done.signal()
+        }.resume()
+        _ = done.wait(timeout: .now() + 10)
+        return answer
     }
 
     /// The Quick page says where to set the Action Button.

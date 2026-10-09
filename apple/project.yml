@@ -203,6 +203,8 @@ targets:
               - samrabbit
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
+        # The watch takes text only by voice: it records a short clip and your Mac turns it into words.
+        NSMicrophoneUsageDescription: Say tasks, replies, answers and journal notes. Your Mac turns the recording into words.
 
   # ------------------------------------------------------------------ Watch complications + the Ask control
   # The control's intent (watchOS/Intents) is compiled into the watch app too: a control can only open

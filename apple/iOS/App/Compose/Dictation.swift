@@ -22,6 +22,10 @@ final class SpeechDictation {
     private var prefix = ""
     /// Something was recognised since the last start.
     private var heard = false
+    /// Which listening session is current: callbacks from an earlier one (stopped and started again, or
+    /// restarted without the on-device model) arrive late and are ignored, so they never write into the
+    /// text or stop the new session.
+    private var generation = 0
 
     var isListening: Bool { state == .listening }
 
@@ -66,9 +70,12 @@ final class SpeechDictation {
             prefix = base.isEmpty ? "" : base + " "
             heard = false
             state = .listening
+            generation += 1
+            let current = generation
             task = Self.recognize(request, with: recognizer) { [weak self] transcript, done, failure in
                 Task { @MainActor in
-                    guard let self else { return }
+                    guard let self, self.generation == current else { return } // a finished session's late callback
+                    if done { self.generation += 1 } // nothing after its end counts either
                     if let transcript {
                         text.wrappedValue = self.prefix + transcript
                         self.heard = true

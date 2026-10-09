@@ -314,6 +314,133 @@ public final class BridgeClient: Sendable {
         try await data(.get("/v1/mobile/mac/screenshot", accept: "image/jpeg", timeout: 30))
     }
 
+    // MARK: - Voice
+
+    /// `POST /v1/mobile/transcribe[?lang=]`: a recording (the file is the raw body, `audio/mp4`) turned into
+    /// words on the Mac. Transcribing changes nothing on the Mac, so unlike other POSTs the recording may be
+    /// sent again another way after any connection problem (a timeout too): the next address, then the
+    /// relay (the Apple Watch: the iPhone, in chunks). Throws `BridgeError` (see `VoiceProblem` for what each
+    /// code means to a person).
+    public func transcribe(file: URL, contentType: String = VoiceFormat.contentType, language: String? = nil,
+                           timeout: TimeInterval = 60) async throws -> Transcript {
+        let size = (try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        guard size > 0 else { throw BridgeError.server(status: 400, code: "invalid_audio", message: "The recording is empty.", retryable: false) }
+        guard size <= VoiceFormat.maxBytes else { throw Self.tooLarge }
+        return try Self.transcript(try await transcription(.file(file), contentType: contentType, language: language,
+                                                           timeout: timeout))
+    }
+
+    /// `transcribe(file:)` for a recording in memory.
+    public func transcribe(audio: Data, contentType: String = VoiceFormat.contentType, language: String? = nil,
+                           timeout: TimeInterval = 60) async throws -> Transcript {
+        guard !audio.isEmpty else { throw BridgeError.server(status: 400, code: "invalid_audio", message: "The recording is empty.", retryable: false) }
+        guard audio.count <= VoiceFormat.maxBytes else { throw Self.tooLarge }
+        return try Self.transcript(try await transcription(.data(audio), contentType: contentType, language: language,
+                                                           timeout: timeout))
+    }
+
+    /// The iPhone's side of the watch's voice relay: the bridge's status and body for a recording, without
+    /// throwing for HTTP errors (like `raw`). Direct only; throws `BridgeError.unreachable` when no address
+    /// answered.
+    public func rawTranscription(audio: Data, contentType: String = VoiceFormat.contentType, language: String? = nil,
+                                 timeout: TimeInterval = 60) async throws -> (status: Int, body: Data) {
+        do {
+            let (body, response) = try await upload(Self.transcribeRequest(contentType: contentType, language: language,
+                                                                           timeout: timeout), .data(audio))
+            return (response.statusCode, body)
+        } catch let failure as NoRoute {
+            throw BridgeError.unreachable(failure.reason)
+        }
+    }
+
+    /// The request line and headers of a transcription (the body is the recording).
+    public static func transcribeRequest(contentType: String = VoiceFormat.contentType, language: String? = nil,
+                                         timeout: TimeInterval = 60) -> BridgeRequest {
+        var query: [URLQueryItem] = []
+        if let language, !language.isEmpty { query.append(URLQueryItem(name: "lang", value: language)) }
+        return BridgeRequest(method: "POST", path: "/v1/mobile/transcribe", query: query, body: nil, authorized: true,
+                             accept: "application/json", timeout: timeout, contentType: contentType)
+    }
+
+    private static let tooLarge = BridgeError.server(status: 413, code: "audio_too_large",
+                                                     message: "Recordings can be at most 2 MB.", retryable: false)
+
+    private static func transcript(_ answer: (status: Int, body: Data)) throws -> Transcript {
+        guard (200..<300).contains(answer.status) else { throw BridgeError.from(status: answer.status, data: answer.body) }
+        do {
+            return try BridgeJSON.decode(Transcript.self, from: answer.body)
+        } catch {
+            throw BridgeError.invalidResponse("Transcript")
+        }
+    }
+
+    /// Where an upload's body comes from.
+    enum UploadBody: Sendable {
+        case file(URL)
+        case data(Data)
+
+        func bytes() throws -> Data {
+            switch self {
+            case .file(let url): try Data(contentsOf: url)
+            case .data(let data): data
+            }
+        }
+    }
+
+    /// Directly (each address in turn), or through the relay: first when the relay is preferred right now,
+    /// otherwise after the direct route failed to connect or timed out.
+    private func transcription(_ source: UploadBody, contentType: String, language: String?,
+                               timeout: TimeInterval) async throws -> (status: Int, body: Data) {
+        let request = Self.transcribeRequest(contentType: contentType, language: language, timeout: timeout)
+        guard let relay else {
+            do {
+                let (body, response) = try await upload(request, source)
+                return (response.statusCode, body)
+            } catch let failure as NoRoute {
+                throw BridgeError.unreachable(failure.reason)
+            }
+        }
+        // Tried the relay already (it was down, or couldn't reach the Mac either): not again.
+        var relayTried = false
+        if relay.prefersRelay {
+            relayTried = true
+            do {
+                let answer = try await relay.relayTranscription(try source.bytes(), contentType: contentType,
+                                                                language: language)
+                if answer.status != 0 { return answer } // 0: the phone couldn't reach the Mac either; try directly
+            } catch BridgeError.unreachable {
+                // nothing went that way: try directly
+            }
+        }
+        var reason = "no address"
+        do {
+            let (body, response) = try await upload(request, source)
+            relay.noteDirectRoute(worked: true)
+            return (response.statusCode, body)
+        } catch let failure as NoRoute {
+            reason = failure.reason
+        } catch BridgeError.unreachable(let why) {
+            reason = why
+        }
+        relay.noteDirectRoute(worked: false)
+        if relayTried { throw BridgeError.unreachable(reason) }
+        return try Self.relayed(try await relay.relayTranscription(try source.bytes(), contentType: contentType,
+                                                                    language: language))
+    }
+
+    /// One upload over the addresses: a recording is safe to send again, so timeouts move on to the next
+    /// address too.
+    private func upload(_ request: BridgeRequest, _ source: UploadBody) async throws -> (Data, HTTPURLResponse) {
+        try await withHosts(request, idempotent: true) { urlRequest in
+            let (data, response) = switch source {
+            case .file(let url): try await self.session.upload(for: urlRequest, fromFile: url)
+            case .data(let bytes): try await self.session.upload(for: urlRequest, from: bytes)
+            }
+            guard let http = response as? HTTPURLResponse else { throw BridgeError.invalidResponse("not HTTP") }
+            return (data, http)
+        }
+    }
+
     // MARK: - Transport
 
     /// Sends a request and decodes its JSON answer.
@@ -410,7 +537,7 @@ public final class BridgeClient: Sendable {
 
     /// Runs `body` against each address in turn until one connects. Throws `NoRoute` when none
     /// did, and `BridgeError.unreachable` when the request may have reached the bridge.
-    private func withHosts<T>(_ request: BridgeRequest,
+    private func withHosts<T>(_ request: BridgeRequest, idempotent: Bool? = nil,
                               _ body: (URLRequest) async throws -> T) async throws -> T {
         guard !hosts.isEmpty else { throw BridgeError.notPaired }
         if request.authorized, token == nil { throw BridgeError.notPaired }
@@ -429,7 +556,7 @@ public final class BridgeClient: Sendable {
             } catch let error as URLError {
                 if error.code == .cancelled { throw BridgeError.cancelled }
                 // A POST that may have reached the bridge (a timeout) is never sent again elsewhere.
-                guard Self.isConnectionFailure(error, idempotent: request.method == "GET") else {
+                guard Self.isConnectionFailure(error, idempotent: idempotent ?? (request.method == "GET")) else {
                     throw BridgeError.unreachable(error.code.description)
                 }
                 lastError = error.code.description
@@ -456,6 +583,7 @@ public final class BridgeClient: Sendable {
             urlRequest.httpBody = body
             urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
+        if let contentType = request.contentType { urlRequest.setValue(contentType, forHTTPHeaderField: "Content-Type") }
         return urlRequest
     }
 
@@ -489,6 +617,20 @@ public struct BridgeRequest: Sendable {
     public var authorized: Bool
     public var accept: String
     public var timeout: TimeInterval?
+    /// The body's type when it isn't JSON (an upload: `audio/mp4`).
+    public var contentType: String?
+
+    public init(method: String, path: String, query: [URLQueryItem] = [], body: Data? = nil, authorized: Bool = true,
+                accept: String = "application/json", timeout: TimeInterval? = nil, contentType: String? = nil) {
+        self.method = method
+        self.path = path
+        self.query = query
+        self.body = body
+        self.authorized = authorized
+        self.accept = accept
+        self.timeout = timeout
+        self.contentType = contentType
+    }
 
     public static func get(_ path: String, query: [URLQueryItem] = [], authorized: Bool = true,
                            accept: String = "application/json", timeout: TimeInterval? = nil) -> BridgeRequest {
