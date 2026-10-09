@@ -473,6 +473,24 @@ class SessionTest(RealtimeBase):
                                   token=self.watch)
         self.assertEqual({"ok": True, "cancelled": False}, value, "nothing is running now")
 
+    def test_the_smoke_test_script(self) -> None:
+        import subprocess
+
+        self.rt_script({"say": ANSWER, "ms": 500})
+        before = self.call("GET", "/v1/mobile/devices", desktop=True)[1]["devices"]
+        done = subprocess.run(["/usr/bin/python3", "-I", str(ROOT / "realtime" / "smoke_turn.py"), "--port",
+                               str(self.port), "--desktop-token-file", str(self.desktop_file)],
+                              capture_output=True, text=True, timeout=120)
+        self.assertEqual(0, done.returncode, done.stdout + done.stderr)
+        self.assertIn("warm-up: brain=realtime", done.stdout)
+        self.assertIn("audio: 0.5 s of PCM16 16 kHz in 5 frames", done.stdout)
+        self.assertIn("done: brain=realtime", done.stdout)
+        self.assertIn("temporary device revoked: True", done.stdout)
+        self.assertTrue(done.stdout.strip().endswith("smoke test: ok"))
+        for secret in (ANSWER, "quick test", ACCESS, DESKTOP):
+            self.assertNotIn(secret, done.stdout + done.stderr)
+        self.assertEqual(before, self.call("GET", "/v1/mobile/devices", desktop=True)[1]["devices"])
+
     def test_end_closes_the_session_and_idle_sessions_close(self) -> None:
         turn = self.say_turn("hello")
         conversation = self.done(turn)["conversationId"]
@@ -835,7 +853,7 @@ class ProfileTest(unittest.TestCase):
         import ast
 
         for name in ("samrabbit_chatgpt.py", "samrabbit_realtime.py", "samrabbit_realtime_profile.py",
-                     "realtime/samrabbit_realtime_peer.py"):
+                     "realtime/samrabbit_realtime_peer.py", "realtime/smoke_turn.py"):
             ast.parse((ROOT / name).read_text(), feature_version=(3, 9))
 
 

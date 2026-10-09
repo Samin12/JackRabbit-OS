@@ -503,6 +503,9 @@ network, the helper) is answered by Claude instead, and a refusal pauses realtim
   `response.cancel` and `output_audio_buffer.clear` (the stream ends with `done {interrupted: true}`). Announcements
   are said by the session itself (`{"announce": id}` turns: a `[T3 update]` item and `response.create` with
   instructions to say the line verbatim).
+- A live check: `/usr/bin/python3 -I companion/mac-bridge/realtime/smoke_turn.py` pairs a temporary device, sends one
+  streamed text turn to the running bridge (nothing is played; the audio is only counted), ends the conversation,
+  revokes the device and prints only the brain, the events, the seconds of audio and the timings.
 - `/health` adds `assistant.brain`, `assistant.brainSetting` and `assistant.realtime: {available, reason?, model,
   voice, helper: {ready, python?, aiortc?, av?, reason?}, sessions, chatgpt: {connected, plan?}, lastError?}`.
 
