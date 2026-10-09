@@ -58,6 +58,9 @@ final class WatchModel {
     private var loop: Task<Void, Never>?
     private var bannerTask: Task<Void, Never>?
     private var pairingObserver: (any NSObjectProtocol)?
+    private var routeObserver: (any NSObjectProtocol)?
+    /// The app is in front (between `start()` and `stop()`).
+    private var active = false
 
     init(link: PhoneLink = .shared) {
         self.link = link
@@ -76,6 +79,15 @@ final class WatchModel {
         pairingObserver = NotificationCenter.default.addObserver(forName: .samRabbitPairingChanged, object: nil,
                                                                  queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.pairingChanged() }
+        }
+        // The Action Button's control (or Siri) ran its intent in this app while it is in front: no
+        // scene phase change follows, so follow its route now. Otherwise `start()` does.
+        routeObserver = NotificationCenter.default.addObserver(forName: PendingRoute.didChange, object: nil,
+                                                               queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.active else { return }
+                self.consumePendingRoute()
+            }
         }
     }
 
@@ -142,8 +154,10 @@ final class WatchModel {
         route = link.lastRoute
     }
 
-    /// Refreshes every 30 seconds while the app is in front.
+    /// Refreshes every 30 seconds while the app is in front, after following a route an intent left.
     func start() {
+        active = true
+        consumePendingRoute()
         loop?.cancel()
         loop = Task { [weak self] in
             while !Task.isCancelled {
@@ -154,6 +168,7 @@ final class WatchModel {
     }
 
     func stop() {
+        active = false
         loop?.cancel()
         loop = nil
     }
@@ -187,6 +202,22 @@ final class WatchModel {
     }
 
     // MARK: - Actions
+
+    /// Ask with dictation already on, without a tap: the status page, then the watch's text input
+    /// (dictation first). This is what the Watch Ultra's Action Button runs (the "Ask SamRabbit" control).
+    func askByDictation() async {
+        // Jump to the status page without the paging animation: the text input presented over a page
+        // that is still scrolling leaves the pager where it started.
+        var jump = Transaction()
+        jump.disablesAnimations = true
+        withTransaction(jump) { page = .status }
+        guard paired, !rejected, !busy.contains("ask") else { return }
+        // Let the page settle first; right after launch the interface takes a moment. Cancelled, or no
+        // interface to present it from: the status page with its Ask button stays.
+        try? await Task.sleep(for: .milliseconds(600))
+        guard let text = await SystemTextInput.dictate() else { return }
+        await ask(text)
+    }
 
     func ask(_ text: String) async {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -312,9 +343,20 @@ final class WatchModel {
 
     // MARK: - Links
 
-    /// `samrabbit://tab/<page>`, `samrabbit://ask`, `samrabbit://thread/<id>`.
-    func handle(url: URL) {
+    /// A route left by the watch's intents (`OpenSamRabbitWatchIntent`) in the App Group.
+    func consumePendingRoute() {
+        guard let url = PendingRoute.take(from: account.container.defaults) else { return }
+        handle(url: url, fromApp: true)
+    }
+
+    /// `samrabbit://tab/<page>`, `samrabbit://ask`, `samrabbit://thread/<id>`. `fromApp`: the route
+    /// came from the watch's own intent; only then does `ask?listen=1` open dictation by itself.
+    func handle(url: URL, fromApp: Bool = false) {
         guard url.scheme?.lowercased() == SamRabbit.urlScheme else { return }
+        if case .compose(.ask, listen: true)? = AppLink(url: url, fromApp: fromApp) {
+            Task { await askByDictation() }
+            return
+        }
         let target = (url.host ?? "").lowercased()
         let first = url.path.split(separator: "/").first.map(String.init) ?? ""
         switch target {

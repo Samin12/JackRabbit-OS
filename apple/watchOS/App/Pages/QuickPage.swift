@@ -28,12 +28,38 @@ struct QuickPage: View {
 
                 ConnectionFooter()
                     .padding(.top, 4)
+
+                ActionButtonHint()
             }
             .padding(.horizontal, 2)
         }
         .navigationTitle("Quick")
         .withBanner()
         .samPage(SamTheme.mint)
+    }
+}
+
+/// Where to set the Watch Ultra's Action Button (an app can't set it): a single press then opens
+/// Ask with dictation on.
+struct ActionButtonHint: View {
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "button.angledtop.vertical.left")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(SamTheme.orbPale)
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Action Button").font(.system(size: 13.5, weight: .semibold)).foregroundStyle(SamTheme.ink)
+                Text("Settings > Action Button: Action > Control, then Control > Ask SamRabbit. Press once to Ask.")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(SamTheme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .watchCard(tint: SamTheme.orb, padding: 9)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("action-button-hint")
     }
 }
 

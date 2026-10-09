@@ -88,8 +88,8 @@ struct SheetView: View {
 
     var body: some View {
         switch sheet {
-        case .ask(let prefill): ComposerSheet(kind: .ask, prefill: prefill)
-        case .note(let prefill): ComposerSheet(kind: .note, prefill: prefill)
+        case .ask(let prefill, let listen): ComposerSheet(kind: .ask, prefill: prefill, listen: listen)
+        case .note(let prefill, let listen): ComposerSheet(kind: .note, prefill: prefill, listen: listen)
         case .generate(let prefill, let start): ComposerSheet(kind: .generate, prefill: prefill, startAtOnce: start)
         case .openOnMac(let prefill): ComposerSheet(kind: .openOnMac, prefill: prefill)
         case .newTask: NewTaskSheet()

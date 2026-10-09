@@ -65,8 +65,10 @@ public enum AppLink: Sendable, Equatable {
     /// `samrabbit://pair` without a code: Settings with the manual pairing form.
     case manualPair
     /// An empty composer (`ask`, `note`, `generate` without text, `mac/open` without a target):
-    /// nothing happens until the person writes something and taps the button.
-    case compose(Composer)
+    /// nothing happens until the person writes something and taps the button. `listen`: start
+    /// dictation at once (`?listen=1`), kept only for the app's own intents (`fromApp`), such as the
+    /// Action Button. A link from outside never turns the microphone on.
+    case compose(Composer, listen: Bool = false)
     /// Something that writes: shown on a confirmation sheet, performed only by its Confirm button.
     case confirm(LinkAction)
     /// `thread/<id>` (or `task/<id>`): the Tasks tab, with the thread when there is an id.
@@ -82,7 +84,9 @@ public enum AppLink: Sendable, Equatable {
         case ask, note, generate, openOnMac
     }
 
-    public init?(url: URL) {
+    /// `fromApp`: the link came from one of the app's own intents (`PendingRoute`), not from a web
+    /// page, a message or another app.
+    public init?(url: URL, fromApp: Bool = false) {
         guard url.scheme?.lowercased() == SamRabbit.urlScheme else { return nil }
         if let link = PairLink(url: url) {
             self = .pair(link)
@@ -100,15 +104,16 @@ public enum AppLink: Sendable, Equatable {
             }
             return nil
         }
+        let listen = fromApp && ["1", "true", "yes"].contains(value("listen")?.lowercased() ?? "")
         switch target {
         case "pair":
             self = .manualPair
         case "ask", "new", "newtask":
-            self = value("text", "q").map { .confirm(.ask(text: $0)) } ?? .compose(.ask)
+            self = value("text", "q").map { .confirm(.ask(text: $0)) } ?? .compose(.ask, listen: listen)
         case "note", "journal":
-            self = value("text").map { .confirm(.note(text: $0)) } ?? .compose(.note)
+            self = value("text").map { .confirm(.note(text: $0)) } ?? .compose(.note, listen: listen)
         case "generate":
-            self = value("text", "prompt").map { .confirm(.generate(prompt: $0)) } ?? .compose(.generate)
+            self = value("text", "prompt").map { .confirm(.generate(prompt: $0)) } ?? .compose(.generate, listen: listen)
         case "block":
             let asked = value("minutes", "m").flatMap { Int($0) } ?? LinkAction.defaultBlockMinutes
             let minutes = min(max(asked, LinkAction.blockMinutes.lowerBound), LinkAction.blockMinutes.upperBound)

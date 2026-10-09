@@ -108,6 +108,27 @@ struct SettingsView: View {
             }
             .listRowBackground(SamTheme.glass2)
 
+            Section {
+                NavigationLink {
+                    ActionButtonHelpView()
+                } label: {
+                    Label {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Action Button")
+                            Text("Settings > Action Button > Controls > SamRabbit")
+                                .font(.system(size: 12.5))
+                                .foregroundStyle(SamTheme.muted)
+                        }
+                    } icon: {
+                        Image(systemName: "button.horizontal.top.press")
+                    }
+                }
+                .accessibilityIdentifier("action-button-help")
+            } footer: {
+                Text("Pick Ask SamRabbit, then press and hold the button: SamRabbit opens at Ask, already listening. Apple Watch Ultra: Settings > Action Button > Action > Control, then Control > Ask SamRabbit.")
+            }
+            .listRowBackground(SamTheme.glass2)
+
             Section("Widgets") {
                 NavigationLink {
                     WidgetGalleryView()

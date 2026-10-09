@@ -1,11 +1,15 @@
 import AVFoundation
 import Observation
+import os
 import SamRabbitKit
 import Speech
 import SwiftUI
 
-/// Speech to text on this iPhone (on-device when the language supports it). Appends to the bound
-/// text as you speak; the keyboard's own mic works in every field too.
+private let dictationLog = Logger(subsystem: "com.samrabbit.mobile", category: "dictation")
+
+/// Speech to text on this iPhone (on-device when the language supports it and its model is ready,
+/// otherwise Apple's speech service, like the keyboard's mic). Appends to the bound text as you
+/// speak; the keyboard's own mic works in every field too.
 @MainActor
 @Observable
 final class SpeechDictation {
@@ -16,6 +20,8 @@ final class SpeechDictation {
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
     private var prefix = ""
+    /// Something was recognised since the last start.
+    private var heard = false
 
     var isListening: Bool { state == .listening }
 
@@ -23,11 +29,11 @@ final class SpeechDictation {
         if isListening { stop() } else { Task { await start(text) } }
     }
 
-    func start(_ text: Binding<String>) async {
-        let speech = await withCheckedContinuation { continuation in
-            SFSpeechRecognizer.requestAuthorization { continuation.resume(returning: $0) }
-        }
-        guard speech == .authorized else {
+    /// `onDevice`: require the on-device recognizer when the language has one. If it can't start
+    /// (its model isn't on this iPhone yet; the Simulator has none), dictation starts once more with
+    /// Apple's speech service.
+    func start(_ text: Binding<String>, onDevice: Bool = true) async {
+        guard await Self.speechAuthorization() == .authorized else {
             state = .unavailable("Allow Speech Recognition for SamRabbit in Settings.")
             return
         }
@@ -35,6 +41,7 @@ final class SpeechDictation {
             state = .unavailable("Allow the microphone for SamRabbit in Settings.")
             return
         }
+        guard !isListening else { return }
         guard let recognizer = SFSpeechRecognizer(locale: Locale.current) ?? SFSpeechRecognizer(locale: Locale(identifier: "en-US")),
               recognizer.isAvailable else {
             state = .unavailable("Dictation isn't available right now.")
@@ -48,31 +55,72 @@ final class SpeechDictation {
             let request = SFSpeechAudioBufferRecognitionRequest()
             request.shouldReportPartialResults = true
             request.addsPunctuation = true
-            if recognizer.supportsOnDeviceRecognition { request.requiresOnDeviceRecognition = true }
-            let input = engine.inputNode
-            let format = input.outputFormat(forBus: 0)
-            input.installTap(onBus: 0, bufferSize: 1024, format: format) { [request] buffer, _ in
-                request.append(buffer)
-            }
+            let localOnly = onDevice && recognizer.supportsOnDeviceRecognition
+            request.requiresOnDeviceRecognition = localOnly
+            Self.feed(engine.inputNode, into: request)
             engine.prepare()
             try engine.start()
             self.engine = engine
             self.request = request
             let base = text.wrappedValue.trimmingCharacters(in: .whitespaces)
             prefix = base.isEmpty ? "" : base + " "
+            heard = false
             state = .listening
-            task = recognizer.recognitionTask(with: request) { [weak self] result, error in
-                let transcript = result?.bestTranscription.formattedString
-                let final = result?.isFinal ?? false
+            task = Self.recognize(request, with: recognizer) { [weak self] transcript, done, failure in
                 Task { @MainActor in
                     guard let self else { return }
-                    if let transcript { text.wrappedValue = self.prefix + transcript }
-                    if error != nil || final { self.stop() }
+                    if let transcript {
+                        text.wrappedValue = self.prefix + transcript
+                        self.heard = true
+                    }
+                    guard done else { return }
+                    let wasListening = self.isListening
+                    self.stop()
+                    if let failure {
+                        dictationLog.notice("dictation ended: \(failure, privacy: .public)")
+                        if wasListening, !self.heard, localOnly, failure.hasPrefix("kLSRErrorDomain") {
+                            Task { await self.start(text, onDevice: false) }
+                            return
+                        }
+                        // It stopped on its own before hearing anything (silence, no network, no
+                        // speech model): say so instead of just going quiet.
+                        if wasListening, !self.heard {
+                            self.state = .unavailable("Dictation stopped before it heard anything. Tap the mic to try again, or type.")
+                        }
+                    }
                 }
             }
         } catch {
             state = .unavailable("The microphone couldn't start.")
             stop()
+        }
+    }
+
+    // Speech and AVFoundation call these back on their own queues (the tap on the audio thread). They
+    // are nonisolated so the closures don't inherit the main actor: Swift 6 traps a main-actor closure
+    // that runs anywhere else.
+
+    private nonisolated static func speechAuthorization() async -> SFSpeechRecognizerAuthorizationStatus {
+        await withCheckedContinuation { continuation in
+            SFSpeechRecognizer.requestAuthorization { continuation.resume(returning: $0) }
+        }
+    }
+
+    private nonisolated static func feed(_ input: AVAudioInputNode, into request: SFSpeechAudioBufferRecognitionRequest) {
+        let format = input.outputFormat(forBus: 0)
+        input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in request.append(buffer) }
+    }
+
+    /// `update(transcript, done, failure)`: the text so far, whether recognition ended (final or
+    /// failed), and the error's domain and code when it failed (never the words).
+    private nonisolated static func recognize(_ request: SFSpeechAudioBufferRecognitionRequest, with recognizer: SFSpeechRecognizer,
+                                              update: @escaping @Sendable (String?, Bool, String?) -> Void) -> SFSpeechRecognitionTask {
+        recognizer.recognitionTask(with: request) { result, error in
+            let failure = error.map { error -> String in
+                let ns = error as NSError
+                return "\(ns.domain) \(ns.code)"
+            }
+            update(result?.bestTranscription.formattedString, error != nil || (result?.isFinal ?? false), failure)
         }
     }
 
@@ -89,10 +137,19 @@ final class SpeechDictation {
     }
 }
 
-/// The mic button next to text fields.
+/// The mic button next to text fields. It has its own `SpeechDictation` unless it is given the
+/// one its screen drives (the Ask sheet starts listening on its own).
 struct DictationButton: View {
     @Binding var text: String
-    @State private var dictation = SpeechDictation()
+    @State private var own = SpeechDictation()
+    private let shared: SpeechDictation?
+
+    init(text: Binding<String>, dictation: SpeechDictation? = nil) {
+        _text = text
+        shared = dictation
+    }
+
+    private var dictation: SpeechDictation { shared ?? own }
 
     var body: some View {
         Button {

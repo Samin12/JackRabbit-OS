@@ -155,17 +155,23 @@ struct LockFace: View {
     }
 }
 
-// MARK: - Control Center
+// MARK: - Control Center, Lock Screen and Action Button
 
+/// "Ask SamRabbit": opens the app at Ask with dictation listening. iOS offers every control for the
+/// Action Button too (Settings > Action Button > Controls > SamRabbit). Pressing and holding the
+/// button shows "Hold to Ask SamRabbit".
 struct AskControl: ControlWidget {
+    static let kind = "com.samrabbit.control.ask"
+
     var body: some ControlWidgetConfiguration {
-        StaticControlConfiguration(kind: "com.samrabbit.control.ask") {
+        StaticControlConfiguration(kind: Self.kind) {
             ControlWidgetButton(action: OpenAskIntent()) {
                 Label("Ask SamRabbit", systemImage: "sparkles")
+                    .controlWidgetActionHint("Ask SamRabbit")
             }
         }
         .displayName("Ask SamRabbit")
-        .description("Opens SamRabbit ready to take a request.")
+        .description("Opens SamRabbit with the microphone on, ready for a new task.")
     }
 }
 

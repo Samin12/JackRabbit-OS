@@ -10,11 +10,15 @@ struct ComposerSheet: View {
     var prefill = ""
     /// Submit the prefilled text right away (a link's prompt the person already confirmed).
     var startAtOnce = false
+    /// Start dictation as the sheet opens, and again whenever this changes (the Action Button, the
+    /// Ask control and the widgets' Ask buttons).
+    var listen: UUID?
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @State private var text = ""
     @State private var working = false
     @State private var artifact: GeneratedArtifact?
+    @State private var dictation = SpeechDictation()
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -22,10 +26,15 @@ struct ComposerSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     HStack(spacing: 14) {
-                        OrbView(mood: working ? .working : .idle, halo: false).frame(width: 44, height: 44)
+                        OrbView(mood: working ? .working : dictation.isListening ? .live : .idle, halo: false)
+                            .frame(width: 44, height: 44)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(heading).font(.system(size: 20, weight: .semibold))
-                            Text(explainer).font(.system(size: 13.5)).foregroundStyle(SamTheme.muted)
+                            Text(dictation.isListening ? listeningHint : explainer)
+                                .font(.system(size: 13.5))
+                                .foregroundStyle(dictation.isListening ? SamTheme.orbPale : SamTheme.muted)
+                                .contentTransition(.opacity)
+                                .animation(.smooth, value: dictation.isListening)
                         }
                     }
                     .padding(.top, 6)
@@ -53,7 +62,7 @@ struct ComposerSheet: View {
                                 }
                             }
                             Spacer(minLength: 0)
-                            DictationButton(text: $text)
+                            DictationButton(text: $text, dictation: dictation)
                         }
                     }
                     .glassCard(radius: 22, padding: 14)
@@ -91,9 +100,23 @@ struct ComposerSheet: View {
             if text.isEmpty { text = prefill }
             if startAtOnce, !text.isEmpty, artifact == nil, !working {
                 submit()
-            } else {
-                focused = true
+            } else if listen == nil {
+                focused = true // with the mic on, no keyboard: tap the field to type instead
             }
+        }
+        .task(id: listen) {
+            guard listen != nil, !working, !dictation.isListening else { return }
+            focused = false
+            await dictation.start($text)
+        }
+    }
+
+    var listeningHint: String {
+        switch kind {
+        case .ask: "Listening… say what to do, then tap Start."
+        case .note: "Listening… say your note, then tap Add."
+        case .generate: "Listening… describe it, then tap Generate."
+        case .openOnMac: "Listening… say an app or a site."
         }
     }
 
@@ -138,6 +161,7 @@ struct ComposerSheet: View {
         guard !value.isEmpty, !working else { return }
         working = true
         focused = false
+        dictation.stop()
         Task {
             defer { working = false }
             switch kind {

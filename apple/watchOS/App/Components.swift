@@ -1,5 +1,6 @@
 import SamRabbitKit
 import SwiftUI
+import WatchKit
 
 // Small building blocks shared by the watch pages: cards, the page background, the dictation
 // buttons and the result banner.
@@ -85,6 +86,31 @@ struct DictationButton: View {
         }
         .buttonStyle(.plain)
         .disabled(busy)
+    }
+}
+
+/// The watch's text input opened from code, for the Action Button: Ask opens without a tap. With no
+/// suggestions and plain text, a watch starts it with dictation. Returns nil when cancelled or empty,
+/// or when there is no interface to present it from.
+@MainActor
+enum SystemTextInput {
+    static func dictate() async -> String? {
+        var controller = currentController()
+        for _ in 0..<10 where controller == nil { // right after launch the interface isn't up yet
+            try? await Task.sleep(for: .milliseconds(200))
+            controller = currentController()
+        }
+        guard let controller else { return nil }
+        return await withCheckedContinuation { continuation in
+            controller.presentTextInputController(withSuggestions: nil, allowedInputMode: .plain) { results in
+                let text = (results?.first as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                continuation.resume(returning: text.isEmpty ? nil : text)
+            }
+        }
+    }
+
+    private static func currentController() -> WKInterfaceController? {
+        WKApplication.shared().visibleInterfaceController ?? WKApplication.shared().rootInterfaceController
     }
 }
 

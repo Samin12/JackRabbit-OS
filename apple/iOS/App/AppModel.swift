@@ -11,8 +11,10 @@ enum AppTab: String, Hashable, CaseIterable {
 
 /// Sheets the app can present from anywhere (quick actions, widgets, Siri, deep links).
 enum AppSheet: Identifiable, Equatable {
-    case ask(prefill: String)
-    case note(prefill: String)
+    /// `listen`: start dictation as the sheet opens (the Action Button, the Ask control and buttons).
+    /// A new value while the sheet is already open starts it again.
+    case ask(prefill: String, listen: UUID? = nil)
+    case note(prefill: String, listen: UUID? = nil)
     /// `start`: generate right away (the person confirmed a link's prompt).
     case generate(prefill: String, start: Bool = false)
     case openOnMac(prefill: String)
@@ -82,6 +84,7 @@ final class AppModel {
     var unpairing = false
 
     private var refreshLoop: Task<Void, Never>?
+    private var routeObserver: (any NSObjectProtocol)?
     let notifications = NotificationController()
     let liveActivities = LiveActivityController()
 
@@ -92,6 +95,12 @@ final class AppModel {
         if let cached = SummaryCache.shared.load() {
             summary = cached.summary
             summaryDate = cached.savedAt
+        }
+        // An intent that ran inside the app (the Action Button or the Ask control while SamRabbit
+        // is already in front) leaves its route and posts this; no scene phase change follows.
+        routeObserver = NotificationCenter.default.addObserver(forName: PendingRoute.didChange, object: nil,
+                                                               queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.consumePendingRoute() }
         }
     }
 
@@ -378,18 +387,21 @@ final class AppModel {
     /// Follows a `samrabbit://` link (`AppLink`). Links that would change something (`block`, `ask`
     /// or `note` with text, `mac/open`, `generate` with a prompt) never act on their own: they open
     /// a confirmation sheet showing what will happen, performed only by its Confirm button.
-    func handle(url: URL) {
-        guard let link = AppLink(url: url) else { return }
+    /// `fromApp`: the route came from one of the app's own intents (`PendingRoute`). Only those
+    /// may open Ask with the microphone on (`ask?listen=1`).
+    func handle(url: URL, fromApp: Bool = false) {
+        guard let link = AppLink(url: url, fromApp: fromApp) else { return }
         switch link {
         case .pair(let pairLink):
             sheet = .pair(pairLink)
         case .manualPair:
             tab = .settings
             sheet = .manualPair
-        case .compose(let composer):
+        case .compose(let composer, let listen):
+            let token = listen ? UUID() : nil
             switch composer {
-            case .ask: sheet = .ask(prefill: "")
-            case .note: sheet = .note(prefill: "")
+            case .ask: sheet = .ask(prefill: "", listen: token)
+            case .note: sheet = .note(prefill: "", listen: token)
             case .generate: sheet = .generate(prefill: "")
             case .openOnMac: sheet = .openOnMac(prefill: "")
             }
@@ -439,12 +451,11 @@ final class AppModel {
         }
     }
 
-    /// Routes left by intents and widgets that ran outside the app (App Group).
+    /// Routes left by the app's intents (the Action Button, the controls, the widgets' buttons, Siri)
+    /// in the App Group, whether they ran in the widget extension or in the app.
     func consumePendingRoute() {
-        let defaults = account.container.defaults
-        guard let raw = defaults.string(forKey: PendingRoute.key), let url = URL(string: raw) else { return }
-        defaults.removeObject(forKey: PendingRoute.key)
-        handle(url: url)
+        guard let url = PendingRoute.take(from: account.container.defaults) else { return }
+        handle(url: url, fromApp: true)
     }
 
     // MARK: - Toasts

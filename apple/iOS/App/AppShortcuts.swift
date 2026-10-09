@@ -8,6 +8,12 @@ struct SamRabbitShortcuts: AppShortcutsProvider {
             "Ask \(.applicationName) to do something",
             "New \(.applicationName) task",
         ], shortTitle: "Ask SamRabbit", systemImageName: "sparkles")
+        // The Action Button's Shortcut picker lists these too: this one opens the app listening.
+        AppShortcut(intent: OpenAskIntent(), phrases: [
+            "Talk to \(.applicationName)",
+            "Dictate to \(.applicationName)",
+            "Ask \(.applicationName) by voice",
+        ], shortTitle: "Ask by Voice", systemImageName: "mic.fill")
         AppShortcut(intent: BlockTimeIntent(), phrases: [
             "Block \(\.$duration) with \(.applicationName)",
             "Block time with \(.applicationName)",

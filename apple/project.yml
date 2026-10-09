@@ -100,6 +100,22 @@ targets:
           - BlockTimeIntent
           - AddJournalNoteIntent
 
+  # ------------------------------------------------------------------ iPhone UI tests (opt-in)
+  # Presses the simulator's Action Button (see the test's header).
+  SamRabbitUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: iOS/UITests
+    dependencies:
+      - target: SamRabbit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.samrabbit.mobile.uitests
+        TEST_TARGET_NAME: SamRabbit
+        GENERATE_INFOPLIST_FILE: YES
+        TARGETED_DEVICE_FAMILY: "1"
+
   # ------------------------------------------------------------------ Widgets, controls, Live Activity
   SamRabbitWidgets:
     type: app-extension
@@ -148,6 +164,7 @@ targets:
     sources:
       - path: watchOS/App
       - path: watchOS/ComplicationViews
+      - path: watchOS/Intents
       - path: watchOS/Resources
     dependencies:
       - package: SamRabbitKit
@@ -187,13 +204,16 @@ targets:
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
 
-  # ------------------------------------------------------------------ Watch complications
+  # ------------------------------------------------------------------ Watch complications + the Ask control
+  # The control's intent (watchOS/Intents) is compiled into the watch app too: a control can only open
+  # the app when both have it.
   SamRabbitWatchWidgets:
     type: app-extension
     platform: watchOS
     sources:
       - path: watchOS/Widgets
       - path: watchOS/ComplicationViews
+      - path: watchOS/Intents
     dependencies:
       - package: SamRabbitKit
       - sdk: WidgetKit.framework
@@ -252,6 +272,7 @@ schemes:
       config: Debug
       targets:
         - package: SamRabbitKit/SamRabbitKitTests
+        - SamRabbitUITests
     archive:
       config: Release
   SamRabbitWidgets:

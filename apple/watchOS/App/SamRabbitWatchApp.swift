@@ -16,7 +16,10 @@ struct SamRabbitWatchApp: App {
             WatchRootView()
                 .environment(model)
                 .onOpenURL { model.handle(url: $0) }
-                .task { ComplicationRenderHarness.runIfRequested() }
+                .task {
+                    ComplicationRenderHarness.runIfRequested()
+                    await Self.runIntentIfRequested()
+                }
         }
         .onChange(of: scenePhase) { _, phase in
             switch phase {
@@ -25,6 +28,17 @@ struct SamRabbitWatchApp: App {
             default: break
             }
         }
+    }
+}
+
+extension SamRabbitWatchApp {
+    /// `-SamRabbitIntent ask` (or another `WatchDestination`): runs the Action Button's intent at
+    /// launch, for the simulator walkthrough. A watch simulator has no Action Button to press.
+    @MainActor
+    static func runIntentIfRequested() async {
+        guard let raw = UserDefaults.standard.string(forKey: "SamRabbitIntent"),
+              let destination = WatchDestination(rawValue: raw) else { return }
+        _ = try? await OpenSamRabbitWatchIntent(destination).perform()
     }
 }
 

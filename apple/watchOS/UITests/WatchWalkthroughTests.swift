@@ -12,10 +12,11 @@ final class WatchWalkthroughTests: XCTestCase {
         continueAfterFailure = false
     }
 
-    private func launch(page: String, route: String? = nil) throws -> XCUIApplication {
+    private func launch(page: String, route: String? = nil, intent: String? = nil) throws -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["-SamRabbitPage", page]
         if let route { app.launchArguments += ["-SamRabbitRoute", route] }
+        if let intent { app.launchArguments += ["-SamRabbitIntent", intent] }
         app.launch()
         if app.staticTexts["Pair on your iPhone"].waitForExistence(timeout: 3) {
             throw XCTSkip("The watch isn't paired (pair the iPhone simulator with the fake bridge first).")
@@ -168,6 +169,31 @@ final class WatchWalkthroughTests: XCTestCase {
         XCTAssertTrue(element(app, labelBeginsWith: "Started").waitForExistence(timeout: 20))
         settle(0.6)
         snap("watch-7-ask-started")
+    }
+
+    /// The Watch Ultra's Action Button runs the "Ask SamRabbit" control (`OpenSamRabbitWatchIntent`):
+    /// the app opens on the status page with the text input already up (dictation first on a watch),
+    /// no tap on Ask. This watch has no Action Button, so `-SamRabbitIntent ask` runs the same intent at
+    /// launch, from the Quick page.
+    func test7b_ActionButtonOpensAskWithDictation() throws {
+        let app = try launch(page: "quick", intent: "ask")
+        XCTAssertTrue(app.textViews.firstMatch.waitForExistence(timeout: 12), "the text input opens by itself")
+        enterText(app, "Summarize today's PRs", snapshot: "watch-7b-action-button")
+        XCTAssertTrue(element(app, labelBeginsWith: "Started").waitForExistence(timeout: 20))
+        settle(0.6)
+        snap("watch-7b-action-button-started")
+        XCTAssertTrue(app.buttons["Ask"].waitForExistence(timeout: 10), "on the status page")
+    }
+
+    /// The Quick page says where to set the Action Button.
+    func test5b_QuickPageActionButtonHint() throws {
+        let app = try launch(page: "quick")
+        let hint = app.descendants(matching: .any)["action-button-hint"]
+        XCTAssertTrue(app.buttons["block30"].waitForExistence(timeout: 10))
+        app.swipeUp()
+        XCTAssertTrue(hint.waitForExistence(timeout: 5))
+        settle(0.8)
+        snap("watch-5b-quick-action-button-hint")
     }
 
     /// Every request goes through the iPhone (`-SamRabbitRoute phone`): the summary and an action.

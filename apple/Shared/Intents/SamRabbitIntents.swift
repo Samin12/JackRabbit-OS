@@ -3,16 +3,14 @@ import Foundation
 import SamRabbitKit
 
 // The App Intents shared by the iPhone app and its widget extension (interactive widget buttons
-// and the Control Center control run them in the extension). Their work is SamRabbitKit's
-// `SamRabbitActions`, so Siri, Shortcuts, widgets and the app behave the same.
+// and the control for Control Center, the Lock Screen and the Action Button run them there). Their
+// work is SamRabbitKit's `SamRabbitActions`, so Siri, Shortcuts, widgets and the app behave the same.
 
-/// A route for the app to open next (`samrabbit://…`), left in the App Group by intents that run
-/// outside the app.
-enum PendingRoute {
-    static let key = "pendingRoute"
-
-    static func set(_ url: String) {
-        BridgeAccount.shared.container.defaults.set(url, forKey: key)
+extension PendingRoute {
+    /// Leaves a route for the app (`samrabbit://…`) in the App Group and tells the app when the
+    /// intent runs inside it (SamRabbitKit's `PendingRoute`).
+    static func open(_ url: String) {
+        set(url, in: BridgeAccount.shared.container.defaults)
     }
 }
 
@@ -165,25 +163,31 @@ struct OpenOnMacIntent: AppIntent {
 struct ScreenshotMacIntent: AppIntent {
     static let title: LocalizedStringResource = "Screenshot My Mac"
     static let description = IntentDescription("Shows what is on your Mac's screen right now.", categoryName: "Mac")
-    static let openAppWhenRun = true
+    static let supportedModes: IntentModes = .foreground(.immediate)
 
     @MainActor
     func perform() async throws -> some IntentResult {
-        PendingRoute.set("samrabbit://mac/screenshot")
+        PendingRoute.open("samrabbit://mac/screenshot")
         return .result()
     }
 }
 
-/// Opens SamRabbit at the Ask sheet (the Control Center control, the widgets' Ask buttons).
+/// Opens SamRabbit at Ask with dictation already listening: say the request, then tap Start. This is
+/// what the Action Button runs (as the "Ask SamRabbit" control or the "Ask by Voice" shortcut), and
+/// also the Control Center / Lock Screen control and the widgets' Ask buttons.
+///
+/// It brings the app to the front before `perform` runs (`supportedModes`, which replaces
+/// `openAppWhenRun` in iOS 26). It is compiled into the app and the widget extension, which the
+/// system needs before a control can open the app.
 struct OpenAskIntent: AppIntent {
-    static let title: LocalizedStringResource = "Ask SamRabbit (open)"
-    static let description = IntentDescription("Opens SamRabbit ready to take a request.", categoryName: "Tasks")
-    static let openAppWhenRun = true
-    static let isDiscoverable = false
+    static let title: LocalizedStringResource = "Ask SamRabbit by Voice"
+    static let description = IntentDescription("Opens SamRabbit at Ask with the microphone on. Say what to do, then tap Start.",
+                                               categoryName: "Tasks")
+    static let supportedModes: IntentModes = .foreground(.immediate)
 
     @MainActor
     func perform() async throws -> some IntentResult {
-        PendingRoute.set("samrabbit://ask")
+        PendingRoute.open(PendingRoute.askListening)
         return .result()
     }
 }

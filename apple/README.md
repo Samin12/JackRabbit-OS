@@ -15,9 +15,11 @@ apple/
   iOS/App/               the iPhone app (SamRabbit, com.samrabbit.mobile)
   iOS/Widgets/           widget extension (com.samrabbit.mobile.widgets): widgets, control, Live Activity
   iOS/WidgetViews/       widget faces, shared by the extension and the app (gallery, render harness)
+  iOS/UITests/           the iPhone's Action Button test (opt-in, presses the simulator's button)
   iOS/Resources/         asset catalog (AppIcon from the orb, accent and launch colours)
   watchOS/App/           the Apple Watch app (SamRabbitWatch, com.samrabbit.mobile.watchkitapp), embedded in the iPhone app
-  watchOS/Widgets/       complications (com.samrabbit.mobile.watchkitapp.widgets)
+  watchOS/Widgets/       complications and the Ask control (com.samrabbit.mobile.watchkitapp.widgets)
+  watchOS/Intents/       the watch's App Intents (the Ask control's), compiled into the watch app and its extension
   watchOS/ComplicationViews/  complication faces, shared by the complications and the watch app's preview renderer
   watchOS/UITests/       the watch walkthrough (real taps against the fake bridge) and the watch-face setup
   watchOS/Resources/     the watch's asset catalog (the same orb icon)
@@ -63,7 +65,7 @@ with 409 `t3_request_not_pending`, exactly like the real bridge.
 ## Tests
 
 ```sh
-cd apple/Shared/SamRabbitKit && swift test          # 56 tests on macOS, including the client against the fake bridge
+cd apple/Shared/SamRabbitKit && swift test          # 75 tests on macOS, including the client against the fake bridge
 xcodebuild -project apple/SamRabbit.xcodeproj -scheme SamRabbit \
   -destination 'platform=iOS Simulator,name=iPhone 18 Pro' test   # the same suite minus the fake-bridge tests, on iOS
 curl -X POST 127.0.0.1:3799/__fake/reset             # then the watch walkthrough (real taps, screenshots attached):
@@ -89,8 +91,14 @@ The watch walkthrough (`watchOS/UITests/WatchWalkthroughTests.swift`, needs the 
 opens every page, approves, answers a question, taps Approve on a card whose request was replaced on the Mac
 (refused: "Request changed", the new request shows), opens a task, blocks 30 minutes, types a journal note and an Ask into
 the system input sheet, runs a request through the iPhone (`-SamRabbitRoute phone`) and, after the watch's token is
-revoked on the bridge, reconnects through the iPhone. `WatchFaceTests` (opt-in, `TEST_RUNNER_SAMRABBIT_FACES=setup`)
+revoked on the bridge, reconnects through the iPhone, and runs the Action Button's intent (`-SamRabbitIntent ask`):
+the text input opens on the status page without a tap. `WatchFaceTests` (opt-in, `TEST_RUNNER_SAMRABBIT_FACES=setup`)
 adds Infograph, Modular and Activity Digital faces with the SamRabbit complications and screenshots them.
+
+The Action Button tests press the simulator's real Action Button (`XCUIDevice.press(.action)`); both are opt-in:
+`ActionButtonUITests` (iPhone, `TEST_RUNNER_SAMRABBIT_ACTION_BUTTON=1`, after setting the simulator's Action Button to
+the SamRabbit control) and `WatchActionButtonTests` (Apple Watch Ultra simulator, `=1` sets the watch's Action Button,
+`=press` only presses). See "The Action Button" below.
 
 ## Installing on your own iPhone and Apple Watch
 
@@ -139,8 +147,10 @@ when it does not compile; `SandboxTests` compile it and, on macOS, check in a re
 local server without the list and nothing with it), Tasks (sections, Markdown thread detail, approve/deny/answer,
 composer with dictation, Stop, New task with a project picker), Mac (state, open app or link, screenshot with
 pinch zoom, Generate UI), Settings (QR scan via VisionKit, manual entry, `samrabbit://pair` links, bridge
-addresses, notifications, widget gallery). Dictation: the keyboard mic everywhere, plus a mic button
-(`SFSpeechRecognizer`, on-device when available).
+addresses, notifications, widget gallery, Action Button help). Dictation: the keyboard mic everywhere, plus a mic
+button (`SFSpeechRecognizer`, on-device when available, Apple's speech service when the on-device model isn't there;
+the speech, audio-tap and result callbacks are nonisolated, since Swift 6 traps a main-actor closure called on
+another queue).
 
 **Deep links** (`AppLink`): `samrabbit://pair?…`, `ask[?text=]`, `note[?text=]`, `generate[?text=]`,
 `block[?minutes=&title=]`, `mac/open?app=|url=`, `thread/<id>`, `conversation/<id>`,
@@ -157,8 +167,41 @@ provider reads the summary the app saved in the App Group and fetches a fresh on
 15 minutes. The app, the background refresh and the actions hand fresh summaries to `SummaryCache.publish`, which
 reloads the timelines only when the summary changed (`generatedAt` aside) or the last reload is 30 minutes old.
 
-**App Intents** (Siri and Shortcuts, phrases in `AppShortcuts.swift`): Ask SamRabbit, Block Time ("Block 30
-minutes with SamRabbit"), Add Journal Note, What Needs Me (spoken), Open on Mac, Screenshot My Mac.
+**App Intents** (Siri and Shortcuts, phrases in `AppShortcuts.swift`): Ask SamRabbit, Ask by Voice ("Talk to
+SamRabbit": opens Ask listening), Block Time ("Block 30 minutes with SamRabbit"), Add Journal Note, What Needs Me
+(spoken), Open on Mac, Screenshot My Mac. The two that open the app use `supportedModes = .foreground(.immediate)`
+(iOS 26's replacement for `openAppWhenRun`).
+
+## The Action Button
+
+Apps can't read the button or assign it; the person picks an action in Settings. SamRabbit offers:
+
+- **iPhone 15 Pro and later**: the "Ask SamRabbit" control (`AskControl`, `OpenAskIntent`), which iOS offers for the
+  Action Button as well as Control Center and the Lock Screen, and the "Ask by Voice" App Shortcut (the same intent)
+  in the button's Shortcut list. Settings > Action Button > **Controls** > Choose a Control… > SamRabbit > **Ask
+  SamRabbit** (or **Shortcut** > Choose a Shortcut… > SamRabbit > **Ask by Voice**). Press and hold: "Hold to Ask
+  SamRabbit", then SamRabbit opens at Ask with dictation already listening; say it, tap Start.
+- **Apple Watch Ultra (watchOS 26+)**: the watch's own "Ask SamRabbit" control (`WatchAskControl` in the
+  complications extension, `OpenSamRabbitWatchIntent` in `watchOS/Intents`, compiled into the watch app and the
+  extension). The iPhone's control opens the iPhone app, so watchOS doesn't offer it on the watch. On the watch:
+  Settings > Action Button > **Action** (watchOS 27: Choose Action) > **Control**, then **Control** (it says Configure
+  until set) > SamRabbit > **Ask SamRabbit**. One press opens SamRabbit on the status page with the text input up
+  (dictation first). Siri on the watch: "Ask SamRabbit" (`SamRabbitWatchShortcuts`).
+
+How it works: the intent leaves `samrabbit://ask?listen=1` in the App Group (`PendingRoute`, SamRabbitKit) and posts
+`PendingRoute.didChange`. The app takes it when it becomes active, or at once when it is already in front (pressing
+the button again while SamRabbit is open starts dictation again). A route older than two minutes is dropped. Only the
+app's own intents may turn the microphone on: `AppLink(url:fromApp:)` keeps `listen` only for them, and a
+`samrabbit://ask?listen=1` link from a web page just opens the empty composer. The help is in Settings > Action
+Button (iPhone, with "Try it here") and at the bottom of the watch's Quick page.
+
+Checked in the simulators: on the iPhone 18 Pro simulator the control is offered in Settings > Action Button >
+Controls and "Ask by Voice" under Shortcut. Pressing the simulator's Action Button (both ways) opens Ask and starts
+dictation, cold and while the app is open. The Simulator has no speech recognizer, so dictation then stops with
+"Dictation stopped before it heard anything". On the Apple Watch Ultra 4 simulator the control can be set as the
+Action Button's control, and pressing the button opens SamRabbit. In that simulator the control picker listed only
+the system's own controls, and a watch app freshly installed by `xcodebuild test` isn't registered yet (the press
+then fails with "“Ask SamRabbit” failed"). Install with `simctl install` and wait a moment.
 
 **Notifications** (no push): `BGAppRefreshTask` (`com.samrabbit.mobile.refresh`, about every 15 min) and the
 foreground refresh (every 20 s) run `AlertPlanner`: a local notification for each new needs-you request and for
@@ -232,7 +275,8 @@ the summary it fetched (every 30 s) says something new (`SummaryCache.publish`).
 Tapping opens the matching page (`samrabbit://tab/needs`, `samrabbit://tab/upnext`).
 
 **Debug launch arguments**: `-SamRabbitPage <status|needs|working|upnext|quick>`, `-SamRabbitRoute phone` (everything
-through the iPhone), `-SamRabbitRenderComplications YES` (renders the complication faces into Documents/renders).
+through the iPhone), `-SamRabbitIntent <ask|needs|working|upnext|quick>` (runs the Action Button's intent at launch),
+`-SamRabbitRenderComplications YES` (renders the complication faces into Documents/renders).
 
 **Kit additions for the watch**: `BridgeRelay` and `BridgeClient(relay:)`, `BridgeAccount(relay:)`,
 `WatchContext.requestKey`/`reissueValue`, `OrbView(frameRate:)`. The iPhone side (`iOS/App/WatchLink.swift`) answers
@@ -248,3 +292,6 @@ Documents/renders), `ios-stale-request-refused.png`, `ios-home-t3-down.png`, `io
 `watch-1…9-*.png` (every page and action from the walkthrough, `watch-2b-request-changed.png` the stale approval
 refused), `watch-needs-you-t3-down.png` and
 `watch-face-*.png` (the complications on Infograph, Modular and Activity Digital faces), plus `watch-renders/`.
+`action-button/`: the iPhone's Action Button settings with the SamRabbit control and shortcut, the button pressed
+(Ask with dictation, a task started, pressed again in the app), the help screens, the watch's Ask opened by the intent
+and the Watch Ultra's Action Button set to the control and pressed.
