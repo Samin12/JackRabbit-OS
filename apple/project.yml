@@ -203,8 +203,14 @@ targets:
               - samrabbit
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
-        # The watch takes text only by voice: it records a short clip and your Mac turns it into words.
-        NSMicrophoneUsageDescription: Say tasks, replies, answers and journal notes. Your Mac turns the recording into words.
+        # The watch is a voice assistant: while a conversation is open it listens, and your Mac turns what you say
+        # into words. Text (replies, answers, journal notes) is taken by voice too, never with a keyboard.
+        NSMicrophoneUsageDescription: Talk to SamRabbit. While a conversation is open your watch listens, and your Mac turns what you say into words.
+        # The conversation keeps its one audio session (microphone and replies) running with the wrist down: watchOS
+        # can't start recording from the background, so it is started in front and kept going between turns.
+        UIBackgroundModes:
+          - audio
+        WKSupportsAlwaysOnDisplay: true
 
   # ------------------------------------------------------------------ Watch complications + the Ask control
   # The control's intent (watchOS/Intents) is compiled into the watch app too: a control can only open

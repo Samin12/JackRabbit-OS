@@ -55,7 +55,10 @@ public enum WatchRelay {
 
     static let prefix = "/v1/mobile/"
     /// The first path segments under `/v1/mobile/` the phone relays (an allowlist).
-    static let relayable: Set<String> = ["summary", "t3", "calendar", "journal", "conversations", "blobs", "ui", "mac"]
+    static let relayable: Set<String> = ["summary", "t3", "calendar", "journal", "conversations", "blobs", "ui", "mac",
+                                         "assistant"]
+    /// Relayed another way (`TurnRelay`: the answer streams back in pieces), never as one request.
+    static let notRelayed: Set<String> = ["assistant/turn"]
 
     public struct Request: Codable, Sendable, Equatable {
         public var method: String
@@ -81,15 +84,17 @@ public enum WatchRelay {
         }
 
         /// Only what the watch itself does may be relayed: the dashboard, tasks, the calendar, the
-        /// journal, conversations, generated UIs and the Mac. Never pairing, unpairing or device
-        /// management (`pair`, `pairing/start`, `unpair`, `devices`, `devices/child`), and never the
-        /// SSE stream.
+        /// journal, conversations, generated UIs, the Mac and the assistant's warm-up, cancel, end and
+        /// announcements. Never pairing, unpairing or device management (`pair`, `pairing/start`, `unpair`,
+        /// `devices`, `devices/child`), never the SSE stream, and never an assistant turn this way (it streams:
+        /// `TurnRelay`).
         public var allowed: Bool {
             guard ["GET", "POST"].contains(method), path.hasPrefix(WatchRelay.prefix) else { return false }
             let lowered = path.lowercased()
             guard !lowered.contains(".."), !lowered.contains("//"), !lowered.contains("%2e"), !lowered.contains("%2f"),
                   !path.contains("?"), !path.contains("#") else { return false }
             let rest = String(path.dropFirst(WatchRelay.prefix.count))
+            guard !WatchRelay.notRelayed.contains(rest.lowercased()) else { return false }
             let first = rest.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? ""
             return WatchRelay.relayable.contains(first)
         }
@@ -173,9 +178,18 @@ public protocol BridgeRelay: Sendable {
     /// iPhone, `VoiceRelay`) and returns the bridge's status and body (status 0: the relay could not reach
     /// the bridge either). Throws `BridgeError.unreachable` when the relay itself is down.
     func relayTranscription(_ audio: Data, contentType: String, language: String?) async throws -> (status: Int, body: Data)
+    /// An assistant turn through the relay (the watch: the iPhone sends it to the Mac and passes the answer back in
+    /// pieces as it streams in, `TurnRelay`). Returns the bridge's status, content type and body (status 0: the
+    /// relay could not reach the bridge). Throws `BridgeError.unreachable` when the relay itself is down.
+    func relayAssistantTurn(_ turn: AssistantTurnRequest) async throws -> AssistantTurnResponse
 }
 
 extension BridgeRelay {
+    /// A relay that can't carry assistant turns.
+    public func relayAssistantTurn(_ turn: AssistantTurnRequest) async throws -> AssistantTurnResponse {
+        throw BridgeError.unreachable("no turn relay")
+    }
+
     /// A relay without a voice route.
     public func relayTranscription(_ audio: Data, contentType: String,
                                    language: String?) async throws -> (status: Int, body: Data) {

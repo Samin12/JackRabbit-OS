@@ -14,7 +14,7 @@ private let voiceLog = Logger(subsystem: "com.samrabbit.mobile.watchkitapp", cat
 
 /// What a recording is for. Send performs it with the words.
 enum VoicePurpose: Equatable {
-    /// A new T3 task (automatic placement): the Ask button, the Action Button, Siri.
+    /// A new T3 task (automatic placement): Quick > New task.
     case ask
     /// A message into a thread.
     case reply(TaskThread)
@@ -25,7 +25,7 @@ enum VoicePurpose: Equatable {
 
     var title: String {
         switch self {
-        case .ask: "Ask SamRabbit"
+        case .ask: "New task"
         case .reply(let thread): "Reply · \(Formatting.clip(thread.title, 22))"
         case .answer: "Answer"
         case .note: "Journal note"
@@ -35,7 +35,7 @@ enum VoicePurpose: Equatable {
     /// Under the orb while listening.
     var prompt: String {
         switch self {
-        case .ask: "What should SamRabbit do?"
+        case .ask: "What should T3 Code do?"
         case .reply: "Say your reply"
         case .answer(let thread, let pending): Formatting.clip((pending ?? thread.pending)?.text ?? "Say your answer", 60)
         case .note: "What should I add to today's journal?"

@@ -44,10 +44,12 @@ public struct MobileSummary: Codable, Sendable, Equatable {
     public var journal: JournalStatus
     /// Whether the Mac can turn the watch's recordings into words (`nil`: a bridge that doesn't say).
     public var transcribe: TranscribeStatus?
+    /// Whether the watch can talk to the assistant, and which brain answers (`nil`: a bridge without one).
+    public var assistant: AssistantStatus?
 
     public init(generatedAt: Date? = nil, mac: MacStatus = .init(), r1: R1Status = .init(), t3: TaskOverview = .init(),
                 calendar: CalendarOverview = .init(), latestConversation: ConversationPreview? = nil,
-                journal: JournalStatus = .init(), transcribe: TranscribeStatus? = nil) {
+                journal: JournalStatus = .init(), transcribe: TranscribeStatus? = nil, assistant: AssistantStatus? = nil) {
         self.generatedAt = generatedAt
         self.mac = mac
         self.r1 = r1
@@ -56,6 +58,7 @@ public struct MobileSummary: Codable, Sendable, Equatable {
         self.latestConversation = latestConversation
         self.journal = journal
         self.transcribe = transcribe
+        self.assistant = assistant
     }
 
     public init(from decoder: Decoder) throws {
@@ -69,6 +72,7 @@ public struct MobileSummary: Codable, Sendable, Equatable {
         if latestConversation?.conversationId.isEmpty == true { latestConversation = nil }
         journal = c.value(JournalStatus.self, "journal") ?? .init()
         transcribe = c.value(TranscribeStatus.self, "transcribe")
+        assistant = c.value(AssistantStatus.self, "assistant")
     }
 
     /// The next event that has not ended yet.

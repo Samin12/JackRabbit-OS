@@ -20,10 +20,10 @@ public final class BridgeClient: Sendable {
     private let token: String?
     private let defaultTimeout: TimeInterval
     private let session: URLSession
-    private let streamSession: URLSession
+    let streamSession: URLSession
     private let preferred: Mutex<Int>
     private let onPreferredHostChange: (@Sendable (BridgeHost) -> Void)?
-    private let relay: (any BridgeRelay)?
+    let relay: (any BridgeRelay)?
 
     /// - Parameters:
     ///   - hosts: the bridge addresses, best first.
@@ -511,7 +511,7 @@ public final class BridgeClient: Sendable {
     }
 
     private func perform(_ request: BridgeRequest) async throws -> (Data, HTTPURLResponse) {
-        try await withHosts(request) { urlRequest in
+        try await withHosts(request, idempotent: request.idempotent) { urlRequest in
             let (data, response) = try await self.session.data(for: urlRequest)
             guard let http = response as? HTTPURLResponse else { throw BridgeError.invalidResponse("not HTTP") }
             return (data, http)
@@ -531,14 +531,14 @@ public final class BridgeClient: Sendable {
     }
 
     /// No address could be connected to, so nothing reached the bridge (safe to send another way).
-    private struct NoRoute: Error {
+    struct NoRoute: Error {
         var reason: String
     }
 
     /// Runs `body` against each address in turn until one connects. Throws `NoRoute` when none
     /// did, and `BridgeError.unreachable` when the request may have reached the bridge.
-    private func withHosts<T>(_ request: BridgeRequest, idempotent: Bool? = nil,
-                              _ body: (URLRequest) async throws -> T) async throws -> T {
+    func withHosts<T>(_ request: BridgeRequest, idempotent: Bool? = nil,
+                      _ body: (URLRequest) async throws -> T) async throws -> T {
         guard !hosts.isEmpty else { throw BridgeError.notPaired }
         if request.authorized, token == nil { throw BridgeError.notPaired }
         let start = preferred.withLock { $0 }
@@ -567,7 +567,7 @@ public final class BridgeClient: Sendable {
         throw NoRoute(reason: lastError)
     }
 
-    private func makeRequest(_ request: BridgeRequest, host: BridgeHost) -> URLRequest? {
+    func makeRequest(_ request: BridgeRequest, host: BridgeHost) -> URLRequest? {
         guard let base = host.baseURL, var components = URLComponents(url: base, resolvingAgainstBaseURL: false) else {
             return nil
         }
@@ -584,6 +584,7 @@ public final class BridgeClient: Sendable {
             urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
         if let contentType = request.contentType { urlRequest.setValue(contentType, forHTTPHeaderField: "Content-Type") }
+        for (name, value) in request.headers { urlRequest.setValue(value, forHTTPHeaderField: name) }
         return urlRequest
     }
 
@@ -619,9 +620,14 @@ public struct BridgeRequest: Sendable {
     public var timeout: TimeInterval?
     /// The body's type when it isn't JSON (an upload: `audio/mp4`).
     public var contentType: String?
+    /// More headers (the assistant's `X-SamRabbit-Conversation`, `X-SamRabbit-Turn`, ...).
+    public var headers: [String: String]
+    /// Safe to send again after a timeout (another address, the relay). Default: GETs only.
+    public var idempotent: Bool?
 
     public init(method: String, path: String, query: [URLQueryItem] = [], body: Data? = nil, authorized: Bool = true,
-                accept: String = "application/json", timeout: TimeInterval? = nil, contentType: String? = nil) {
+                accept: String = "application/json", timeout: TimeInterval? = nil, contentType: String? = nil,
+                headers: [String: String] = [:]) {
         self.method = method
         self.path = path
         self.query = query
@@ -630,6 +636,7 @@ public struct BridgeRequest: Sendable {
         self.accept = accept
         self.timeout = timeout
         self.contentType = contentType
+        self.headers = headers
     }
 
     public static func get(_ path: String, query: [URLQueryItem] = [], authorized: Bool = true,

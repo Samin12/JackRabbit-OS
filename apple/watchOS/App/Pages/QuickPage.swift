@@ -1,7 +1,8 @@
 import SamRabbitKit
 import SwiftUI
 
-/// Page 5: one-tap actions: block the next 30 minutes, add a spoken journal note.
+/// Page 5: one-tap actions: block the next 30 minutes, a spoken journal note, a new T3 task by voice (the words
+/// checked before they go; the conversation on the main page can start tasks too).
 struct QuickPage: View {
     @Environment(WatchModel.self) private var model
 
@@ -24,6 +25,11 @@ struct QuickPage: View {
                             busy: model.busy.contains("note"))
                     .accessibilityIdentifier("journalNote")
 
+                VoiceButton(title: model.busy.contains("ask") ? "Starting…" : "New task", symbol: "hammer.fill",
+                            purpose: .ask, colors: [SamTheme.orb2, SamTheme.orb], height: 46,
+                            busy: model.busy.contains("ask"))
+                    .accessibilityIdentifier("newTask")
+
                 ConnectionFooter()
                     .padding(.top, 4)
 
@@ -38,7 +44,7 @@ struct QuickPage: View {
 }
 
 /// Where to set the Watch Ultra's Action Button (an app can't set it): a single press then opens
-/// Ask, already listening.
+/// the conversation, already listening.
 struct ActionButtonHint: View {
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
@@ -48,7 +54,7 @@ struct ActionButtonHint: View {
                 .frame(width: 18)
             VStack(alignment: .leading, spacing: 2) {
                 Text("Action Button").font(.system(size: 13.5, weight: .semibold)).foregroundStyle(SamTheme.ink)
-                Text("Settings > Action Button: Action > Control, then Control > Ask SamRabbit. Press once to Ask.")
+                Text("Settings > Action Button: Action > Control, then Control > Ask SamRabbit. Press once to talk.")
                     .font(.system(size: 11.5))
                     .foregroundStyle(SamTheme.muted)
                     .fixedSize(horizontal: false, vertical: true)

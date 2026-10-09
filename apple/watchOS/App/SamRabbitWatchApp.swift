@@ -22,11 +22,19 @@ struct SamRabbitWatchApp: App {
                     await Self.runIntentIfRequested()
                 }
         }
-        .onChange(of: scenePhase) { _, phase in
+        // Opened (launch, from the background, the Action Button, Siri, a complication): straight into a live
+        // conversation. Wrist down keeps it going (the app stays in front, background audio keeps the microphone);
+        // the wrist coming back up (inactive -> active) goes on with it; the Crown pauses it after the reply.
+        .onChange(of: scenePhase, initial: true) { _, phase in
             switch phase {
-            case .active: model.start()
-            case .background: model.stop()
-            default: break
+            case .active:
+                model.start()
+                model.sceneActive()
+            case .background:
+                model.stop()
+                model.sceneLeft()
+            default:
+                break
             }
         }
     }
@@ -43,7 +51,8 @@ extension SamRabbitWatchApp {
     }
 }
 
-/// The five pages (Digital Crown / swipe), or the "pair on your iPhone" screen.
+/// The five pages (Digital Crown / swipe): the conversation first, then Needs you, Working, Up next and Quick;
+/// or the "pair on your iPhone" screen.
 struct WatchRootView: View {
     @Environment(WatchModel.self) private var model
 
@@ -53,7 +62,7 @@ struct WatchRootView: View {
             if model.paired {
                 NavigationStack {
                     TabView(selection: $model.page) {
-                        StatusPage().tag(WatchPage.status)
+                        AssistantPage().tag(WatchPage.status)
                         NeedsYouPage().tag(WatchPage.needs)
                         WorkingPage().tag(WatchPage.working)
                         UpNextPage().tag(WatchPage.upnext)

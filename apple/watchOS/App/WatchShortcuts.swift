@@ -1,7 +1,7 @@
 import AppIntents
 
-/// Siri on the watch ("Ask SamRabbit"): opens SamRabbit on the watch already listening (voice only), like the
-/// Action Button's control.
+/// Siri on the watch ("Ask SamRabbit", "Talk to SamRabbit"): opens SamRabbit on the watch straight into a live
+/// conversation, like the Action Button's control.
 struct SamRabbitWatchShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
         AppShortcut(intent: OpenSamRabbitWatchIntent(), phrases: [

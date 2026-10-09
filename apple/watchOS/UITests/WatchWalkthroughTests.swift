@@ -16,7 +16,8 @@ final class WatchWalkthroughTests: XCTestCase {
     private func launch(page: String, route: String? = nil, intent: String? = nil,
                         voice: String = "speech") throws -> XCUIApplication {
         let app = XCUIApplication()
-        app.launchArguments = ["-SamRabbitPage", page, "-SamRabbitVoiceFixture", voice]
+        // The conversation on the main page stays off (it has its own tests: `WatchConversationTests`).
+        app.launchArguments = ["-SamRabbitPage", page, "-SamRabbitVoiceFixture", voice, "-SamRabbitConversation", "off"]
         if let route { app.launchArguments += ["-SamRabbitRoute", route] }
         if let intent { app.launchArguments += ["-SamRabbitIntent", intent] }
         app.launch()
@@ -50,7 +51,7 @@ final class WatchWalkthroughTests: XCTestCase {
 
     func test1_StatusPage() throws {
         let app = try launch(page: "status")
-        XCTAssertTrue(app.buttons["Ask"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["assistant-talk"].waitForExistence(timeout: 10))
         XCTAssertTrue(element(app, labelBeginsWith: "2 need you").waitForExistence(timeout: 10))
         settle()
         snap("watch-1-status")
@@ -168,10 +169,11 @@ final class WatchWalkthroughTests: XCTestCase {
         XCTAssertTrue(journal.last?.hasSuffix("Walked the dog before standup") == true)
     }
 
-    func test7_AskByVoice() throws {
+    /// Quick > New task: a T3 task by voice (the words checked before they go).
+    func test7_NewTaskByVoice() throws {
         fakeSync("transcribe", ["mode": "ok", "delay": 0.8, "text": "Draft the release notes for 2.4"])
-        let app = try launch(page: "status")
-        let ask = app.buttons["Ask"]
+        let app = try launch(page: "quick")
+        let ask = app.buttons["newTask"]
         XCTAssertTrue(ask.waitForExistence(timeout: 10))
         ask.tap()
         speakAndSend(app, snapshot: "watch-7-ask")
@@ -180,19 +182,7 @@ final class WatchWalkthroughTests: XCTestCase {
         snap("watch-7-ask-started")
     }
 
-    /// The Watch Ultra's Action Button runs the "Ask SamRabbit" control (`OpenSamRabbitWatchIntent`):
-    /// the app opens on the status page with the voice capture already listening, no tap on Ask. This
-    /// watch has no Action Button, so `-SamRabbitIntent ask` runs the same intent at launch, from the
-    /// Quick page.
-    func test7b_ActionButtonOpensAskListening() throws {
-        fakeSync("transcribe", ["mode": "ok", "delay": 0.8, "text": "Summarize today's PRs"])
-        let app = try launch(page: "quick", intent: "ask", voice: "hold")
-        speakAndSend(app, snapshot: "watch-7b-action-button", tapStop: true)
-        XCTAssertTrue(element(app, labelBeginsWith: "Started").waitForExistence(timeout: 20))
-        settle(0.6)
-        snap("watch-7b-action-button-started")
-        XCTAssertTrue(app.buttons["Ask"].waitForExistence(timeout: 10), "on the status page")
-    }
+    // The Action Button and Siri open the conversation: `WatchConversationTests.test9_ActionButtonOpensTheConversation`.
 
     /// The fake bridge's loopback helpers, synchronously (these tests stay synchronous: a UI failure in
     /// an async test with `continueAfterFailure = false` can hang the run).
@@ -254,7 +244,7 @@ final class WatchWalkthroughTests: XCTestCase {
         settle(0.5)
         snap("watch-9-revoked")
         reconnect.tap()
-        XCTAssertTrue(app.buttons["Ask"].waitForExistence(timeout: 25))
+        XCTAssertTrue(app.buttons["assistant-talk"].waitForExistence(timeout: 25))
         XCTAssertFalse(app.buttons["Reconnect"].exists)
         settle()
         snap("watch-9-reconnected")

@@ -2,6 +2,7 @@ import Foundation
 import os
 import SamRabbitKit
 import Synchronization
+import UIKit
 import WatchConnectivity
 
 private let log = Logger(subsystem: "com.samrabbit.mobile", category: "watch")
@@ -16,13 +17,25 @@ private let log = Logger(subsystem: "com.samrabbit.mobile", category: "watch")
 ///   `WatchRelay` in SamRabbitKit describes both messages);
 /// * passes on the watch's voice recordings the same way: they arrive in chunks (`VoiceRelay`), are put
 ///   back together here and uploaded for transcription with the watch's token
-///   (`BridgeAccount.performRelayedTranscription`); the reply to the last chunk is the bridge's answer.
+///   (`BridgeAccount.performRelayedTranscription`); the reply to the last chunk is the bridge's answer;
+/// * carries the watch's assistant turns (`TurnRelay`): the utterance in chunks, then the turn goes to the Mac
+///   with the watch's token and its answer is handed back piece by piece as the Mac streams it
+///   (`TurnRelayHost`); a buffered answer (an older bridge, the Claude fallback) comes through the same way.
+///
+/// Everything it passes on runs under a background-task assertion (`RelayAwake`), so the phone finishes a
+/// relayed request, and keeps streaming a turn, while the iPhone app is in the background.
 final class WatchLink: NSObject, WCSessionDelegate, @unchecked Sendable {
     static let shared = WatchLink()
 
     private let account = BridgeAccount.shared
     /// The watch's recordings while their chunks arrive.
     private let recordings = VoiceRelay.Assembler()
+    /// The watch's turns while their answers stream in (awake from start to the last piece pulled).
+    private let turns = TurnRelayHost { turnId, active in
+        Task { @MainActor in
+            if active { RelayAwake.shared.begin("turn-\(turnId)") } else { RelayAwake.shared.end("turn-\(turnId)") }
+        }
+    }
     /// The last provisioning run: runs never overlap (two at once would issue two child tokens).
     private let lastRun = Mutex<Task<Provisioning, Never>?>(nil)
 
@@ -84,6 +97,7 @@ final class WatchLink: NSObject, WCSessionDelegate, @unchecked Sendable {
     func reset() {
         account.forgetWatch()
         recordings.reset()
+        turns.reset()
         if WCSession.isSupported(), WCSession.default.activationState == .activated {
             try? WCSession.default.updateApplicationContext([WatchContext.unpairedKey: true])
         }
@@ -122,10 +136,19 @@ final class WatchLink: NSObject, WCSessionDelegate, @unchecked Sendable {
             switch recordings.add(chunk) {
             case .waiting: reply([VoiceRelay.ackKey: chunk.seq])
             case .refused(let response): reply(response.message)
+            case .complete(let upload) where upload.purpose == TurnRelay.purpose:
+                // A turn's utterance: kept until its `start` arrives.
+                turns.keep(upload)
+                reply([VoiceRelay.ackKey: chunk.seq])
             case .complete(let upload):
                 // With the watch's own token, like every relayed request.
-                Task { reply(await account.performRelayedTranscription(upload).message) }
+                awake { reply(await self.account.performRelayedTranscription(upload).message) }
             }
+            return
+        }
+        if let turn = TurnRelay.Message(message: message) {
+            // Runs (and streams) with the watch's own token; `turns` holds the phone awake meanwhile.
+            Task { reply(await self.turns.handle(turn, client: self.account.isPaired ? self.account.watchClient() : nil)) }
             return
         }
         guard let request = WatchRelay.Request(message: message) else {
@@ -133,6 +156,48 @@ final class WatchLink: NSObject, WCSessionDelegate, @unchecked Sendable {
             return
         }
         // With the watch's own token: a watch revoked on the Mac is refused here too (401).
-        Task { reply(await account.performRelayed(request).message) }
+        awake { reply(await self.account.performRelayed(request).message) }
     }
+
+    /// Runs `work` under a background-task assertion (the phone may be in the background when the watch asks).
+    private func awake(_ work: @escaping @Sendable () async -> Void) {
+        let key = UUID().uuidString
+        Task {
+            await MainActor.run { RelayAwake.shared.begin(key) }
+            await work()
+            await MainActor.run { RelayAwake.shared.end(key) }
+        }
+    }
+}
+
+/// Background-task assertions for what the iPhone passes on for the watch: each relayed request, and each turn
+/// from its start until the watch pulled the last piece. If the system ends one early it is just let go.
+@MainActor
+final class RelayAwake {
+    static let shared = RelayAwake()
+    private var tasks: [String: UIBackgroundTaskIdentifier] = [:]
+    /// Ended before its begin arrived (the two hop to the main actor separately).
+    private var endedEarly: Set<String> = []
+
+    func begin(_ key: String) {
+        if endedEarly.remove(key) != nil { return }
+        guard tasks[key] == nil else { return }
+        let id = UIApplication.shared.beginBackgroundTask(withName: "SamRabbit passes on a request from the watch") { [weak self] in
+            MainActor.assumeIsolated { self?.end(key) }
+        }
+        guard id != .invalid else { return }
+        tasks[key] = id
+    }
+
+    func end(_ key: String) {
+        guard let id = tasks.removeValue(forKey: key) else {
+            endedEarly.insert(key)
+            if endedEarly.count > 64 { endedEarly.removeFirst() }
+            return
+        }
+        UIApplication.shared.endBackgroundTask(id)
+    }
+
+    /// How many are held (tests and the debugger).
+    var count: Int { tasks.count }
 }

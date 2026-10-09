@@ -64,19 +64,29 @@ answering: the summary says `t3.available=false`, every `/v1/mobile/t3/*` route 
 older bridge without the route; GET lists the recordings that arrived: size, type, lang, device).
 `POST /v1/mobile/transcribe` checks a recording like the real bridge (Content-Type, Content-Length, 2 MiB, the
 container's own bytes, the m4a's length) and the summary carries `transcribe: {available, reason?}`.
+The watch's assistant (CONTRACTS-WAVE5, the streaming turn protocol) is there too, with canned answers:
+`POST /v1/mobile/assistant/turn` (a 16 kHz WAV utterance or `{text|announce}`; with `Accept:
+application/x-samrabbit-stream` a chunked stream of `J` JSON events and `A` PCM16 16 kHz frames of a made-up voice,
+else the buffered JSON answer), `/assistant/session`, `/assistant/cancel` (the stream ends with
+`done{interrupted:true}`), `/assistant/end`, `GET /assistant/announcements`, and `assistant: {available, brain,
+model, chatgpt}` in the summary. `POST /__fake/assistant {mode?, say?, heard?, delay?, pace?, brain?, clear?}` /
+`GET /__fake/assistant` (what arrived: turns, sessions, cancels, ends) and `POST /__fake/announce {say?, kind?,
+audio?}`; modes `ok`, `noaudio`, `noise`, `end`, `error`, `slow`, `busy`, `unavailable`, `drop` (no answer at all),
+`buffered`, `buffered_clip` (an AAC clip, like the Claude fallback's MP3) and `missing` (an older bridge).
 Pending approvals and questions carry `requestId` (questions also `questionId`) and `respond` refuses a stale id
 with 409 `t3_request_not_pending`, exactly like the real bridge.
 
 ## Tests
 
 ```sh
-cd apple/Shared/SamRabbitKit && swift test          # 100 tests on macOS, including the client against the fake bridge
+cd apple/Shared/SamRabbitKit && swift test          # 147 tests on macOS, including the client against the fake bridge
 xcodebuild -project apple/SamRabbit.xcodeproj -scheme SamRabbit \
   -destination 'platform=iOS Simulator,name=iPhone 18 Pro' test   # the same suite minus the fake-bridge tests, on iOS
 curl -X POST 127.0.0.1:3799/__fake/reset             # then the watch walkthrough (real taps, screenshots attached):
 xcodebuild -project apple/SamRabbit.xcodeproj -scheme SamRabbitWatch \
   -destination 'platform=watchOS Simulator,name=Apple Watch Series 12 (46mm)' test
 # just the voice input: -only-testing:SamRabbitWatchUITests/WatchVoiceTests
+# the conversation:    -only-testing:SamRabbitWatchUITests/WatchConversationTests
 ```
 
 The fake-bridge tests start `fake_bridge.py` on a free port per test (macOS only: the iOS simulator cannot spawn
@@ -101,14 +111,19 @@ own token, a revoked watch refused, a Mac that times out tried through the phone
 
 The watch walkthrough (`watchOS/UITests/WatchWalkthroughTests.swift`, needs the fake bridge and the paired simulators)
 opens every page, approves, answers a question, taps Approve on a card whose request was replaced on the Mac
-(refused: "Request changed", the new request shows), opens a task, blocks 30 minutes, says a journal note and an Ask
-(voice, see below), runs a request through the iPhone (`-SamRabbitRoute phone`) and, after the watch's token is
-revoked on the bridge, reconnects through the iPhone, and runs the Action Button's intent (`-SamRabbitIntent ask`):
-the voice capture opens on the status page, listening, without a tap. `WatchVoiceTests` drives the voice capture:
-listening, transcribing, review and Send for Ask, Reply, Answer and a journal note; Stop and Say again; voice
+(refused: "Request changed", the new request shows), opens a task, blocks 30 minutes, says a journal note and a new
+task (voice, see below), runs a request through the iPhone (`-SamRabbitRoute phone`) and, after the watch's token is
+revoked on the bridge, reconnects through the iPhone (these run with `-SamRabbitConversation off`).
+`WatchVoiceTests` drives the voice capture:
+listening, transcribing, review and Send for a new task, Reply, Answer and a journal note; Stop and Say again; voice
 unavailable (from the summary and from the Mac), a failed transcription and no speech; through the iPhone in chunks;
 the microphone refused; and checks that no keyboard or text field ever appears. `WatchFaceTests` (opt-in, `TEST_RUNNER_SAMRABBIT_FACES=setup`)
 adds Infograph, Modular and Activity Digital faces with the SamRabbit complications and screenshots them.
+`WatchConversationTests` drives the conversation with the made-up voice: it opens listening, hears, streams the reply
+(caption, the task it started) and listens again; tap to interrupt (the Mac is told to cancel); a reply without audio
+spoken by the watch; a Mac that can't be reached (said, then the end); an announcement between turns; the end after a
+quiet while and by the Mac; the buffered fallback with a clip; the Action Button's intent opening the conversation;
+the whole turn through the iPhone with the watch's own token; Stop.
 
 The Action Button tests press the simulator's real Action Button (`XCUIDevice.press(.action)`); both are opt-in:
 `ActionButtonUITests` (iPhone, `TEST_RUNNER_SAMRABBIT_ACTION_BUTTON=1`, after setting the simulator's Action Button to
@@ -145,6 +160,7 @@ the SamRabbit control) and `WatchActionButtonTests` (Apple Watch Ultra simulator
 | Conversations | `ConversationTimeline` (port of the desktop `store.js`), `TimelineItem`, `GenCard` |
 | Look | `SamTheme` (colours, `glassCard()`, `samScreen()`, `StatusChip`, `PulseDot`, `SectionHeader`), `OrbView(mood:)`, `OrbRenderer`, `OrbMood` |
 | Watch link | `WatchContext` (applicationContext), `WatchRelay` (sendMessage relay), `BridgeRelay` (the client's second route) |
+| Assistant | `ConversationMachine` (the conversation's rules), `SpeechDetector` + `NoiseFloor`, `AssistantStream` / `AssistantStreamParser` (frames), `AssistantEvent`, `AssistantReply` (buffered), `AssistantTurnRequest` / `AssistantTurnResponse`, `BridgeClient.assistantTurn` / `assistantSession` / `assistantCancel` / `assistantEnd` / `assistantAnnouncements`, `TurnRelay` + `TurnRelayHost` (turns through the iPhone), `WAV`, `PCM16`, `AssistantStatus` (`summary.assistant`) |
 | Live Activity | `TaskActivityAttributes` (iOS) |
 
 **The orb** is the desktop `OrbRenderer.swift` math, unchanged, evaluated on the CPU: `OrbRenderer.field`
@@ -200,12 +216,13 @@ Apps can't read the button or assign it; the person picks an action in Settings.
   complications extension, `OpenSamRabbitWatchIntent` in `watchOS/Intents`, compiled into the watch app and the
   extension). The iPhone's control opens the iPhone app, so watchOS doesn't offer it on the watch. On the watch:
   Settings > Action Button > **Action** (watchOS 27: Choose Action) > **Control**, then **Control** (it says Configure
-  until set) > SamRabbit > **Ask SamRabbit**. One press opens SamRabbit on the status page with the voice capture
-  already listening. Siri on the watch: "Ask SamRabbit" (`SamRabbitWatchShortcuts`).
+  until set) > SamRabbit > **Ask SamRabbit**. One press opens SamRabbit straight into a live conversation (pressed
+  again while talking: like a tap on the orb, send now or interrupt). Siri on the watch: "Ask SamRabbit", "Talk to
+  SamRabbit" (`SamRabbitWatchShortcuts`).
 
 How it works: the intent leaves `samrabbit://ask?listen=1` in the App Group (`PendingRoute`, SamRabbitKit) and posts
-`PendingRoute.didChange`. The app takes it when it becomes active, or at once when it is already in front (pressing
-the button again while SamRabbit is open starts dictation again). A route older than two minutes is dropped. Only the
+`PendingRoute.didChange`. The app takes it when it becomes active, or at once when it is already in front (on the
+iPhone pressing the button again starts dictation again; on the watch it acts on the conversation). A route older than two minutes is dropped. Only the
 app's own intents may turn the microphone on: `AppLink(url:fromApp:)` keeps `listen` only for them, and a
 `samrabbit://ask?listen=1` link from a web page just opens the empty composer. The help is in Settings > Action
 Button (iPhone, with "Try it here") and at the bottom of the watch's Quick page.
@@ -258,15 +275,56 @@ defaulted, alternative names accepted), so these are the shapes `fake_bridge.py`
 
 **Pages** (Digital Crown or swipe, a vertically paged `TabView`):
 
-1. **Status**: the animated orb (24 fps, still on the always-on display), "2 need you" / "1 working" / "All clear",
-   R1 live or last seen, and a big **Ask** button: say it (voice capture, below) and it starts a T3 task with
-   automatic placement.
+1. **SamRabbit** (the main screen, `AssistantPage`): a live conversation with the assistant, like talking to the R1
+   (below). The orb listens, thinks and speaks; one line of status above it ("2 need you · 1 working", or the next
+   event); a live caption of what was heard and what is being said, cards and the actions it took; the last turns
+   further down. Tap the orb to talk, to send now, or to interrupt; the top-left button stops.
 2. **Needs you**: a card per waiting task with **Approve** / **Deny** for approvals, the offered answers as buttons for
    questions, and **Reply** / **Answer** by voice. Tap a card for the task.
 3. **Working**: running tasks; a task shows its latest messages with Reply / Answer (voice), Approve / Deny and **Stop**.
 4. **Up next**: the next events from the summary, with "Now" / "in 25m", place or video call.
-5. **Quick**: **Block 30m** (a Focus block from now), **Journal note** (your own words, by voice), and which Mac,
-   which route (direct or via iPhone) and how fresh, with a refresh.
+5. **Quick**: **Block 30m** (a Focus block from now), **Journal note** (your own words, by voice), **New task** (a
+   T3 task by voice, the words checked before they go), and which Mac, which route (direct or via iPhone) and how
+   fresh, with a refresh.
+
+**The conversation** (CONTRACTS-WAVE5/5b; the rules are `ConversationMachine` in SamRabbitKit, unit-tested; the
+watch app's `ConversationEngine` carries them out):
+
+- **Always on.** The app opens straight into a conversation: launched, back from the background, the Action Button,
+  Siri ("Ask SamRabbit", "Talk to SamRabbit") and the complications (`samrabbit://talk`). It warms the Mac up at
+  once (`POST /assistant/session`), listens, and after each reply listens again by itself. Wrist down keeps it going
+  (`UIBackgroundModes: audio`); the wrist coming back up continues it; the Digital Crown lets the reply finish and
+  pauses (back within three minutes: the same conversation). It ends on Stop, when the Mac says so
+  (`endConversation`), or after about two minutes without speech, and tells the Mac (`/assistant/end`).
+- **One audio graph per conversation** (`AudioGraph`): `AVAudioSession` play-and-record (AirPods allowed), one
+  `AVAudioEngine` started in front and kept running between turns (watchOS can't start recording from the
+  background): the input's tap converted to 16 kHz mono 16-bit, and an `AVAudioPlayerNode` for replies.
+- **Speech detection** (`SpeechDetector`): energy 10 dB over the room's noise floor (and over -50 dBFS) for 150 ms
+  starts speech; 1 s of quiet ends it; at least 0.3 s of speech; cut at 30 s; 300 ms before speech kept. The noise
+  floor ignores digital silence (readings at or below -100 dBFS) and never goes below -80 dBFS (`NoiseFloor`, also
+  in the voice capture's `VoiceActivity`). Half duplex: the microphone is ignored while a turn is on its way and while
+  anything plays, and the reply's echo (300 ms) is skipped.
+- **Turns stream** (`BridgeClient.assistantTurn`): the utterance goes up as a 16 kHz WAV with
+  `X-SamRabbit-Conversation`, `X-SamRabbit-Turn` (a uuid: a retry gets the same answer) and
+  `X-SamRabbit-Device-Time`, `Accept: application/x-samrabbit-stream`; the answer's frames (`AssistantStreamParser`)
+  are played as they arrive (speaking starts on the first `A` frame) and `say.delta` is the live caption. An older
+  bridge or the Claude fallback answers in one piece (`AssistantReply`): a 16 kHz WAV plays the same way, an MP3/AAC
+  clip is decoded and played. "Still answering" (409) is retried for a few seconds.
+- **Barge-in**: a tap while it thinks or speaks stops playback, drops the stream and `POST /assistant/cancel`s; it
+  listens at once.
+- **The watch's own voice**: a reply without audio is said with `AVSpeechSynthesizer` (the best en-US voice, written
+  into the same player). A Mac out of reach (neither directly nor through the iPhone) is said out loud: "I can't
+  reach your Mac right now", with a failure haptic, then the conversation ends ("Can't reach your Mac" under the orb).
+- **Announcements**: while a conversation is open the watch polls `/assistant/announcements` about every 20 s and plays
+  them between turns: their own clip if they carry one, else as a `{"announce": id}` turn in the conversation's voice
+  (if that fails, the watch says the line itself).
+- **Through the iPhone** (`TurnRelay`): when the Mac can't be reached directly the utterance goes to the phone in
+  `VoiceRelay` chunks (purpose `turn`), the phone sends the turn with the watch's own child token and the watch pulls
+  the answer back in pieces of at most 40 KB as it streams in (`TurnRelayHost` on the phone). A stream, a buffered
+  answer and an error envelope come through unchanged. The phone holds a background-task assertion
+  (`RelayAwake`) around every request it passes on, and for a turn from its start until the watch has the last piece.
+- **Haptics**: start (listening), click (sent, the thinking tick), notification (an announcement), failure, stop.
+- Nothing heard or said, and no audio, is ever logged; the logs say only which phase it moved to.
 
 **Voice only, never a keyboard.** watchOS has no speech recognizer, and the system text input offers the keyboard
 and Scribble, so the watch never opens it (no `TextFieldLink`, no `presentTextInputController`, no text fields).
@@ -321,10 +379,15 @@ Tapping opens the matching page (`samrabbit://tab/needs`, `samrabbit://tab/upnex
 
 **Debug launch arguments**: `-SamRabbitPage <status|needs|working|upnext|quick>`, `-SamRabbitRoute phone` (everything
 through the iPhone), `-SamRabbitIntent <ask|needs|working|upnext|quick>` (runs the Action Button's intent at launch),
-`-SamRabbitRenderComplications YES` (renders the complication faces into Documents/renders). Debug builds only (not
-compiled into Release): `-SamRabbitVoiceFixture speech|hold|quiet` replaces the microphone with a made-up voice
-(`VoiceFixtureSource`: real levels, a real AAC file) for the simulator and the UI tests, and
-`-SamRabbitVoicePermission denied` acts as if the microphone was refused.
+`-SamRabbitRenderComplications YES` (renders the complication faces into Documents/renders),
+`-SamRabbitConversation off` (no conversation by itself), `-SamRabbitIdleSeconds <n>` (end after n quiet seconds
+instead of two minutes), `-SamRabbitStillOrb YES` (UI tests: no orb animation), `-SamRabbitAudioOut on|mute` (the
+simulator is muted unless `on`). Debug builds only (not compiled into Release): `-SamRabbitVoiceFixture
+speech|hold|quiet` replaces the microphone with a made-up voice for the simulator and the UI tests (the voice capture:
+`VoiceFixtureSource`, real levels and a real AAC file; the conversation: `ConversationFixture`, which speaks
+`-SamRabbitFixtureTurns n` times, `-SamRabbitFixtureLead s` seconds after the microphone opens), and
+`-SamRabbitVoicePermission denied` acts as if the microphone was refused. The simulator never listens through the
+Mac's own microphone: without a fixture the conversation hears silence there.
 
 **Kit additions for the watch**: `BridgeRelay` and `BridgeClient(relay:)`, `BridgeAccount(relay:)`,
 `WatchContext.requestKey`/`reissueValue`, `OrbView(frameRate:level:)`; for voice `Transcript`, `TranscribeStatus`
@@ -342,6 +405,9 @@ Documents/renders), `ios-stale-request-refused.png`, `ios-home-t3-down.png`, `io
 `watch-1…9-*.png` (every page and action from the walkthrough, `watch-2b-request-changed.png` the stale approval
 refused), `watch-needs-you-t3-down.png` and
 `watch-face-*.png` (the complications on Infograph, Modular and Activity Digital faces), plus `watch-renders/`.
+`wave5/watch-*.png`: the conversation (listening, hearing, speaking with the live caption, listening again, tap to
+interrupt, the watch's own voice, can't reach the Mac, an announcement, the end after a quiet while and by the Mac, the
+buffered fallback, the Action Button, through the iPhone, Stop).
 `voice-*.png`: the watch's voice input (listening, transcribing, review, sent; Stop and Say again; unavailable,
 failed, no speech; Reply, Answer, journal note; the Action Button's route; through the iPhone; the microphone refused).
 `action-button/`: the iPhone's Action Button settings with the SamRabbit control and shortcut, the button pressed

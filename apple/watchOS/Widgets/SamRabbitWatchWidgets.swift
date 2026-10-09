@@ -13,7 +13,7 @@ struct SamRabbitWatchWidgetsBundle: WidgetBundle {
 
 // MARK: - Control (Action Button, Control Center, Smart Stack)
 
-/// "Ask SamRabbit" on the watch: opens the watch app already listening for a new task. On Apple
+/// "Ask SamRabbit" on the watch: opens the watch app straight into a live conversation. On Apple
 /// Watch Ultra: Settings > Action Button > Action > Control, then Control (says "Configure" until
 /// set) > SamRabbit > Ask SamRabbit. A single press then runs it. It runs on the watch (the iPhone's control opens the iPhone app, so watchOS
 /// doesn't offer that one here).
@@ -28,7 +28,7 @@ struct WatchAskControl: ControlWidget {
             }
         }
         .displayName("Ask SamRabbit")
-        .description("Opens SamRabbit on your watch, listening for a new task.")
+        .description("Opens SamRabbit on your watch, ready to talk.")
     }
 }
 
@@ -88,13 +88,13 @@ struct ComplicationProvider: TimelineProvider {
 // MARK: - Widgets
 
 /// The needs-you count: a ring (circular), the count with the next event along the bezel
-/// (corner), or one line (inline).
+/// (corner), or one line (inline). Tapping it opens the conversation (like every way into the app).
 struct NeedsYouComplication: Widget {
     var body: some WidgetConfiguration {
         StaticConfiguration(kind: "com.samrabbit.watch.needs", provider: ComplicationProvider()) { entry in
             NeedsYouFace(snapshot: entry.snapshot)
                 .containerBackground(for: .widget) { Color.clear }
-                .widgetURL(URL(string: "samrabbit://tab/needs"))
+                .widgetURL(URL(string: "samrabbit://talk"))
         }
         .configurationDisplayName("Needs You")
         .description("How many tasks wait for you.")
@@ -108,7 +108,7 @@ struct NextUpComplication: Widget {
         StaticConfiguration(kind: "com.samrabbit.watch.next", provider: ComplicationProvider()) { entry in
             NextUpRectangularComplication(snapshot: entry.snapshot)
                 .containerBackground(for: .widget) { Color.clear }
-                .widgetURL(URL(string: "samrabbit://tab/upnext"))
+                .widgetURL(URL(string: "samrabbit://talk"))
         }
         .configurationDisplayName("Next Up")
         .description("Your next event and how many tasks are working.")

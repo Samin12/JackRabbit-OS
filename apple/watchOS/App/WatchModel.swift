@@ -4,14 +4,15 @@ import SamRabbitKit
 import SwiftUI
 import WatchKit
 
-/// The watch's pages, top to bottom (Digital Crown or swipe).
+/// The watch's pages, top to bottom (Digital Crown or swipe). `status` is the conversation with SamRabbit, the
+/// main screen.
 enum WatchPage: String, CaseIterable, Hashable {
     case status, needs, working, upnext, quick
 
-    /// `samrabbit://tab/<name>` from complications (also accepts the iPhone's names).
+    /// `samrabbit://tab/<name>` (also accepts the iPhone's names).
     init?(link: String) {
         switch link.lowercased() {
-        case "status", "home", "ask": self = .status
+        case "status", "home", "ask", "talk", "assistant": self = .status
         case "needs", "needsyou", "tasks": self = .needs
         case "working": self = .working
         case "upnext", "next", "calendar": self = .upnext
@@ -56,6 +57,8 @@ final class WatchModel {
     var banner: WatchBanner?
     /// The voice capture on screen (the only way the watch takes text).
     var voice: VoiceRequest?
+    /// The conversation with SamRabbit (the main screen).
+    let conversation: ConversationEngine
 
     private var loop: Task<Void, Never>?
     private var bannerTask: Task<Void, Never>?
@@ -63,6 +66,12 @@ final class WatchModel {
     private var routeObserver: (any NSObjectProtocol)?
     /// The app is in front (between `start()` and `stop()`).
     private var active = false
+    private var lastRefresh: Date?
+    /// The next activation is an opening (launch, back from the background), not the wrist coming up.
+    private var openedFresh = true
+    /// `-SamRabbitConversation off`: the app doesn't start a conversation by itself (the walkthrough of the other
+    /// pages, screenshots).
+    private let autoTalk = UserDefaults.standard.string(forKey: "SamRabbitConversation") != "off"
 
     init(link: PhoneLink = .shared) {
         self.link = link
@@ -70,6 +79,7 @@ final class WatchModel {
         // iPhone as the relay for every request.
         account = BridgeAccount(relay: link)
         actions = SamRabbitActions(account: account)
+        conversation = ConversationEngine(account: account, link: link)
         paired = account.isPaired
         if let cached = SummaryCache.shared.load() {
             summary = cached.summary
@@ -81,6 +91,13 @@ final class WatchModel {
         pairingObserver = NotificationCenter.default.addObserver(forName: .samRabbitPairingChanged, object: nil,
                                                                  queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.pairingChanged() }
+        }
+        conversation.onUnauthorized = { [weak self] in self?.lastError = .unauthorized }
+        conversation.onTurnFinished = { [weak self] in
+            guard let self else { return }
+            self.route = self.link.lastRoute
+            // A turn may have started a task or answered one: refresh, at most every 10 s.
+            if self.lastRefresh.map({ -$0.timeIntervalSinceNow > 10 }) ?? true { Task { await self.refresh() } }
         }
         // The Action Button's control (or Siri) ran its intent in this app while it is in front: no
         // scene phase change follows, so follow its route now. Otherwise `start()` does.
@@ -108,6 +125,13 @@ final class WatchModel {
     /// T3 Code is not answering while the Mac does: only the task pages say so.
     var tasksProblem: BridgeError? { lastError == nil ? tasksError : nil }
 
+    /// Why the Mac can't talk right now, as the summary says (nil: it can, or the summary doesn't know yet).
+    var assistantUnavailable: String? {
+        guard let summary else { return nil }
+        guard let assistant = summary.assistant else { return "Update SamRabbit on your Mac to talk" }
+        return assistant.available ? nil : "Assistant unavailable on the Mac"
+    }
+
     var needsYou: [TaskThread] {
         let list = threads.isEmpty ? (summary?.t3.threads ?? []) : threads
         return list.filter(\.status.needsYou)
@@ -132,6 +156,7 @@ final class WatchModel {
     func refresh() async {
         guard paired, let client = account.client() else { return }
         refreshing = true
+        lastRefresh = .now
         defer { refreshing = false }
         async let summaryCall = BridgeError.capture { try await client.summary(timeout: 6) }
         async let threadsCall = BridgeError.capture { try await client.threads(timeout: 8) }
@@ -177,8 +202,12 @@ final class WatchModel {
 
     private func pairingChanged() {
         let nowPaired = account.isPaired
-        defer { paired = nowPaired }
+        defer {
+            paired = nowPaired
+            if nowPaired, active { autoOpen() }
+        }
         if !nowPaired {
+            conversation.stop()
             summary = nil
             threads = []
             lastError = nil
@@ -203,10 +232,50 @@ final class WatchModel {
         }
     }
 
+    // MARK: - The conversation
+
+    /// The app came to the front. Opened (launched, or back from the background: a complication, the Action
+    /// Button, the app list): a live conversation starts by itself. The wrist came up (inactive -> active): a
+    /// conversation that paused a moment ago goes on; nothing new starts.
+    func sceneActive() {
+        let fresh = openedFresh
+        openedFresh = false
+        guard paired, !rejected, voice == nil else { return }
+        if fresh { autoOpen() } else { conversation.resume() }
+    }
+
+    /// The app left the screen (the Digital Crown): the reply in progress finishes, then the conversation pauses.
+    func sceneLeft() {
+        openedFresh = true
+        conversation.leave()
+    }
+
+    /// Starts talking unless the Mac said just now that it can't (a cached summary may be old: then the
+    /// conversation tries, and says what is wrong), or a debug launch turned it off.
+    private func autoOpen() {
+        guard autoTalk, voice == nil else { return }
+        if isFresh, summary?.assistant?.available == false { return }
+        conversation.open()
+    }
+
+    /// The conversation, on the main page: Talk, the orb while idle, the Action Button, Siri, a complication.
+    func talk() {
+        var jump = Transaction()
+        jump.disablesAnimations = true
+        withTransaction(jump) { page = .status }
+        guard paired else { return }
+        if rejected {
+            show(.failure, "Watch removed", detail: "Reconnect through your iPhone.")
+            return
+        }
+        voice = nil
+        conversation.open()
+    }
+
     // MARK: - Voice
 
     /// Opens the voice capture for `purpose` (it starts listening by itself). `after` runs once the
-    /// words were sent.
+    /// words were sent. A conversation in progress ends first (one microphone).
     func listen(_ purpose: VoicePurpose, after: (@MainActor () async -> Void)? = nil) {
         guard paired else { return }
         if rejected {
@@ -214,20 +283,21 @@ final class WatchModel {
             return
         }
         guard !busy.contains(purpose.busyKey) else { return }
+        if conversation.active { conversation.stop() }
         voice = VoiceRequest(purpose: purpose, after: after)
     }
 
-    /// Ask by voice without a tap: the status page, then the voice capture, already listening. This is
-    /// what the Watch Ultra's Action Button (the "Ask SamRabbit" control) and Siri ("Ask SamRabbit") run.
+    /// The Watch Ultra's Action Button (the "Ask SamRabbit" control) and Siri ("Ask SamRabbit"): the conversation,
+    /// on the main page. Pressed again while talking it acts like a tap on the orb (send now, or interrupt).
     func askByVoice() async {
-        // Jump to the status page without the paging animation, then let it settle (right after launch
-        // the interface takes a moment) before the capture covers it.
-        var jump = Transaction()
-        jump.disablesAnimations = true
-        withTransaction(jump) { page = .status }
-        guard paired, !rejected, voice == nil else { return }
-        try? await Task.sleep(for: .milliseconds(400))
-        listen(.ask)
+        if conversation.active, voice == nil {
+            var jump = Transaction()
+            jump.disablesAnimations = true
+            withTransaction(jump) { page = .status }
+            conversation.tap()
+            return
+        }
+        talk()
     }
 
     /// Performs what a voice capture was for, with its words. `sent` runs as soon as the bridge took it
@@ -388,8 +458,8 @@ final class WatchModel {
         handle(url: url, fromApp: true)
     }
 
-    /// `samrabbit://tab/<page>`, `samrabbit://ask`, `samrabbit://thread/<id>`. `fromApp`: the route
-    /// came from the watch's own intent; only then does `ask?listen=1` open the voice capture by itself.
+    /// `samrabbit://talk` (the complications), `samrabbit://tab/<page>`, `samrabbit://ask`, `samrabbit://thread/<id>`.
+    /// `fromApp`: the route came from the watch's own intent (`ask?listen=1`: the Action Button, Siri).
     func handle(url: URL, fromApp: Bool = false) {
         guard url.scheme?.lowercased() == SamRabbit.urlScheme else { return }
         if case .compose(.ask, listen: true)? = AppLink(url: url, fromApp: fromApp) {
@@ -397,6 +467,11 @@ final class WatchModel {
             return
         }
         let target = (url.host ?? "").lowercased()
+        if target == "talk" || target == "assistant" {
+            // A complication: the app opens into the conversation.
+            talk()
+            return
+        }
         let first = url.path.split(separator: "/").first.map(String.init) ?? ""
         switch target {
         case "tab": if let page = WatchPage(link: first) { self.page = page }

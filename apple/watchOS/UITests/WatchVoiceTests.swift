@@ -28,7 +28,8 @@ final class WatchVoiceTests: XCTestCase {
     private func launch(page: String = "status", voice: String = "speech", route: String? = nil,
                         intent: String? = nil, extra: [String] = []) throws -> XCUIApplication {
         let app = XCUIApplication()
-        app.launchArguments = ["-SamRabbitPage", page, "-SamRabbitVoiceFixture", voice] + extra
+        // The conversation on the main page has the microphone otherwise.
+        app.launchArguments = ["-SamRabbitPage", page, "-SamRabbitVoiceFixture", voice, "-SamRabbitConversation", "off"] + extra
         if let route { app.launchArguments += ["-SamRabbitRoute", route] }
         if let intent { app.launchArguments += ["-SamRabbitIntent", intent] }
         app.launch()
@@ -79,10 +80,11 @@ final class WatchVoiceTests: XCTestCase {
 
     private func pause(_ seconds: TimeInterval) { Thread.sleep(forTimeInterval: seconds) }
 
-    /// The page has the Mac's fresh summary (so the capture knows whether voice is available).
+    /// The Quick page has the Mac's fresh summary (so the capture knows whether voice is available).
     private func waitForSummary(_ app: XCUIApplication) {
-        XCTAssertTrue(label(app, beginsWith: "2 need you").waitForExistence(timeout: 15)
-            || label(app, beginsWith: "1 needs you").exists || label(app, beginsWith: "All clear").exists)
+        XCTAssertTrue(app.buttons["newTask"].waitForExistence(timeout: 15))
+        XCTAssertTrue(label(app, beginsWith: "Samin's MacBook Pro").waitForExistence(timeout: 15))
+        pause(1.5)
     }
 
     /// No text input of any kind is ever on screen.
@@ -108,13 +110,13 @@ final class WatchVoiceTests: XCTestCase {
 
     // MARK: - Tests
 
-    /// Ask: listening (the orb follows the voice, Stop), "Writing it down…", the words large with Send and
+    /// New task: listening (the orb follows the voice, Stop), "Writing it down…", the words large with Send and
     /// Say again, Send starts the task.
     func test1_AskListensTranscribesAndSends() throws {
         fake("transcribe", ["delay": 2.0, "text": "Draft the release notes for build 2.4"])
-        let app = try launch(page: "status")
+        let app = try launch(page: "quick")
         waitForSummary(app)
-        app.buttons["Ask"].tap()
+        app.buttons["newTask"].tap()
         XCTAssertTrue(any(app, "voice-stop").waitForExistence(timeout: 8))
         XCTAssertTrue(label(app, beginsWith: "Listening").waitForExistence(timeout: 3), "speech was heard")
         assertNoKeyboard(app)
@@ -145,9 +147,9 @@ final class WatchVoiceTests: XCTestCase {
 
     /// Stop ends a recording that never goes quiet; Say again listens again; closing cancels.
     func test2_StopSayAgainAndClose() throws {
-        let app = try launch(page: "status", voice: "hold")
+        let app = try launch(page: "quick", voice: "hold")
         waitForSummary(app)
-        app.buttons["Ask"].tap()
+        app.buttons["newTask"].tap()
         let stop = any(app, "voice-stop")
         XCTAssertTrue(stop.waitForExistence(timeout: 8))
         pause(2.5)
@@ -159,7 +161,7 @@ final class WatchVoiceTests: XCTestCase {
         XCTAssertTrue(any(app, "voice-stop").waitForExistence(timeout: 8), "listening again")
         snap("voice-6-say-again-listening")
         close(app)
-        XCTAssertTrue(app.buttons["Ask"].waitForExistence(timeout: 5), "back on the page")
+        XCTAssertTrue(app.buttons["newTask"].waitForExistence(timeout: 5), "back on the page")
         XCTAssertFalse(any(app, "voice-stop").exists)
     }
 
@@ -167,10 +169,10 @@ final class WatchVoiceTests: XCTestCase {
     /// bridge's own errors: unavailable, a failed transcription, no speech. Never a keyboard.
     func test3_UnavailableAndErrors() throws {
         fake("transcribe", ["mode": "unavailable", "delay": 0.3])
-        let app = try launch(page: "status")
+        let app = try launch(page: "quick")
         waitForSummary(app)
         pause(1)
-        app.buttons["Ask"].tap()
+        app.buttons["newTask"].tap()
         let problem = app.staticTexts["voice-problem"]
         XCTAssertTrue(problem.waitForExistence(timeout: 8))
         XCTAssertEqual(problem.label, "Your Mac is getting ready")
@@ -255,29 +257,17 @@ final class WatchVoiceTests: XCTestCase {
         XCTAssertTrue(lines.last?.hasSuffix("Long walk at lunch, felt clear headed after") == true)
     }
 
-    /// The Action Button's control and Siri ("Ask SamRabbit") run `OpenSamRabbitWatchIntent`: the voice
-    /// capture opens already listening, without a tap.
-    func test6_ActionButtonAndSiriOpenTheVoiceCapture() throws {
-        let app = try launch(page: "quick", voice: "hold", intent: "ask")
-        let stop = any(app, "voice-stop")
-        XCTAssertTrue(stop.waitForExistence(timeout: 12), "listening by itself")
-        assertNoKeyboard(app)
-        snap("voice-17-action-button-listening")
-        stop.tap()
-        XCTAssertTrue(app.staticTexts["voice-transcript"].waitForExistence(timeout: 20))
-        close(app)
-        XCTAssertTrue(app.buttons["Ask"].waitForExistence(timeout: 5), "on the status page")
-    }
+    // The Action Button and Siri open the conversation now: `WatchConversationTests.test9_ActionButtonOpensTheConversation`.
 
     /// Through the iPhone (`-SamRabbitRoute phone`): the recording travels in chunks over WatchConnectivity
     /// and the phone uploads it with the watch's own token.
     func test7_ThroughTheIPhone() throws {
         fake("transcribe", ["text": "Check whether the nightly build passed"])
         let before = (fakeGet("transcribe")["uploads"] as? [[String: Any]] ?? []).count
-        let app = try launch(page: "status", route: "phone")
-        XCTAssertTrue(app.buttons["Ask"].waitForExistence(timeout: 15))
+        let app = try launch(page: "quick", route: "phone")
+        XCTAssertTrue(app.buttons["newTask"].waitForExistence(timeout: 15))
         pause(2)
-        app.buttons["Ask"].tap()
+        app.buttons["newTask"].tap()
         let transcript = app.staticTexts["voice-transcript"]
         XCTAssertTrue(transcript.waitForExistence(timeout: 30), "the words came back through the iPhone")
         XCTAssertEqual(transcript.label, "Check whether the nightly build passed")
@@ -291,9 +281,9 @@ final class WatchVoiceTests: XCTestCase {
 
     /// The watch's microphone permission was refused: say how to allow it (no keyboard fallback).
     func test8_MicrophoneDenied() throws {
-        let app = try launch(page: "status", extra: ["-SamRabbitVoicePermission", "denied"])
+        let app = try launch(page: "quick", extra: ["-SamRabbitVoicePermission", "denied"])
         waitForSummary(app)
-        app.buttons["Ask"].tap()
+        app.buttons["newTask"].tap()
         let problem = app.staticTexts["voice-problem"]
         XCTAssertTrue(problem.waitForExistence(timeout: 8))
         XCTAssertEqual(problem.label, "Microphone is off")

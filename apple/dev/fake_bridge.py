@@ -44,16 +44,45 @@ says ``t3.available=false`` and every ``/v1/mobile/t3/*`` route answers 503 ``t3
 unavailable), ``permission`` (503 ``transcribe_permission``), ``failed`` (502 ``transcribe_failed``), ``busy``
 (503 ``transcribe_busy``), ``no_speech`` (422) or ``missing`` (an older bridge: 404 and no ``transcribe`` in the
 summary)) and ``GET /__fake/transcribe`` (the mode and the uploads that arrived: bytes, type, lang, device).
+
+The voice assistant (CONTRACTS-WAVE5, "Streaming turn protocol"), with canned answers:
+
+* ``POST /v1/mobile/assistant/turn``: an utterance (``audio/wav`` 16 kHz, ``audio/mp4``, ``audio/x-m4a``; at most
+  2 MiB and 60 s) or JSON ``{text | announce, conversationId?, turnId}``, with ``X-SamRabbit-Conversation``,
+  ``X-SamRabbit-Turn`` (a retry of a turn gets the same answer) and ``X-SamRabbit-Device-Time``. With ``Accept:
+  application/x-samrabbit-stream`` the answer is 200 ``application/x-samrabbit-stream``, chunked: frames of 1 byte
+  type, 4-byte big-endian length, payload; ``J`` = one JSON event (``heard``, ``say.delta``, ``say.done``,
+  ``action``, ``card``, ``done`` with ``conversationId, turnId, expectReply, endConversation, interrupted?, brain,
+  timings {stt, firstAudio, total}``, or ``error``), ``A`` = PCM16LE mono 16 kHz (160 ms per frame, a made-up
+  voice-like tone, sent at twice real time). Without that ``Accept``: the buffered JSON answer ``{conversationId,
+  turnId, heard, say, audio: {mime: "audio/wav", b64} | null, expectReply, endConversation, actions, timings,
+  brain}``. One turn per conversation at a time (409 ``assistant_busy``).
+* ``POST /v1/mobile/assistant/session {conversationId?}`` -> ``{conversationId, brain, ready}``;
+  ``POST /v1/mobile/assistant/cancel {conversationId}`` (the stream stops and ends with ``done{interrupted: true}``);
+  ``POST /v1/mobile/assistant/end {conversationId}``;
+  ``GET /v1/mobile/assistant/announcements?conversationId=&since=`` -> ``{items: [{id, say, audio | null, kind,
+  threadId, title}], cursor}`` (each once per conversation); a turn ``{"announce": id}`` says it.
+* The summary says ``assistant: {available, brain, reason?, model, chatgpt: {connected}}``.
+* ``POST /__fake/assistant {mode?, say?, heard?, delay?, brain?, pace?}`` / ``GET /__fake/assistant`` (the mode and
+  what arrived: turns, sessions, cancels, ends). Modes: ``ok``; ``noaudio`` (no audio: the watch speaks the text
+  itself); ``noise`` (nothing heard: keep listening); ``end`` (``endConversation``); ``error`` (an ``error`` event);
+  ``slow`` (4 s before the answer starts); ``busy`` (409); ``unavailable`` (503 ``assistant_unavailable``); ``drop``
+  (the connection closes without an answer: "can't reach your Mac"); ``buffered`` (answers buffered JSON even when a
+  stream was asked for, like the Claude fallback) and ``buffered_clip`` (the same with an AAC clip, ``audio/mp4``,
+  instead of WAV); ``missing`` (an older bridge: 404 and no ``assistant`` in the summary).
+  ``POST /__fake/announce {say?, kind?, threadId?, title?, audio?}`` queues an announcement.
 Stdlib only, Python 3.9.
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import hmac
 import ipaddress
 import json
+import math
 import os
 import re
 import secrets
@@ -92,6 +121,75 @@ TRANSCRIBE_FAILURES: Dict[str, Tuple[int, str, str, bool, Optional[str]]] = {
 }
 TRANSCRIBE_MODES = ("ok", "empty", "missing") + tuple(TRANSCRIBE_FAILURES)
 _LANG = re.compile(r"^[A-Za-z]{2,3}(?:[-_][A-Za-z0-9]{1,8}){0,3}$")
+# The voice assistant (the real bridge's rules, samrabbit_assistant.py)
+STREAM_TYPE = "application/x-samrabbit-stream"
+ASSISTANT_MODES = ("ok", "noaudio", "noise", "end", "error", "slow", "busy", "unavailable", "drop", "buffered",
+                   "buffered_clip", "missing")
+ASSISTANT_MAX_BYTES = 2 * 1024 * 1024
+ASSISTANT_MAX_SECONDS = 60.5
+ASSISTANT_TYPES = {"audio/wav": "wav", "audio/x-wav": "wav", "audio/wave": "wav", "audio/mp4": "mp4",
+                   "audio/x-m4a": "mp4", "audio/m4a": "mp4"}
+DEFAULT_HEARD = "Draft the release notes for build 2.4"
+DEFAULT_SAY = "Okay, I started the release notes for build 2.4 in Hermes. Anything else?"
+ASSISTANT_RATE = 16000
+ASSISTANT_FRAME_SECONDS = 0.16
+_CONVERSATION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{2,56}$")
+_TURN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$")
+_SPEECH_CACHE: Dict[int, bytes] = {}
+
+
+def speech_pcm(seconds: float) -> bytes:
+    """A voice-like sound (a 170 Hz buzz with harmonics in syllables), PCM16LE mono 16 kHz."""
+    key = int(seconds * 100)
+    cached = _SPEECH_CACHE.get(key)
+    if cached is not None:
+        return cached
+    count = int(seconds * ASSISTANT_RATE)
+    out = bytearray(count * 2)
+    phase = 0.0
+    for index in range(count):
+        t = index / ASSISTANT_RATE
+        envelope = (0.5 + 0.5 * math.sin(2 * math.pi * 3.6 * t - math.pi / 2)) * min(1.0, t / 0.05,
+                                                                                    (seconds - t) / 0.08)
+        phase += 2 * math.pi * (170 + 25 * math.sin(2 * math.pi * 0.7 * t)) / ASSISTANT_RATE
+        sample = (math.sin(phase) + 0.45 * math.sin(2 * phase) + 0.2 * math.sin(3 * phase)) / 1.65 * envelope * 0.16
+        struct.pack_into("<h", out, index * 2, int(max(-1.0, min(1.0, sample)) * 32767))
+    _SPEECH_CACHE[key] = bytes(out)
+    return _SPEECH_CACHE[key]
+
+
+def wav_bytes(pcm: bytes, rate: int = ASSISTANT_RATE) -> bytes:
+    return (b"RIFF" + struct.pack("<I", 36 + len(pcm)) + b"WAVE" + b"fmt " +
+            struct.pack("<IHHIIHH", 16, 1, 1, rate, rate * 2, 2, 16) + b"data" + struct.pack("<I", len(pcm)) + pcm)
+
+
+def wav_seconds(data: bytes) -> Optional[float]:
+    """A 16-bit WAV's length (None when its header can't be read)."""
+    position = 12
+    rate = channels = bits = 0
+    while position + 8 <= len(data):
+        kind, size = data[position:position + 4], struct.unpack("<I", data[position + 4:position + 8])[0]
+        body = position + 8
+        if kind == b"fmt " and body + 16 <= len(data):
+            _, channels, rate, _, _, bits = struct.unpack("<HHIIHH", data[body:body + 16])
+        elif kind == b"data":
+            if not rate or not channels or not bits:
+                return None
+            return min(size, len(data) - body) / float(rate * channels * bits // 8)
+        position = body + size + (size & 1)
+    return None
+
+
+def frame(kind: bytes, payload: bytes) -> bytes:
+    return kind + struct.pack(">I", len(payload)) + payload
+
+
+def event_frame(event: Dict[str, Any]) -> bytes:
+    return frame(b"J", json.dumps(event, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+
+
+def spoken_seconds(say: str) -> float:
+    return max(1.0, min(6.0, 0.3 * len(say.split()) + 0.4))
 
 
 def now_ms() -> int:
@@ -317,6 +415,18 @@ class FakeBridge:
             self.transcript = DEFAULT_TRANSCRIPT
             self.transcribe_delay = 0.6
             self.uploads: List[Dict[str, Any]] = []
+            self.assistant_mode = "ok"
+            self.assistant_say = DEFAULT_SAY
+            self.assistant_heard = DEFAULT_HEARD
+            self.assistant_delay = 0.35
+            self.assistant_pace = 0.5  # seconds of sending per second of audio
+            self.assistant_brain = "realtime"
+            self.assistant_log: Dict[str, List[Dict[str, Any]]] = {"turns": [], "sessions": [], "cancels": [],
+                                                                    "ends": []}
+            self.assistant_conversations: Dict[str, Dict[str, Any]] = {}
+            self.assistant_turns: Dict[Tuple[str, str], Dict[str, Any]] = {}
+            self.announcements: List[Dict[str, Any]] = []
+            self.announcement_seq = 100
             now = time.time()
             self.focus_jpg = self.put_blob(read_fixture("genui-focus.jpg"))
             self.release_jpg = self.put_blob(read_fixture("genui-release.jpg"))
@@ -701,6 +811,7 @@ class FakeBridge:
                                    "lastAt": latest["lastAt"], "preview": latest["preview"]} if latest else None,
             "journal": {"available": True},
             **self.transcribe_part(),
+            **self.assistant_part(),
         }
 
     def transcribe_part(self) -> Dict[str, Any]:
@@ -712,6 +823,45 @@ class FakeBridge:
         if self.transcribe_mode == "permission":
             return {"transcribe": {"available": False, "reason": "permission_denied"}}
         return {"transcribe": {"available": True}}
+
+    def assistant_part(self) -> Dict[str, Any]:
+        """The summary's ``assistant`` part (none for an older bridge, mode ``missing``)."""
+        if self.assistant_mode == "missing":
+            return {}
+        part: Dict[str, Any] = {"available": self.assistant_mode != "unavailable", "brain": self.assistant_brain,
+                                "model": "gpt-realtime-2.1" if self.assistant_brain == "realtime" else
+                                "claude-haiku-5-5", "chatgpt": {"connected": self.assistant_brain == "realtime"}}
+        if self.assistant_mode == "unavailable":
+            part["reason"] = "chatgpt_not_connected"
+        return {"assistant": part}
+
+    def assistant_conversation(self, conversation_id: Optional[str], device: Dict[str, Any]) -> Dict[str, Any]:
+        """A conversation of this device (a new one without an id; an id from another device is refused)."""
+        with self.lock:
+            if conversation_id:
+                found = self.assistant_conversations.get(conversation_id)
+                if found is not None:
+                    if found["deviceId"] != device["deviceId"]:
+                        raise ApiError(404, "conversation_not_found", "No such conversation.")
+                    return found
+            else:
+                conversation_id = "wc_" + uuid.uuid4().hex[:16]
+            # Like the real bridge: a conversation hears only of what happens after it began.
+            found = {"conversationId": conversation_id, "deviceId": device["deviceId"], "active": None,
+                     "cancel": threading.Event(), "announced": set(), "turns": 0, "ended": False,
+                     "cursor": max([a["id"] for a in self.announcements] or [0])}
+            self.assistant_conversations[conversation_id] = found
+            return found
+
+    def add_announcement(self, say: str, kind: str, thread_id: Optional[str], title: Optional[str],
+                         audio: bool) -> Dict[str, Any]:
+        with self.lock:
+            self.announcement_seq += 1
+            item = {"id": self.announcement_seq, "say": say, "kind": kind, "threadId": thread_id, "title": title,
+                    "audio": {"mime": "audio/wav",
+                              "b64": base64.b64encode(wav_bytes(speech_pcm(spoken_seconds(say)))).decode("ascii")} if audio else None}
+            self.announcements.append(item)
+            return item
 
     # ------------------------------------------------------------------ auth
 
@@ -946,6 +1096,38 @@ class Handler(BaseHTTPRequestHandler):
             with b.lock:
                 return self.send_json(200, {"mode": b.transcribe_mode, "text": b.transcript,
                                             "delay": b.transcribe_delay, "uploads": list(b.uploads)})
+        if path == "/__fake/assistant":
+            if method == "POST":
+                body = self.body()
+                with b.lock:
+                    mode = str(body.get("mode") or b.assistant_mode)
+                    if mode not in ASSISTANT_MODES:
+                        raise ApiError(400, "invalid_mode", "mode must be one of " + ", ".join(ASSISTANT_MODES))
+                    b.assistant_mode = mode
+                    if "say" in body:
+                        b.assistant_say = str(body.get("say") or "")
+                    if "heard" in body:
+                        b.assistant_heard = str(body.get("heard") or "")
+                    if "delay" in body:
+                        b.assistant_delay = max(0.0, min(30.0, float(body.get("delay") or 0)))
+                    if "pace" in body:
+                        b.assistant_pace = max(0.0, min(2.0, float(body.get("pace") or 0)))
+                    if body.get("brain") in ("realtime", "claude"):
+                        b.assistant_brain = str(body["brain"])
+                    if body.get("clear"):
+                        for log in b.assistant_log.values():
+                            del log[:]
+            with b.lock:
+                return self.send_json(200, {"mode": b.assistant_mode, "say": b.assistant_say,
+                                            "heard": b.assistant_heard, "delay": b.assistant_delay,
+                                            "pace": b.assistant_pace, "brain": b.assistant_brain,
+                                            **{k: list(v) for k, v in b.assistant_log.items()}})
+        if path == "/__fake/announce" and method == "POST":
+            body = self.body()
+            item = b.add_announcement(str(body.get("say") or "“Fix login redirect” in Hermes finished."),
+                                      str(body.get("kind") or "done"), body.get("threadId") or "t_login",
+                                      body.get("title") or "Fix login redirect", bool(body.get("audio")))
+            return self.send_json(200, {"ok": True, "id": item["id"]})
         if path == "/__fake/t3" and method == "POST":
             with b.lock:
                 b.t3_available = bool(self.body().get("available", True))
@@ -1003,6 +1185,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(200, b.summary())
         if rest == "transcribe":
             return self.transcribe(method, device)
+        if rest.startswith("assistant/"):
+            return self.assistant(method, rest, device)
         if rest == "stream":
             return self.stream()
         if rest == "conversations" or rest.startswith("conversations/"):
@@ -1390,6 +1574,279 @@ class Handler(BaseHTTPRequestHandler):
     def drain(self) -> None:
         """Reads a body that is refused before it is used (keeps a kept-alive connection in step)."""
         self.finish_body()
+
+    # ------------------------------------------------------------------ the voice assistant
+
+    def assistant(self, method: str, rest: str, device: Dict[str, Any]) -> None:
+        b = self.bridge
+        with b.lock:
+            mode = b.assistant_mode
+        if mode == "missing":
+            self.drain()
+            raise ApiError(404, "not_found", "Not found.")
+        if rest == "assistant/turn":
+            self.only(method, "POST")
+            return self.assistant_turn(device, mode)
+        if rest == "assistant/announcements":
+            self.only(method, "GET")
+            conversation_id = (self.q1("conversationId") or "").strip()
+            if not _CONVERSATION_ID.match(conversation_id):
+                raise ApiError(400, "invalid_conversation", "conversationId is required.")
+            since = (self.q1("since") or "").strip()
+            if since and not since.isdigit():
+                raise ApiError(400, "invalid_since", "since must be the cursor of the last answer.")
+            conversation = b.assistant_conversation(conversation_id, device)
+            with b.lock:
+                items = [dict(a) for a in b.announcements
+                         if a["id"] > conversation["cursor"] and a["id"] not in conversation["announced"]
+                         and (not since or a["id"] > int(since))]
+                for item in items:
+                    conversation["announced"].add(item["id"])
+                cursor = max([a["id"] for a in b.announcements] or [0])
+            return self.send_json(200, {"items": items, "cursor": cursor})
+        body = self.body()
+        self.only(method, "POST")
+        conversation_id = body.get("conversationId")
+        if rest == "assistant/session":
+            if mode == "unavailable":
+                raise ApiError(503, "assistant_unavailable", "Connect ChatGPT on the Mac first.")
+            if conversation_id is not None and (not isinstance(conversation_id, str) or
+                                                not _CONVERSATION_ID.match(conversation_id)):
+                raise ApiError(400, "invalid_conversation", "The conversation id must be 3 to 57 letters, digits, "
+                               "- or _.")
+            conversation = b.assistant_conversation(conversation_id or None, device)
+            with b.lock:
+                conversation["ended"] = False
+                b.assistant_log["sessions"].append({"conversationId": conversation["conversationId"],
+                                                    "continued": bool(conversation_id),
+                                                    "deviceId": device["deviceId"]})
+            return self.send_json(200, {"conversationId": conversation["conversationId"], "brain": b.assistant_brain,
+                                        "ready": True})
+        if not isinstance(conversation_id, str) or not _CONVERSATION_ID.match(conversation_id):
+            raise ApiError(400, "invalid_conversation", "conversationId is required.")
+        with b.lock:
+            found = b.assistant_conversations.get(conversation_id)
+            mine = found is not None and found["deviceId"] == device["deviceId"]
+        if rest == "assistant/cancel":
+            cancelled = bool(mine and found["active"])
+            if cancelled:
+                found["cancel"].set()
+            with b.lock:
+                b.assistant_log["cancels"].append({"conversationId": conversation_id, "cancelled": cancelled})
+            return self.send_json(200, {"ok": True, "cancelled": cancelled})
+        if rest == "assistant/end":
+            if mine:
+                found["ended"] = True
+            with b.lock:
+                b.assistant_log["ends"].append({"conversationId": conversation_id, "ended": mine})
+            return self.send_json(200, {"ok": True, "ended": mine})
+        raise ApiError(404, "not_found", "Not found.")
+
+    def assistant_turn(self, device: Dict[str, Any], mode: str) -> None:
+        """``POST /v1/mobile/assistant/turn``: the real bridge's checks, then a canned answer, streamed or buffered."""
+        b = self.bridge
+        declared = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+        header_conversation = (self.headers.get("X-SamRabbit-Conversation") or "").strip() or None
+        header_turn = (self.headers.get("X-SamRabbit-Turn") or "").strip() or None
+        device_time = self.headers.get("X-SamRabbit-Device-Time")
+        if device_time is not None and len(device_time) > 64:
+            self.drain()
+            raise ApiError(400, "invalid_device_time", "X-SamRabbit-Device-Time is too long.")
+        record: Dict[str, Any] = {"deviceId": device["deviceId"], "platform": device.get("platform"),
+                                  "parentId": device.get("parentId"), "deviceTime": bool(device_time),
+                                  "accept": self.headers.get("Accept"), "lang": self.q1("lang")}
+        text: Optional[str] = None
+        announce: Optional[Dict[str, Any]] = None
+        if declared in ASSISTANT_TYPES:
+            if self.headers.get("Transfer-Encoding"):
+                raise ApiError(411, "length_required", "Send a Content-Length body.")
+            length = int(self.headers.get("Content-Length") or 0)
+            if length > ASSISTANT_MAX_BYTES:
+                raise ApiError(413, "body_too_large", "The body must be at most %d bytes." % ASSISTANT_MAX_BYTES)
+            if not length:
+                raise ApiError(400, "invalid_audio", "Send the recording as the request body.")
+            data = self.rfile.read(length)
+            self.consumed = True
+            if len(data) != length:
+                raise ApiError(400, "invalid_audio", "The recording did not arrive completely.", retryable=True)
+            kind = sniff_audio(data)
+            if kind is None or kind != ASSISTANT_TYPES[declared]:
+                raise ApiError(415, "unsupported_audio", "The body is not the %s it says it is." % declared)
+            seconds = wav_seconds(data) if kind == "wav" else mp4_seconds(data)
+            if seconds is not None and seconds > ASSISTANT_MAX_SECONDS:
+                raise ApiError(413, "audio_too_long", "Say it in at most 60 seconds.")
+            record.update({"kind": "audio", "bytes": length, "contentType": declared, "seconds": seconds})
+            conversation_id, turn_id = header_conversation, header_turn
+        elif declared in ("application/json", ""):
+            body = self.body()
+            conversation_id = body.get("conversationId", header_conversation)
+            turn_id = body.get("turnId", header_turn)
+            if "announce" in body:
+                wanted = str(body.get("announce") or "")
+                with b.lock:
+                    announce = next((dict(a) for a in b.announcements if str(a["id"]) == wanted), None)
+                if announce is None:
+                    raise ApiError(404, "announcement_not_found", "No such announcement.")
+                record.update({"kind": "announce", "announce": wanted})
+            else:
+                text = body.get("text")
+                if not isinstance(text, str) or len(text) > 4000 or "\x00" in text:
+                    raise ApiError(400, "invalid_text", "text must be at most 4000 characters.")
+                record.update({"kind": "text", "chars": len(text)})
+            if conversation_id is not None and not isinstance(conversation_id, str):
+                raise ApiError(400, "invalid_conversation", "conversationId must be an id.")
+            if turn_id is not None and not isinstance(turn_id, str):
+                raise ApiError(400, "invalid_turn", "turnId must be a uuid.")
+            conversation_id = (conversation_id or "").strip() or None
+        else:
+            self.drain()
+            raise ApiError(415, "unsupported_media", "Send audio/wav, audio/mp4 or audio/x-m4a, or JSON text.")
+        if conversation_id is not None and not _CONVERSATION_ID.match(conversation_id):
+            raise ApiError(400, "invalid_conversation", "The conversation id must be 3 to 57 letters, digits, - or _.")
+        if not turn_id or not _TURN_ID.match(turn_id):
+            raise ApiError(400, "invalid_turn", "Send X-SamRabbit-Turn (or turnId): a uuid for this turn.")
+        if mode == "drop":
+            # The Mac goes away mid-request: no answer at all.
+            self.close_connection = True
+            return
+        if mode == "unavailable":
+            raise ApiError(503, "assistant_unavailable", "Connect ChatGPT on the Mac first.")
+        if mode == "busy":
+            raise ApiError(409, "assistant_busy", "Still answering the last thing you said.", retryable=True)
+        conversation = b.assistant_conversation(conversation_id, device)
+        key = (device["deviceId"], turn_id)
+        with b.lock:
+            answer = b.assistant_turns.get(key)
+            replay = answer is not None
+            if not replay:
+                if conversation["active"] and conversation["active"] != turn_id:
+                    raise ApiError(409, "assistant_busy", "Still answering the last thing you said.", retryable=True)
+                answer = self.assistant_answer(mode, text, announce)
+                answer.update({"conversationId": conversation["conversationId"], "turnId": turn_id})
+                b.assistant_turns[key] = answer
+                conversation["active"] = turn_id
+                conversation["cancel"].clear()
+                conversation["turns"] += 1
+            record.update({"turnId": turn_id, "conversationId": conversation["conversationId"], "replay": replay,
+                           "mode": mode})
+            b.assistant_log["turns"].append(record)
+            del b.assistant_log["turns"][:-40]
+        streamed = STREAM_TYPE in (self.headers.get("Accept") or "") and not mode.startswith("buffered")
+        record["stream"] = streamed
+        try:
+            if answer["delay"]:
+                time.sleep(answer["delay"])
+            if streamed:
+                record["interrupted"] = self.stream_answer(answer, conversation)
+            else:
+                record["interrupted"] = False
+                self.send_json(200, self.buffered_answer(answer, clip=mode == "buffered_clip"))
+        finally:
+            with b.lock:
+                if conversation["active"] == turn_id:
+                    conversation["active"] = None
+
+    def assistant_answer(self, mode: str, text: Optional[str], announce: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """What a turn answers (the same again for a retry of the turn)."""
+        b = self.bridge
+        heard = text if text is not None else b.assistant_heard
+        say = b.assistant_say
+        end = False
+        actions: List[Dict[str, Any]] = []
+        cards: List[Dict[str, Any]] = []
+        if announce is not None:
+            heard, say = "", announce["say"]
+        elif mode == "noise":
+            heard, say = "", ""
+        elif mode == "end":
+            heard, say, end = heard or "Thanks, that's all", "Okay. Talk soon.", True
+        elif re.search(r"\b(task|draft|notes|start)\b", heard, re.I):
+            actions.append({"kind": "t3.started", "title": "Release notes for build 2.4", "threadId": "t_relnotes",
+                            "projectName": "Hermes"})
+        if re.search(r"\b(calendar|next|meeting)\b", heard, re.I):
+            cards.append({"title": "Up next", "body": "Design review at 3:00 PM"})
+            if say == DEFAULT_SAY and not actions:
+                say = "Next up is the design review at three. Want me to block time before it?"
+        return {"heard": heard, "say": say, "end": end, "actions": actions, "cards": cards,
+                "audio": mode not in ("noaudio", "noise", "error"), "error": mode == "error",
+                "delay": 4.0 if mode == "slow" else b.assistant_delay, "brain": b.assistant_brain}
+
+    def buffered_answer(self, answer: Dict[str, Any], clip: bool) -> Dict[str, Any]:
+        audio = None
+        if answer["audio"] and answer["say"]:
+            if clip:
+                audio = {"mime": "audio/mp4", "b64": base64.b64encode(read_fixture("assistant-reply.m4a")).decode()}
+            else:
+                audio = {"mime": "audio/wav",
+                         "b64": base64.b64encode(wav_bytes(speech_pcm(spoken_seconds(answer["say"])))).decode()}
+        if answer["error"]:
+            raise ApiError(502, "assistant_failed", "The assistant could not answer.", retryable=True)
+        return {"conversationId": answer["conversationId"], "turnId": answer["turnId"], "heard": answer["heard"],
+                "say": answer["say"], "audio": audio, "expectReply": answer["say"].rstrip().endswith("?"),
+                "endConversation": answer["end"], "actions": answer["actions"], "cards": answer["cards"],
+                "brain": "claude" if clip else answer["brain"], "timings": {"stt": 180, "agent": 900, "tts": 300}}
+
+    def stream_answer(self, answer: Dict[str, Any], conversation: Dict[str, Any]) -> bool:
+        """Streams the frames; returns whether the turn was cancelled (``POST /assistant/cancel``)."""
+        b = self.bridge
+        started = time.time()
+        self.send_response(200)
+        self.send_header("Content-Type", STREAM_TYPE)
+        self.send_header("Transfer-Encoding", "chunked")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+
+        def write(data: bytes) -> None:
+            self.wfile.write(b"%x\r\n" % len(data) + data + b"\r\n")
+            self.wfile.flush()
+
+        interrupted = False
+        first_audio = None
+        try:
+            write(event_frame({"type": "heard", "text": answer["heard"]}))
+            if answer["error"]:
+                write(event_frame({"type": "error", "code": "assistant_failed",
+                                   "message": "The realtime session failed."}))
+            else:
+                say = answer["say"]
+                words = say.split(" ") if say else []
+                pcm = speech_pcm(spoken_seconds(say)) if answer["audio"] and say else b""
+                step = int(ASSISTANT_RATE * 2 * ASSISTANT_FRAME_SECONDS)
+                frames = [pcm[i:i + step] for i in range(0, len(pcm), step)]
+                count = max(len(frames), len(words))
+                for index in range(count):
+                    if conversation["cancel"].is_set():
+                        interrupted = True
+                        break
+                    if index < len(words):
+                        write(event_frame({"type": "say.delta", "text": (" " if index else "") + words[index]}))
+                    if index < len(frames):
+                        if first_audio is None:
+                            first_audio = int((time.time() - started) * 1000)
+                        write(frame(b"A", frames[index]))
+                    time.sleep(ASSISTANT_FRAME_SECONDS * b.assistant_pace)
+                if not interrupted:
+                    write(event_frame({"type": "say.done", "text": say}))
+                    for action in answer["actions"]:
+                        write(event_frame(dict(action, type="action")))
+                    for card in answer["cards"]:
+                        write(event_frame(dict(card, type="card")))
+            done: Dict[str, Any] = {"type": "done", "conversationId": answer["conversationId"],
+                                    "turnId": answer["turnId"], "expectReply": answer["say"].rstrip().endswith("?"),
+                                    "endConversation": answer["end"] and not interrupted, "brain": answer["brain"],
+                                    "timings": {"stt": 180, "firstAudio": first_audio,
+                                                "total": int((time.time() - started) * 1000)}}
+            if interrupted:
+                done["interrupted"] = True
+            if not answer["error"]:
+                write(event_frame(done))
+            self.wfile.write(b"0\r\n\r\n")
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            interrupted = True  # the watch hung up (barge-in)
+            self.close_connection = True
+        return interrupted
 
     def calendar(self, method: str, rest: str) -> None:
         b = self.bridge

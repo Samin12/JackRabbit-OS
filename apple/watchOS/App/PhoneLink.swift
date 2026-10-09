@@ -17,8 +17,10 @@ extension Notification.Name {
 ///   complications call the bridge directly;
 /// * is the `BridgeRelay` of the watch's clients: when the Mac can't be reached directly, the
 ///   request goes to the iPhone with `sendMessage` (`WatchRelay`) and the phone performs it; a voice
-///   recording goes in chunks of at most 40 KB (`VoiceRelay`) and the phone uploads it for transcription.
-final class PhoneLink: NSObject, WCSessionDelegate, BridgeRelay, @unchecked Sendable {
+///   recording goes in chunks of at most 40 KB (`VoiceRelay`) and the phone uploads it for transcription;
+///   an assistant turn goes the same way and its answer comes back in pieces as the Mac streams it
+///   (`TurnRelay`: the watch pulls each piece).
+final class PhoneLink: NSObject, WCSessionDelegate, BridgeRelay, TurnRelayLink, @unchecked Sendable {
     static let shared = PhoneLink()
 
     /// How the last answer from the Mac arrived.
@@ -104,6 +106,27 @@ final class PhoneLink: NSObject, WCSessionDelegate, BridgeRelay, @unchecked Send
         throw BridgeError.unreachable("iPhone: the recording got no answer")
     }
 
+    /// An assistant turn through the iPhone (`TurnRelay`): the utterance in chunks, then the phone sends the turn
+    /// to the Mac with the watch's own token and hands the answer back piece by piece.
+    func relayAssistantTurn(_ turn: AssistantTurnRequest) async throws -> AssistantTurnResponse {
+        let response = try await TurnRelay.run(turn, over: self)
+        if response.status != 0 { state.withLock { $0.lastRoute = .phone } }
+        return response
+    }
+
+    // MARK: - TurnRelayLink
+
+    func send(_ outgoing: TurnRelay.Outgoing, timeout: TimeInterval) async throws -> TurnRelay.Answer? {
+        let reply = try await exchange(timeout: timeout) { outgoing.dictionary }
+        guard reply.ack != nil || reply.turn != nil || reply.relay != nil else { return nil } // no answer in time
+        var dictionary: [String: Any] = [:]
+        if let ack = reply.ack { dictionary[VoiceRelay.ackKey] = ack }
+        if let turn = reply.turn { dictionary[TurnRelay.replyKey] = turn }
+        if let data = reply.turnData { dictionary[TurnRelay.dataKey] = data }
+        if let relay = reply.relay { dictionary[WatchRelay.responseKey] = relay }
+        return TurnRelay.Answer(dictionary: dictionary)
+    }
+
     // MARK: - Pairing from the phone
 
     /// Asks the iPhone for the pairing now (on launch without one, or "Reconnect" after the Mac
@@ -172,6 +195,9 @@ final class PhoneLink: NSObject, WCSessionDelegate, BridgeRelay, @unchecked Send
         var unpaired: Bool
         /// The phone kept a voice chunk (its `seq`).
         var ack: Int?
+        /// A turn's reply (`TurnRelay.Reply`) and its piece of the answer.
+        var turn: Data?
+        var turnData: Data?
     }
 
     /// One `sendMessage` round trip. Throws `BridgeError.unreachable` when nothing reached the
@@ -189,7 +215,9 @@ final class PhoneLink: NSObject, WCSessionDelegate, BridgeRelay, @unchecked Send
                 once.resume(.success(Reply(relay: answer[WatchRelay.responseKey] as? Data,
                                            context: answer[WatchContext.key] as? Data,
                                            unpaired: answer[WatchContext.unpairedKey] as? Bool == true,
-                                           ack: answer[VoiceRelay.ackKey] as? Int)))
+                                           ack: answer[VoiceRelay.ackKey] as? Int,
+                                           turn: answer[TurnRelay.replyKey] as? Data,
+                                           turnData: answer[TurnRelay.dataKey] as? Data)))
             }, errorHandler: { error in
                 let code = (error as? WCError)?.code
                 switch code {

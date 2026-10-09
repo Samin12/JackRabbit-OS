@@ -100,8 +100,9 @@ public enum VoiceFormat {
 
 /// Decides when a recording ends: about 1.5 s of quiet once speech was heard, or the 60 s cap. Fed the
 /// recorder's average power (dBFS) every ~50 ms. The noise floor follows the quietest level (down at
-/// once, up slowly), so a noisy room still ends the recording; a sound counts as speech when it stands
-/// 10 dB above the floor (and above -50 dBFS) for 150 ms.
+/// once, up slowly; `NoiseFloor`: readings at or below -100 dBFS are ignored and it never goes below -80),
+/// so a noisy room still ends the recording; a sound counts as speech when it stands 10 dB above the floor
+/// (and above -50 dBFS) for 150 ms.
 public struct VoiceActivity: Sendable, Equatable {
     public enum Decision: Sendable, Equatable {
         case keepGoing
@@ -114,7 +115,8 @@ public struct VoiceActivity: Sendable, Equatable {
     public private(set) var heardSpeech = false
     /// 0...1, smoothed: what the orb shows.
     public private(set) var level: Double = 0
-    public private(set) var floor: Double?
+    private var noise = NoiseFloor()
+    public var floor: Double? { noise.value }
     private var loudSince: TimeInterval?
     private var lastSpeechAt: TimeInterval?
     private var lastElapsed: TimeInterval?
@@ -124,8 +126,6 @@ public struct VoiceActivity: Sendable, Equatable {
     static let margin: Double = 10
     static let quietest: Double = -50
     static let speechMinimum: TimeInterval = 0.15
-    /// How fast the floor may rise (dB per second) while it is louder than the floor.
-    static let floorRise: Double = 1.5
 
     public init(silence: TimeInterval = VoiceFormat.silenceToStop, limit: TimeInterval = VoiceFormat.maxSeconds) {
         self.silence = silence
@@ -137,12 +137,9 @@ public struct VoiceActivity: Sendable, Equatable {
         let power = power.isFinite ? max(-160, min(0, power)) : -160
         let step = max(0, elapsed - (lastElapsed ?? elapsed))
         lastElapsed = elapsed
-        if let current = floor {
-            floor = power < current ? power : min(power, current + Self.floorRise * step)
-        } else {
-            floor = power
-        }
-        let threshold = max((floor ?? power) + Self.margin, Self.quietest)
+        noise.update(power: power, step: step)
+        // No floor yet (only digital silence so far): nothing counts as speech.
+        let threshold = floor.map { max($0 + Self.margin, Self.quietest) } ?? .infinity
         if power >= threshold {
             if loudSince == nil { loudSince = elapsed }
             if let since = loudSince, elapsed - since >= Self.speechMinimum {
