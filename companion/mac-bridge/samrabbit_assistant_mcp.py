@@ -8,10 +8,11 @@ watch turn; that file starts this script with two environment variables:
 * ``SAMRABBIT_ASSISTANT_TOKEN_FILE``: a 0600 file with the bridge's internal assistant token (made when the bridge
   starts; never on the command line, never logged).
 
-Every tool is one call to the bridge's own mobile API (``/v1/mobile/*``) with that token, so a copy of the bridge run
-from a checkout only ever reaches its own dev-safe answers (``t3_dev_copy``, ``calendar_dev_copy``, a dry-run
-journal). The CLI's session id (``CLAUDE_CODE_SESSION_ID``, which Claude Code gives its MCP servers) travels as
-``X-SamRabbit-Assistant-Session``, so the bridge can tell which watch conversation a tool call belongs to.
+Every tool is one call to the bridge's own mobile API (``/v1/mobile/*``) with that token (never through a system
+proxy), so a copy of the bridge run from a checkout only ever reaches its own dev-safe answers (``t3_dev_copy``,
+``calendar_dev_copy``, a dry-run journal). The CLI's session id (``CLAUDE_CODE_SESSION_ID``, which Claude Code gives
+its MCP servers) travels as ``X-SamRabbit-Assistant-Session``, so the bridge can tell which watch conversation a tool
+call belongs to.
 
 Protocol (what Claude Code sends, newline-delimited JSON-RPC 2.0): ``server/discover`` (answered at once with
 method-not-found), ``initialize``, ``notifications/initialized``, ``tools/list``, ``tools/call`` (and ``ping``).
@@ -30,7 +31,7 @@ import sys
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import ProxyHandler, Request, build_opener
 
 SERVER_NAME = "samrabbit"
 SERVER_VERSION = "1.0.0"
@@ -38,6 +39,9 @@ DEFAULT_PROTOCOL = "2025-11-25"
 URL_ENV = "SAMRABBIT_ASSISTANT_URL"
 TOKEN_ENV = "SAMRABBIT_ASSISTANT_TOKEN_FILE"
 SESSION_HEADER = "X-SamRabbit-Assistant-Session"
+# Loopback only, so never through a system proxy (a proxy set in System Settings would otherwise get these requests,
+# with the internal token in them).
+_OPENER = build_opener(ProxyHandler({}))
 HTTP_TIMEOUT = 12.0
 SLOW_TIMEOUT = 18.0  # creating a T3 task, a screenshot
 SCREENSHOT_SIDE = 1280
@@ -176,7 +180,7 @@ class Bridge:
             headers["Content-Type"] = "application/json"
         request = Request(self.base_url + path, data=data, method=method, headers=headers)
         try:
-            with urlopen(request, timeout=timeout) as response:  # noqa: S310 - loopback only (checked above)
+            with _OPENER.open(request, timeout=timeout) as response:  # noqa: S310 - loopback only (checked above)
                 payload = response.read(16 * 1024 * 1024)
                 kind = response.headers.get("Content-Type", "")
         except HTTPError as error:

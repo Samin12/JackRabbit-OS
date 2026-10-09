@@ -6,8 +6,9 @@
 It behaves like the real CLI where the bridge depends on it:
 
 * sessions: ``--session-id`` of an existing session fails ("Session ID ... is already in use", exit 1); ``--resume``
-  of an unknown one fails ("No conversation found with session ID: ...", exit 1). Sessions are files in
-  ``<dir>/sessions``;
+  of an unknown one fails ("No conversation found with session ID: ...", exit 1). Like the real CLI 2.1.295 (probed),
+  the message is on stderr and in a result event on stdout (``{"type": "result", "subtype":
+  "error_during_execution", "is_error": true, "errors": [message]}``). Sessions are files in ``<dir>/sessions``;
 * tools: it starts the MCP server from ``--mcp-config`` exactly as configured (command, args, env, plus
   ``CLAUDE_CODE_SESSION_ID``), speaks the protocol the real CLI speaks (``server/discover`` first, then ``initialize``,
   ``notifications/initialized``, ``tools/list``, ``tools/call``) and puts the real results into its stream-json;
@@ -179,16 +180,20 @@ def main() -> int:
         with calls_file.open("a") as handle:
             handle.write(json.dumps(record) + "\n")
 
+    def session_error(message: str) -> int:
+        emit({"type": "result", "subtype": "error_during_execution", "duration_ms": 0, "is_error": True,
+              "num_turns": 0, "session_id": session, "errors": [message]})
+        sys.stderr.write(message + "\n")
+        return 1
+
     if options.get("--session-id") and path.exists():
         record["outcome"] = "in_use"
         save()
-        sys.stderr.write(f"Error: Session ID {session} is already in use.\n")
-        return 1
+        return session_error(f"Error: Session ID {session} is already in use.")
     if options.get("--resume") and not path.exists():
         record["outcome"] = "missing"
         save()
-        sys.stderr.write(f"No conversation found with session ID: {session}\n")
-        return 1
+        return session_error(f"No conversation found with session ID: {session}")
     if step.get("error") == "signed_out":
         record["outcome"] = "signed_out"
         save()

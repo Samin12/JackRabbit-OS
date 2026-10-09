@@ -21,8 +21,9 @@ sys.path.insert(0, str(HERE))
 
 DESKTOP = "desktop-token-" + "p" * 32
 BRIDGE = "bridge-token-" + "q" * 32
-# Installs skip the Swift build of the transcription helper (it has its own tests below).
-NO_BUILD = {"SAMRABBIT_SKIP_TRANSCRIBE_BUILD": "1"}
+# Installs skip the Swift build of the transcription helper and the realtime venv (no uv, no network); both have their
+# own tests below.
+NO_BUILD = {"SAMRABBIT_SKIP_TRANSCRIBE_BUILD": "1", "SAMRABBIT_SKIP_REALTIME_VENV": "1"}
 
 
 def _swift_problem() -> str:
@@ -90,8 +91,11 @@ class InstallTest(unittest.TestCase):
                          plist["ProgramArguments"][3:],
                          "no --cli: the installed copy's marker, not a flag, makes it use the real Heptabase CLI")
         for module in ("samrabbit_mobile.py", "samrabbit_t3.py", "samrabbit_transcribe.py", "samrabbit_installed.py",
-                       "samrabbit_assistant.py", "samrabbit_assistant_mcp.py"):
+                       "samrabbit_assistant.py", "samrabbit_assistant_mcp.py", "samrabbit_chatgpt.py",
+                       "samrabbit_realtime.py", "samrabbit_realtime_profile.py",
+                       "realtime/samrabbit_realtime_peer.py", "realtime/requirements.txt"):
             self.assertTrue((script.parent / module).is_file(), module)
+        self.assertIn("realtime helper: off (venv skipped: SAMRABBIT_SKIP_REALTIME_VENV=1)", output)
         # The install marker names the installed folder: that (in the account's own home) is what makes a copy the
         # installed one. This throwaway home is not the account's, so the copy here is a dev copy, and says so.
         import samrabbit_installed as installed
@@ -352,6 +356,104 @@ class InstallTest(unittest.TestCase):
         Path(self.home, "voice", "mode").write_text("permission")
         output = self.run_script("install.sh", env=env)
         self.assertIn("transcription: off (a test clip failed: transcribe_permission)", output)
+
+    # ------------------------------------------------------------------ the realtime venv
+    def fake_uv(self, *, works: bool = True) -> Path:
+        """A stand-in uv: ``venv <dir>`` makes ``<dir>/bin/python`` (it answers the helper's ``--check``), ``pip
+        install`` records its arguments. Every call goes to <home>/uv-calls.txt."""
+        calls = Path(self.home, "uv-calls.txt")
+        uv = Path(self.home, "fake-uv")
+        python = ("#!/bin/sh\nfor a in \"$@\"; do [ \"$a\" = --check ] && { echo "
+                  "'{\"ok\":true,\"python\":\"3.12.15\",\"aiortc\":\"1.15.0\",\"av\":\"17.1.0\"}'; exit 0; }; "
+                  "done\nexit 1\n")
+        uv.write_text("#!/bin/sh\n"
+                      f"echo \"$*\" >> '{calls}'\n"
+                      + ("" if works else "echo 'error: no wheels for this platform' >&2; exit 1\n")
+                      + "if [ \"$1\" = venv ]; then\n"
+                      "  for last in \"$@\"; do :; done\n"
+                      "  mkdir -p \"$last/bin\"\n"
+                      f"  cat > \"$last/bin/python\" <<'PY'\n{python}PY\n"
+                      "  chmod 755 \"$last/bin/python\"\n"
+                      "fi\n")
+        uv.chmod(0o755)
+        return uv
+
+    def test_install_makes_the_realtime_venv_once(self) -> None:
+        uv = self.fake_uv()
+        env = {"SAMRABBIT_SKIP_REALTIME_VENV": "0", "SAMRABBIT_UV": str(uv)}
+        output = self.run_script("install.sh", env=env)
+        self.assertIn("made the realtime venv", output)
+        self.assertIn("realtime helper: ready (Python 3.12.15, aiortc 1.15.0, av 17.1.0)", output)
+        venv = Path(self.home, "Library/Application Support/SamRabbit/realtime-venv")
+        self.assertTrue(os.access(venv / "bin/python", os.X_OK))
+        self.assertTrue((venv / ".samrabbit-stamp").is_file())
+        self.assertFalse(Path(str(venv) + ".new").exists())
+        calls = Path(self.home, "uv-calls.txt").read_text().splitlines()
+        self.assertEqual(2, len(calls))
+        self.assertTrue(calls[0].startswith("venv --quiet --python 3.12 ") and calls[0].endswith("realtime-venv.new"))
+        self.assertIn("pip install --quiet --python ", calls[1])
+        self.assertIn("--require-hashes --only-binary :all: -r " + str(ROOT / "realtime/requirements.txt"), calls[1])
+        output = self.run_script("install.sh", env=env)
+        self.assertIn("realtime venv is up to date", output)
+        self.assertEqual(2, len(Path(self.home, "uv-calls.txt").read_text().splitlines()), "made once")
+        self.assertIn("realtime helper: ready", output)
+        self.run_script("uninstall.sh")
+        self.assertFalse(venv.exists(), "uninstall removes the venv")
+
+    def test_a_failed_venv_never_fails_the_install(self) -> None:
+        output = self.run_script("install.sh", env={"SAMRABBIT_SKIP_REALTIME_VENV": "0",
+                                                    "SAMRABBIT_UV": str(self.fake_uv(works=False))})
+        self.assertIn("install.sh: warning: the realtime venv was not made:", output)
+        self.assertIn("error: no wheels for this platform", output)
+        self.assertIn("realtime helper: off (the venv could not be made", output)
+        self.assertFalse(Path(self.home, "Library/Application Support/SamRabbit/realtime-venv").exists())
+        output = self.run_script("install.sh", env={"SAMRABBIT_SKIP_REALTIME_VENV": "0",
+                                                    "SAMRABBIT_UV": str(Path(self.home, "no-uv"))})
+        self.assertIn("realtime helper: off (uv is not installed: brew install uv, then run install.sh again)", output)
+        output = self.run_script("install.sh", "--assistant-brain", "claude")
+        settings = Path(self.home, ".config/samrabbit/assistant.json")
+        self.assertEqual("claude", json.loads(settings.read_text())["brain"])
+        self.assertIn("must be auto, realtime or claude", self.run_script("install.sh", "--assistant-brain", "gpt"))
+
+    def test_connect_chatgpt_prints_the_code_and_waits_for_the_login(self) -> None:
+        import samrabbit_bridge as bridge
+        from fake_openai import FakeIssuer
+
+        issuer = FakeIssuer()
+        self.addCleanup(issuer.close)
+        config = Path(self.home, ".config/samrabbit")
+        config.mkdir(parents=True)
+        for name, value in (("desktop-token", DESKTOP), ("bridge-token", BRIDGE)):
+            (config / name).write_text(value + "\n")
+            (config / name).chmod(0o600)
+        auth_file = config / "chatgpt-auth.json"
+        server = bridge.make_server("127.0.0.1", 0, token_file=str(config / "bridge-token"),
+                                    desktop_token_file=str(config / "desktop-token"), driver="/nonexistent/driver",
+                                    mobile_devices_file=str(config / "mobile-devices.json"),
+                                    chatgpt_auth_file=str(auth_file), chatgpt_issuer=issuer.url)
+        thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        port = str(server.server_address[1])
+        env = {**os.environ, "SAMRABBIT_HOME": self.home}
+        done = subprocess.run([str(ROOT / "connect-chatgpt.sh"), "--port", port], env=env, capture_output=True,
+                              text=True, timeout=90)
+        self.assertEqual(0, done.returncode, done.stderr)
+        self.assertIn(f"Open {issuer.url}/codex/device", done.stdout)
+        self.assertIn("enter the code:  WXYZ-12345", done.stdout)
+        self.assertIn("ChatGPT connected (pro plan).", done.stdout)
+        self.assertEqual(0o600, stat.S_IMODE(auth_file.stat().st_mode))
+        stored = json.loads(auth_file.read_text())
+        for secret in (stored["tokens"]["access_token"], stored["tokens"]["refresh_token"], DESKTOP):
+            self.assertNotIn(secret, done.stdout + done.stderr)
+        done = subprocess.run([str(ROOT / "connect-chatgpt.sh"), "status", "--port", port], env=env,
+                              capture_output=True, text=True, timeout=30)
+        self.assertEqual("ChatGPT: connected (pro)", done.stdout.strip())
+        done = subprocess.run([str(ROOT / "connect-chatgpt.sh"), "disconnect", "--port", port], env=env,
+                              capture_output=True, text=True, timeout=30)
+        self.assertEqual("ChatGPT: not connected", done.stdout.strip())
+        self.assertFalse(auth_file.exists())
 
     def test_install_rejects_a_bad_port(self) -> None:
         env = {**os.environ, "SAMRABBIT_HOME": self.home, "SAMRABBIT_SKIP_LAUNCHCTL": "1"}

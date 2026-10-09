@@ -6,12 +6,14 @@
 #   companion/mac-bridge/install.sh [--port 3780] [--host 0.0.0.0] [--python /usr/bin/python3]
 #                                   [--google-account you@example.com] [--t3-orchestration-project <T3 project id>]
 #                                   [--assistant-model claude-haiku-5-5|claude-sonnet-5-5] [--assistant-voice <id>]
+#                                   [--assistant-brain auto|realtime|claude]
 #
 # --google-account: the Google account that links opened from the phone are pinned to (authuser=); without it the
 # bridge learns it from the calendar. --t3-orchestration-project: where the phone's non-coding tasks go (default:
 # T3's own agent project). Both are kept in the agent's environment (SAMRABBIT_GOOGLE_ACCOUNT,
-# SAMRABBIT_T3_ORCHESTRATION_PROJECT) across later runs; pass an empty value to remove one. --assistant-model and
-# --assistant-voice (the watch assistant's model and ElevenLabs voice) are kept in ~/.config/samrabbit/assistant.json.
+# SAMRABBIT_T3_ORCHESTRATION_PROJECT) across later runs; pass an empty value to remove one. --assistant-model,
+# --assistant-voice and --assistant-brain (the watch assistant's Claude model, ElevenLabs voice and which brain it
+# uses) are kept in ~/.config/samrabbit/assistant.json.
 #
 # Environment (tests): SAMRABBIT_HOME (default $HOME), SAMRABBIT_SKIP_LAUNCHCTL=1, SAMRABBIT_COMPOSIO (the Composio
 # CLI to record instead of searching PATH, ~/.local/bin, /opt/homebrew/bin and /usr/local/bin), SAMRABBIT_T3_CLI /
@@ -19,7 +21,9 @@
 # is skipped whenever SAMRABBIT_SKIP_LAUNCHCTL=1, so a test install never pairs with the real T3 Code),
 # SAMRABBIT_SKIP_T3_PAIR=1, SAMRABBIT_SKIP_TRANSCRIBE_BUILD=1 (keep whatever transcription helper is installed),
 # SAMRABBIT_SWIFTC (the Swift compiler for that helper; default xcrun's swiftc), SAMRABBIT_TRANSCRIBE_PREPARE=1 (a
-# test install downloads a missing speech model too; a real install always does).
+# test install downloads a missing speech model too; a real install always does), SAMRABBIT_SKIP_REALTIME_VENV=1
+# (keep whatever realtime venv is there), SAMRABBIT_UV (the uv to make it with; default: PATH, /opt/homebrew/bin,
+# /usr/local/bin, ~/.local/bin, ~/.cargo/bin), SAMRABBIT_REALTIME_PYTHON_VERSION (default 3.12).
 #
 # The iPhone / Apple Watch API (/v1/mobile/*) is part of the bridge. The bridge pairs with T3 Code by itself (its
 # own session, "SamRabbit bridge", token in ~/.config/samrabbit/t3-token); this script does that once. To pair a
@@ -31,13 +35,21 @@
 #
 # The watch's voice assistant (/v1/mobile/assistant/*) runs the Claude Code CLI with SamRabbit's own tools and speaks
 # with ElevenLabs (the Jarvis voice): this script copies ELEVENLABS_API_KEY from ~/.hermes/.env, when it is there, to
-# ~/.config/samrabbit/elevenlabs-key (0600; never printed). Without it the watch speaks with its own voice. It prints
-# "assistant: on (Claude Haiku 5.5, Jarvis voice)" or why it is off.
+# ~/.config/samrabbit/elevenlabs-key (0600; never printed). Without it the watch speaks with its own voice.
+#
+# Its primary brain is realtime, like the R1: gpt-realtime-2.1 on your ChatGPT subscription with the R1's voice
+# (marin), instructions and tools. The Mac is the WebRTC peer, through a small helper that runs in its own Python 3.12
+# venv (~/Library/Application Support/SamRabbit/realtime-venv, made here with uv from realtime/requirements.txt: aiortc
+# and av, pinned with hashes, wheels only; remade only when they change). Connect ChatGPT once with
+# companion/mac-bridge/connect-chatgpt.sh (or SamRabbit > Connect ChatGPT…). Until then, or without uv, the Claude
+# brain answers. This script prints "assistant: on (...)", "realtime: on|off (...)" and "chatgpt: connected|not
+# connected".
 set -euo pipefail
 
 LABEL=com.samrabbit.bridge
 ASSISTANT_MODEL=""
 ASSISTANT_VOICE=""
+ASSISTANT_BRAIN=""
 PORT=3780
 HOST=0.0.0.0
 PYTHON=${SAMRABBIT_PYTHON:-/usr/bin/python3}
@@ -50,7 +62,8 @@ while [ $# -gt 0 ]; do
     --t3-orchestration-project) SAMRABBIT_T3_ORCHESTRATION_PROJECT=$2; export SAMRABBIT_T3_ORCHESTRATION_PROJECT; shift 2 ;;
     --assistant-model) ASSISTANT_MODEL=$2; shift 2 ;;
     --assistant-voice) ASSISTANT_VOICE=$2; shift 2 ;;
-    -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
+    --assistant-brain) ASSISTANT_BRAIN=$2; shift 2 ;;
+    -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
     *) echo "install.sh: unknown option $1" >&2; exit 64 ;;
   esac
 done
@@ -123,10 +136,11 @@ chmod 600 "$DESKTOP_TOKEN_FILE"
 mkdir -p "$SYNC_DIR"; chmod 700 "$SYNC_DIR"
 # The watch assistant's voice: the ElevenLabs key from ~/.hermes/.env, copied (0600) when it is there; the key is
 # never printed. Its model and voice settings (--assistant-model / --assistant-voice) go to assistant.json.
-"$PYTHON" -I - "$HERMES_ENV" "$ELEVENLABS_KEY_FILE" "$ASSISTANT_SETTINGS" "$ASSISTANT_MODEL" "$ASSISTANT_VOICE" <<'PYEOF' \
+"$PYTHON" -I - "$HERMES_ENV" "$ELEVENLABS_KEY_FILE" "$ASSISTANT_SETTINGS" "$ASSISTANT_MODEL" "$ASSISTANT_VOICE" \
+    "$ASSISTANT_BRAIN" <<'PYEOF' \
     || echo "install.sh: warning: the voice key or the assistant settings were not written; the watch speaks with its own voice" >&2
 import json, os, re, sys, tempfile
-source, target, settings, model, voice = sys.argv[1:6]
+source, target, settings, model, voice, brain = sys.argv[1:7]
 
 
 def write_private(path, text):
@@ -185,6 +199,11 @@ if voice:
         changes["voice"] = voice
     else:
         print("install.sh: warning: --assistant-voice is not an ElevenLabs voice id; not recorded", file=sys.stderr)
+if brain:
+    if brain in ("auto", "realtime", "claude"):
+        changes["brain"] = brain
+    else:
+        print("install.sh: warning: --assistant-brain must be auto, realtime or claude; not recorded", file=sys.stderr)
 if changes:
     try:
         with open(settings, encoding="utf-8") as handle:
@@ -211,6 +230,12 @@ install -m 0644 "$SOURCE_DIR/samrabbit_transcribe.py" "$APP_DIR/samrabbit_transc
 install -m 0644 "$SOURCE_DIR/samrabbit_installed.py" "$APP_DIR/samrabbit_installed.py"  # "is this the installed copy?"
 install -m 0644 "$SOURCE_DIR/samrabbit_assistant.py" "$APP_DIR/samrabbit_assistant.py"  # the watch's voice assistant
 install -m 0644 "$SOURCE_DIR/samrabbit_assistant_mcp.py" "$APP_DIR/samrabbit_assistant_mcp.py"  # its tools (MCP)
+install -m 0644 "$SOURCE_DIR/samrabbit_chatgpt.py" "$APP_DIR/samrabbit_chatgpt.py"  # the Mac's ChatGPT login
+install -m 0644 "$SOURCE_DIR/samrabbit_realtime.py" "$APP_DIR/samrabbit_realtime.py"  # the realtime brain
+install -m 0644 "$SOURCE_DIR/samrabbit_realtime_profile.py" "$APP_DIR/samrabbit_realtime_profile.py"  # the R1's words
+mkdir -p "$APP_DIR/realtime"
+install -m 0644 "$SOURCE_DIR/realtime/samrabbit_realtime_peer.py" "$APP_DIR/realtime/samrabbit_realtime_peer.py"
+install -m 0644 "$SOURCE_DIR/realtime/requirements.txt" "$APP_DIR/realtime/requirements.txt"
 rm -rf "$APP_DIR/genui"; mkdir -p "$APP_DIR/genui"
 for asset in "$SOURCE_DIR"/genui/*; do install -m 0644 "$asset" "$APP_DIR/genui/"; done
 install -m 0644 "$SOURCE_DIR/samrabbit_app.py" "$APP_DIR/samrabbit_app.py"  # desktop web UI at /app/
@@ -330,6 +355,75 @@ print(f"transcription: on ({detail})")
 EOF
 fi
 
+# 2c. The realtime voice's helper venv (Python 3.12+, aiortc and av pinned with hashes, wheels only), made with uv in
+#     a temp folder and swapped in only when it works; remade only when requirements.txt or the Python version
+#     changed. Without uv, a Python or the wheels, the realtime voice stays off (the Claude brain answers). Never fails
+#     the install.
+REALTIME_VENV="$HOME_DIR/Library/Application Support/SamRabbit/realtime-venv"
+REALTIME_PEER="$APP_DIR/realtime/samrabbit_realtime_peer.py"
+REALTIME_VERSION=${SAMRABBIT_REALTIME_PYTHON_VERSION:-3.12}
+REALTIME_OFF=""
+if [ "${SAMRABBIT_SKIP_REALTIME_VENV:-0}" = 1 ]; then
+  [ -x "$REALTIME_VENV/bin/python" ] || REALTIME_OFF="venv skipped: SAMRABBIT_SKIP_REALTIME_VENV=1"
+else
+  UV=${SAMRABBIT_UV:-}
+  if [ -z "$UV" ]; then
+    UV=$(command -v uv 2>/dev/null || true)
+    case "$UV" in /*) ;; *) UV="" ;; esac
+    for candidate in /opt/homebrew/bin/uv /usr/local/bin/uv "$HOME/.local/bin/uv" "$HOME/.cargo/bin/uv"; do
+      [ -n "$UV" ] && break
+      [ -x "$candidate" ] && UV=$candidate
+    done
+  fi
+  if [ -z "$UV" ] || [ ! -x "$UV" ]; then
+    [ -x "$REALTIME_VENV/bin/python" ] || REALTIME_OFF="uv is not installed: brew install uv, then run install.sh again"
+  else
+    STAMP=$({ cat "$SOURCE_DIR/realtime/requirements.txt"; echo "python $REALTIME_VERSION"; } | shasum -a 256 | cut -c1-64)
+    if [ -x "$REALTIME_VENV/bin/python" ] && [ "$(cat "$REALTIME_VENV/.samrabbit-stamp" 2>/dev/null || true)" = "$STAMP" ]; then
+      echo "realtime venv is up to date"
+    else
+      mkdir -p "$(dirname "$REALTIME_VENV")"
+      BUILD_VENV="$REALTIME_VENV.new"
+      BUILD_LOG=$(mktemp "${TMPDIR:-/tmp}/samrabbit-realtime-venv.XXXXXX")
+      rm -rf "$BUILD_VENV"
+      echo "making the realtime venv (Python $REALTIME_VERSION with aiortc and av; once)"
+      if "$UV" venv --quiet --python "$REALTIME_VERSION" "$BUILD_VENV" >"$BUILD_LOG" 2>&1 \
+          && "$UV" pip install --quiet --python "$BUILD_VENV/bin/python" --require-hashes --only-binary :all: \
+               -r "$SOURCE_DIR/realtime/requirements.txt" >>"$BUILD_LOG" 2>&1 \
+          && "$BUILD_VENV/bin/python" -I "$REALTIME_PEER" --check >/dev/null 2>&1; then
+        echo "$STAMP" > "$BUILD_VENV/.samrabbit-stamp"
+        rm -rf "$REALTIME_VENV"
+        mv "$BUILD_VENV" "$REALTIME_VENV"
+        echo "made the realtime venv"
+      else
+        echo "install.sh: warning: the realtime venv was not made:" >&2
+        tail -n 5 "$BUILD_LOG" | sed 's/^/install.sh:   /' >&2
+        rm -rf "$BUILD_VENV"
+        [ -x "$REALTIME_VENV/bin/python" ] || REALTIME_OFF="the venv could not be made (uv, Python $REALTIME_VERSION or the wheels); see the warning above"
+      fi
+      rm -f "$BUILD_LOG"
+    fi
+  fi
+fi
+if [ -n "$REALTIME_OFF" ]; then
+  echo "realtime helper: off ($REALTIME_OFF)"
+else
+  "$PYTHON" -I - "$REALTIME_VENV/bin/python" "$REALTIME_PEER" <<'RTEOF' || echo "realtime helper: off (the check failed)"
+import json, subprocess, sys, tempfile
+try:
+    done = subprocess.run([sys.argv[1], "-I", sys.argv[2], "--check"], stdin=subprocess.DEVNULL, capture_output=True,
+                          timeout=120, cwd=tempfile.gettempdir())
+    lines = [line for line in done.stdout.decode("utf-8", "replace").splitlines() if line.strip()]
+    value = json.loads(lines[-1]) if lines else {}
+except (OSError, subprocess.SubprocessError, ValueError):
+    value = {}
+if value.get("ok"):
+    print(f"realtime helper: ready (Python {value.get('python')}, aiortc {value.get('aiortc')}, av {value.get('av')})")
+else:
+    print(f"realtime helper: off ({value.get('reason') or 'the check failed'}; run install.sh again)")
+RTEOF
+fi
+
 # 3. LaunchAgent plist (written with plistlib so every path is escaped correctly).
 "$PYTHON" - "$PLIST" "$LABEL" "$PYTHON" "$APP_DIR/samrabbit_bridge.py" "$HOST" "$PORT" "$TOKEN_FILE" "$LOG_FILE" \
     "$APP_DIR" "$SYNC_DIR" "$DESKTOP_TOKEN_FILE" "$COMPOSIO" "$MOBILE_DEVICES_FILE" "$T3_TOKEN_FILE" <<'EOF'
@@ -416,7 +510,8 @@ while True:
     try:
         request = urllib.request.Request(f"http://127.0.0.1:{port}/health",
                                          headers={"Authorization": "Bearer " + token})
-        with urllib.request.urlopen(request, timeout=15) as response:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # loopback: never a system proxy
+        with opener.open(request, timeout=15) as response:
             health = json.load(response)
         break
     except Exception as error:  # noqa: BLE001
@@ -459,14 +554,25 @@ print(f"mobile: {'on' if phone.get('available') else 'OFF'} (T3 {'paired' if t3_
       f"transcription {'on' if voice.get('available') else 'off: ' + str(voice.get('reason'))})")
 helper = health.get("assistant") or {}
 speech = helper.get("voice") or {}
-if helper.get("available"):
-    spoken = (f"{speech.get('voiceName') or 'ElevenLabs'} voice" if speech.get("available")
-              else f"the watch's own voice: ElevenLabs {speech.get('reason') or 'off'}")
-    print(f"assistant: on ({helper.get('modelName') or helper.get('model')}, {spoken})")
+live = helper.get("realtime") or {}
+spoken = (f"{speech.get('voiceName') or 'ElevenLabs'} voice" if speech.get("available")
+          else f"the watch's own voice: ElevenLabs {speech.get('reason') or 'off'}")
+claude = f"{helper.get('modelName') or helper.get('model')}, {spoken}"
+if helper.get("available") and helper.get("brain") == "realtime":
+    print(f"assistant: on ({live.get('model')} on ChatGPT, voice {live.get('voice')}; fallback {claude})")
+elif helper.get("available"):
+    print(f"assistant: on ({claude})")
 else:
     print(f"assistant: off ({helper.get('reason') or 'not installed'})")
+print(f"realtime: {'on' if live.get('available') else 'off (' + str(live.get('reason') or 'not installed') + ')'}")
+account = live.get("chatgpt") or {}
+if account.get("connected"):
+    print(f"chatgpt: connected{' (' + account['plan'] + ' plan)' if account.get('plan') else ''}")
+else:
+    print("chatgpt: not connected (run companion/mac-bridge/connect-chatgpt.sh, or SamRabbit > Connect ChatGPT…)")
 EOF
 IP=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || echo "<this Mac's IP>")
 echo "Bridge URL: http://$IP:$PORT"
 echo "Token file: $TOKEN_FILE"
 echo "Pair an iPhone: SamRabbit (desktop app) > Pair iPhone..., or $SOURCE_DIR/pair-phone.sh"
+echo "Connect ChatGPT (the watch's realtime voice): SamRabbit > Connect ChatGPT…, or $SOURCE_DIR/connect-chatgpt.sh"

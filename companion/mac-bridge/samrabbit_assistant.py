@@ -1,10 +1,26 @@
 """SamRabbit's voice assistant on the Mac bridge, for the Apple Watch (and the iPhone's Siri path).
 
-The watch listens, sends one utterance at a time, plays the answer and listens again. The Mac does the rest:
+The watch listens, sends one utterance at a time, plays the answer and listens again. The Mac does the rest, with
+one of two brains (setting ``assistant.brain``: ``auto`` (the default), ``realtime`` or ``claude``):
 
-    utterance --> speech to text (samrabbit_transcribe) --> one agent turn (``claude -p``, Claude Haiku 5.5 by
-    default, SamRabbit's own tools over MCP, the conversation's session resumed) --> ElevenLabs (the Jarvis voice,
-    mp3) --> {heard, say, audio, expectReply, endConversation, actions, timings}
+* **realtime** (primary, like the R1): speech to text (samrabbit_transcribe) --> gpt-realtime-2.1 on Samin's ChatGPT
+  subscription, the voice ``marin``, the R1's instructions and tool names (``samrabbit_realtime``: the Mac is the
+  WebRTC peer; ``samrabbit_chatgpt``: the Mac's own ChatGPT login) --> the reply streamed as it is spoken;
+* **claude** (the fallback when ChatGPT is not connected, the realtime helper is not installed, or OpenAI refuses):
+  speech to text --> one agent turn (``claude -p``, Claude Haiku 5.5 by default, SamRabbit's own tools over MCP, the
+  conversation's session resumed) --> ElevenLabs (the Jarvis voice).
+
+``auto`` uses realtime when ChatGPT is connected and the helper is ready, else Claude; a realtime turn that fails
+before it said anything is answered by Claude instead.
+
+Streaming (``Accept: application/x-samrabbit-stream`` on a turn; the shared contract with the watch): ``200``,
+``Content-Type: application/x-samrabbit-stream``, ``Transfer-Encoding: chunked`` (HTTP/1.1), then frames of one type
+byte, a 4-byte big-endian length and the payload: ``J`` = one UTF-8 JSON event (``{"type": "heard", "text"}``,
+``{"type": "say.delta", "text"}``, ``{"type": "say.done", "text"}``, ``{"type": "action", kind, title, threadId?,
+artifactId?}``, ``{"type": "card", title, body}``, ``{"type": "done", conversationId, turnId, expectReply,
+endConversation, interrupted?, brain, timings: {stt, firstAudio, total}}``, ``{"type": "error", code, message}``
+(always followed by ``done``)), ``A`` = PCM16LE mono 16 kHz audio, 100 ms per frame. Without that header a turn
+answers the buffered JSON below (a realtime turn's audio as ``audio/wav``, Claude's as ``audio/mpeg``).
 
 Routes (through ``samrabbit_mobile``: a paired device's token and the LAN / Tailscale peer check):
 
@@ -13,21 +29,31 @@ Routes (through ``samrabbit_mobile``: a paired device's token and the LAN / Tail
     ``X-SamRabbit-Conversation`` (an id, or empty for a new conversation), ``X-SamRabbit-Turn`` (a uuid: a retry of
     the same turn gets the same answer, the agent runs once) and ``X-SamRabbit-Device-Time`` (optional); ``?lang=``
     as for ``/v1/mobile/transcribe``;
-  - or a JSON body ``{text, conversationId?, turnId}`` (typed or debug input, the iPhone's Siri path);
-  - -> ``{conversationId, turnId, heard, say, audio: {mime: "audio/mpeg", b64} | null, expectReply,
-    endConversation, actions: [{kind, title, threadId?, artifactId?, eventId?}], timings: {stt, agent, tts}}``.
+  - or a JSON body ``{text, conversationId?, turnId}`` (typed or debug input, the iPhone's Siri path), or
+    ``{announce: "<announcement id>", conversationId, turnId}`` (say that announcement, in the session's voice);
+  - -> ``{conversationId, turnId, heard, say, audio: {mime: "audio/mpeg" | "audio/wav", b64} | null, expectReply,
+    endConversation, actions: [{kind, title, threadId?, artifactId?, eventId?}], timings: {stt, agent, tts}, brain}``.
     ``audio`` is null when the voice is off or failed (the watch then speaks ``say`` itself). Nothing heard (or only
-    noise) answers ``{heard: "", say: "", audio: null, expectReply: true}`` without running the agent. "Bye",
-    "stop", "thanks, that's all" end the conversation (``endConversation: true``) without running it either.
+    "uh", "um", "er", "hmm") answers ``{heard: "", say: "", audio: null, expectReply: true}`` without a brain; short
+    confirmations ("okay", "yes", "yeah", "mhm") are words. "Bye", "stop", "thanks, that's all" end the conversation
+    (``endConversation: true``) with a short goodbye.
   - One turn per conversation at a time: another one meanwhile answers 409 ``assistant_busy`` (retryable).
   - Limits: speech to text 45 s, the agent 25 s (504 ``assistant_timeout``; its whole process group is killed),
-    the voice 10 s (then ``audio: null``). Errors: ``assistant_unavailable`` (503, with ``reason``),
-    ``assistant_timeout``, ``assistant_busy``, ``transcribe_*``, ``invalid_*``.
+    the voice 10 s (then ``audio: null``), a realtime turn 150 s. Errors: ``assistant_unavailable`` (503, with
+    ``reason``), ``assistant_timeout``, ``assistant_busy``, ``assistant_interrupted``, ``transcribe_*``, ``invalid_*``.
+* ``POST /v1/mobile/assistant/session {conversationId?}`` -> ``{conversationId, brain, ready}``: warm up (the
+  realtime session opens in the background, so the first turn does not wait for it).
+* ``POST /v1/mobile/assistant/cancel {conversationId}`` -> ``{ok, cancelled}``: stop the current reply (tap to
+  interrupt); its stream ends with ``done {interrupted: true}``.
 * ``GET /v1/mobile/assistant/announcements?conversationId=&since=`` -> ``{items: [{id, say, audio | null, kind:
   "needs_you" | "done" | "error", threadId, title}], cursor}``: T3 tasks that started needing Samin, finished or
   failed since the conversation began, each announced once per conversation (the watch polls about every 20 s).
-  The next turn tells the agent what was announced, so "approve it" works.
-* ``POST /v1/mobile/assistant/end {conversationId}`` (optional): the watch stopped listening.
+  With the realtime brain ``audio`` is null: the watch asks for ``{announce: id}`` and the session says it. The next
+  turn tells the brain what was announced, so "approve it" works.
+* ``POST /v1/mobile/assistant/end {conversationId}`` (optional): the watch stopped listening (the realtime session
+  closes too).
+* ChatGPT login (loopback + desktop token, for the desktop app and ``connect-chatgpt.sh``; see ``samrabbit_chatgpt``):
+  ``POST /v1/assistant/chatgpt/start``, ``GET /v1/assistant/chatgpt/status``, ``POST /v1/assistant/chatgpt/disconnect``.
 
 The agent is the headless Claude Code CLI, isolated from the user's own setup: ``--setting-sources ""`` (no user or
 project settings, hooks, plugins, CLAUDE.md or MCP servers: the user's hooks would upload utterances),
@@ -45,11 +71,15 @@ bridge run from a checkout therefore only reaches its own dev-safe answers; it a
 explicit ``--claude`` and the voice only with an explicit ``--elevenlabs-key-file`` (never the real key, never
 ElevenLabs credits), and keeps its working files in a temp folder.
 
-Settings (``~/.config/samrabbit/assistant.json``, re-read every turn): ``{"model": "claude-haiku-5-5" |
-"claude-sonnet-5-5", "voice": "<ElevenLabs voice id>"}`` (``assistant.model``, ``assistant.voice``; the default voice
-is Jarvis ``sI8FqE1zOcqXDhRwCwAx``); ``--assistant-model`` / ``--assistant-voice`` (or SAMRABBIT_ASSISTANT_MODEL /
-SAMRABBIT_ASSISTANT_VOICE) win. The voice key is ``~/.config/samrabbit/elevenlabs-key`` (0600; install.sh copies
-ELEVENLABS_API_KEY from ``~/.hermes/.env``).
+Settings (``~/.config/samrabbit/assistant.json``, re-read every turn): ``{"brain": "auto" | "realtime" | "claude",
+"realtimeModel": "gpt-realtime-2.1", "realtimeVoice": "marin", "model": "claude-haiku-5-5" | "claude-sonnet-5-5",
+"voice": "<ElevenLabs voice id>"}`` (``assistant.brain``, ``assistant.realtimeModel``, ``assistant.model``,
+``assistant.voice``; the default ElevenLabs voice is Jarvis ``sI8FqE1zOcqXDhRwCwAx``); ``--assistant-brain``,
+``--assistant-model`` / ``--assistant-voice`` (or SAMRABBIT_ASSISTANT_BRAIN / _MODEL / _VOICE) win. The voice key is
+``~/.config/samrabbit/elevenlabs-key`` (0600; install.sh copies ELEVENLABS_API_KEY from ``~/.hermes/.env``). The
+realtime brain needs the Mac's ChatGPT login (``~/.config/samrabbit/chatgpt-auth.json``) and the realtime venv
+(``~/Library/Application Support/SamRabbit/realtime-venv``, made by install.sh); a copy run from a checkout uses them
+only with an explicit ``--chatgpt-auth-file`` and ``--realtime-python``.
 
 Every turn is recorded in the sync store as a "Watch" conversation (``watch-<conversationId>``): ``conversation.started``,
 ``message.user``, ``tool.completed`` (a ``mac_look`` screenshot as an image blob), ``message.assistant.done``,
@@ -76,6 +106,7 @@ import shutil
 import signal
 import ssl
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
@@ -94,11 +125,33 @@ try:  # speech to text (the audio turns); text turns work without it
 except Exception:  # noqa: BLE001  # pragma: no cover
     _transcribe = None  # type: ignore[assignment]
 
+try:  # the realtime brain (gpt-realtime on the ChatGPT subscription); without it only Claude answers
+    import samrabbit_realtime as _realtime  # type: ignore
+    import samrabbit_realtime_profile as _profile  # type: ignore
+except Exception:  # noqa: BLE001  # pragma: no cover
+    _realtime = None  # type: ignore[assignment]
+    _profile = None  # type: ignore[assignment]
+
+try:  # the Mac's own ChatGPT login
+    import samrabbit_chatgpt as _chatgpt  # type: ignore
+except Exception:  # noqa: BLE001  # pragma: no cover
+    _chatgpt = None  # type: ignore[assignment]
+
 _LOG = logging.getLogger("samrabbit-bridge.assistant")
 
 TURN_ROUTE = "/v1/mobile/assistant/turn"
 ANNOUNCEMENTS_ROUTE = "/v1/mobile/assistant/announcements"
 END_ROUTE = "/v1/mobile/assistant/end"
+SESSION_ROUTE = "/v1/mobile/assistant/session"
+CANCEL_ROUTE = "/v1/mobile/assistant/cancel"
+STREAM_TYPE = "application/x-samrabbit-stream"
+STREAM_FRAME_BYTES = 3200  # 100 ms of PCM16LE mono 16 kHz
+BRAINS = ("auto", "realtime", "claude")
+DEFAULT_BRAIN = "auto"
+REALTIME_OPEN_WAIT = 20.0  # a turn waits this long for its session to open
+REALTIME_TTS_FORMAT = "pcm_16000"
+MAX_CACHED_AUDIO = 4  # turns whose audio a retry can replay (the rest replay without it)
+HISTORY_TURNS = 8
 MCP_SCRIPT = os.path.join(_HERE, "samrabbit_assistant_mcp.py")
 MCP_SERVER = "samrabbit"
 DEFAULT_DIR = "~/Library/Application Support/SamRabbit/assistant"
@@ -141,6 +194,7 @@ MAX_CONVERSATIONS = 200
 ANNOUNCE_SCAN_SECONDS = 5.0
 ANNOUNCE_ACTIVE_SECONDS = 10 * 60.0  # the T3 watch runs while a conversation was active this recently
 ANNOUNCE_KEEP_SECONDS = 60 * 60.0
+ANNOUNCE_REFRESH_BUDGET = 2.0
 MAX_NOTES = 5
 SESSION_KEEP_SECONDS = 14 * 24 * 3600.0
 TTS_CACHE_SIZE = 48
@@ -148,6 +202,7 @@ TTS_PAUSE_REJECTED = 10 * 60.0
 TTS_PAUSE_BUSY = 30.0
 MAX_TTS_BYTES = 4 * 1024 * 1024
 _MODEL = re.compile(r"^claude-[a-z0-9][a-z0-9.\-]{1,60}$")
+_REALTIME_MODEL = re.compile(r"^(?:gpt-realtime[a-z0-9.\-]{0,40}|gpt-live-1)$")
 _VOICE = re.compile(r"^[A-Za-z0-9]{8,40}$")
 _CONVERSATION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{2,56}$")
 _TURN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$")
@@ -193,6 +248,20 @@ _UNAVAILABLE = {
     "assistant_dir_unusable": "The assistant's folder on the Mac could not be set up.",
     "assistant_starting": "The assistant is still starting on the Mac.",
     "too_many_turns": "The Mac is already answering several requests. Try again in a moment.",
+    "chatgpt_not_connected": "ChatGPT is not connected on the Mac. Use SamRabbit > Connect ChatGPT…",
+    "chatgpt_reconnect_required": "ChatGPT needs to be connected again on the Mac (SamRabbit > Connect ChatGPT…).",
+    "chatgpt_dev_copy": "This copy of the Mac bridge is not the installed one, so it uses ChatGPT only with an "
+                        "explicit --chatgpt-auth-file.",
+    "chatgpt_rejected": "OpenAI refused the Mac's ChatGPT login just now.",
+    "realtime_busy": "OpenAI is busy, or the ChatGPT plan's voice limit is reached. Try again in a moment.",
+    "realtime_missing": "The realtime voice is not installed next to the Mac bridge. Run install.sh again.",
+    "realtime_helper_missing": "The realtime voice helper is not installed. Run install.sh again.",
+    "realtime_venv_missing": "The realtime voice needs its Python environment. Run install.sh again.",
+    "realtime_venv_broken": "The realtime voice's Python environment is broken. Run install.sh again.",
+    "realtime_python_too_old": "The realtime voice needs Python 3.12 or newer. Run install.sh again.",
+    "realtime_unreachable": "OpenAI is not reachable from the Mac right now.",
+    "realtime_failed": "The realtime voice failed on the Mac.",
+    "realtime_checking": "The realtime voice is still starting on the Mac.",
 }
 
 
@@ -355,8 +424,9 @@ def spoken(text: str) -> str:
     return value
 
 
-_FILLERS = frozenset({"uh", "um", "umm", "uhm", "hmm", "hm", "mm", "mmm", "mhm", "ah", "oh", "er", "erm", "huh",
-                      "eh", "a", "the", "and", "so", "like", "okay", "ok"})
+# Only hesitation sounds are noise. Short confirmations ("okay", "ok", "yes", "yeah", "yep", "sure", "mhm", "uh huh")
+# are answers: they confirm an approval the assistant just asked about.
+_FILLERS = frozenset({"uh", "uhh", "uhm", "um", "umm", "er", "err", "erm", "hmm", "hmmm", "hm", "mm", "mmm"})
 _WORDS = re.compile(r"[a-z0-9']+")
 _CLOSER = re.compile(
     r"^(?:(?:ok(?:ay)?|alright|all right|cool|great|perfect|got it|no|nope|nah|that's great|sounds good|samrabbit|"
@@ -370,7 +440,7 @@ _CLOSER = re.compile(
 
 
 def is_noise(text: str) -> bool:
-    """Nothing heard, or only fillers ("uh", "hmm"): keep listening without running the agent."""
+    """Nothing heard, or only hesitation sounds ("uh", "um", "er", "hmm"): keep listening without a brain."""
     words = _WORDS.findall(str(text or "").lower())
     return not words or all(word in _FILLERS for word in words)
 
@@ -399,10 +469,11 @@ class Settings:
     defaults. The file is read again when it changes."""
 
     def __init__(self, path: Optional[str] = DEFAULT_SETTINGS_FILE, *, model: Optional[str] = None,
-                 voice: Optional[str] = None) -> None:
+                 voice: Optional[str] = None, brain: Optional[str] = None) -> None:
         self.path = os.path.expanduser(path) if path else None
         self._model = model
         self._voice = voice
+        self._brain = brain
         self._lock = threading.Lock()
         self._stamp: Optional[Tuple[int, int]] = None
         self._value: Dict[str, Any] = {}
@@ -440,6 +511,25 @@ class Settings:
             if isinstance(candidate, str) and _VOICE.match(candidate.strip()):
                 return candidate.strip()
         return JARVIS_VOICE
+
+    def brain(self) -> str:
+        """``auto`` (realtime when it can, else Claude), ``realtime`` or ``claude``."""
+        for candidate in (self._brain, os.environ.get("SAMRABBIT_ASSISTANT_BRAIN"), self._file().get("brain")):
+            if isinstance(candidate, str) and candidate.strip().lower() in BRAINS:
+                return candidate.strip().lower()
+        return DEFAULT_BRAIN
+
+    def realtime_model(self) -> str:
+        value = self._file().get("realtimeModel")
+        if isinstance(value, str) and _REALTIME_MODEL.match(value.strip()):
+            return value.strip()
+        return _profile.DEFAULT_MODEL if _profile is not None else "gpt-realtime-2.1"
+
+    def realtime_voice(self) -> str:
+        value = self._file().get("realtimeVoice")
+        if isinstance(value, str) and re.match(r"^[a-z]{2,20}$", value.strip()):
+            return value.strip()
+        return _profile.DEFAULT_VOICE if _profile is not None else "marin"
 
 
 def model_name(model: str) -> str:
@@ -573,6 +663,90 @@ class ElevenLabsVoice:
         with self._lock:
             self._paused = (self._monotonic(), seconds, reason)
 
+    def stream_pcm(self, text: str, write: Callable[[bytes], None],
+                   cancelled: Callable[[], bool] = lambda: False) -> bool:
+        """``text`` as PCM16LE 16 kHz mono (``/stream?output_format=pcm_16000``), handed to ``write`` as it arrives
+        (the streaming turn's ``A`` frames). True when any audio was written; any failure stops quietly."""
+        text = " ".join(str(text or "").split())
+        if not text or self.off or self._pause_reason():
+            return False
+        voice = self._voice()
+        cache_key = (voice, text, REALTIME_TTS_FORMAT)
+        with self._lock:
+            cached = self._cache.get(cache_key)  # type: ignore[call-overload]
+            if cached is not None:
+                self._cache.move_to_end(cache_key)  # type: ignore[arg-type]
+        if cached is not None:
+            for offset in range(0, len(cached), STREAM_FRAME_BYTES):
+                if cancelled():
+                    break
+                write(cached[offset:offset + STREAM_FRAME_BYTES])
+            return True
+        key = self._key()
+        if key is None:
+            return False
+        parts = urlsplit(self.base_url)
+        host = parts.hostname or ""
+        if parts.scheme == "https":
+            connection: http.client.HTTPConnection = http.client.HTTPSConnection(
+                host, parts.port or 443, timeout=self.timeout, context=ssl.create_default_context())
+        elif parts.scheme == "http" and host in ("127.0.0.1", "localhost", "::1"):
+            connection = http.client.HTTPConnection(host, parts.port or 80, timeout=self.timeout)
+        else:
+            self.last_error = "bad_url"
+            return False
+        path = f"/v1/text-to-speech/{quote(voice, safe='')}/stream?output_format={REALTIME_TTS_FORMAT}"
+        body = json.dumps({"text": text, "model_id": TTS_MODEL, "voice_settings": TTS_SETTINGS}).encode("utf-8")
+        self.requests += 1
+        kept = bytearray()
+        wrote = False
+        started = time.monotonic()
+        try:
+            connection.request("POST", path, body=body, headers={
+                "xi-api-key": key, "Content-Type": "application/json", "Accept": "*/*"})
+            response = connection.getresponse()
+            if response.status != 200:
+                status = response.status
+                response.read(64 * 1024)
+                self.last_error = f"http_{status}"
+                if status in (401, 403):
+                    self._pause(TTS_PAUSE_REJECTED, "key_rejected")
+                elif status in (402, 429):
+                    self._pause(TTS_PAUSE_BUSY if status == 429 else TTS_PAUSE_REJECTED,
+                                "voice_busy" if status == 429 else "voice_quota")
+                _LOG.warning("voice synthesis failed (HTTP %d)", status)
+                return False
+            remainder = b""
+            total = 0
+            while not cancelled():
+                chunk = response.read(STREAM_FRAME_BYTES)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > MAX_TTS_BYTES * 4:
+                    break
+                data = remainder + chunk
+                cut = len(data) - len(data) % 2
+                data, remainder = data[:cut], data[cut:]
+                if data:
+                    write(data)
+                    wrote = True
+                    if len(kept) <= 1024 * 1024:
+                        kept += data
+        except (OSError, http.client.HTTPException, ssl.SSLError):
+            self.last_error = "timeout" if time.monotonic() - started >= self.timeout - 0.05 else "unreachable"
+            _LOG.warning("voice synthesis failed (%s)", self.last_error)
+            return wrote
+        finally:
+            connection.close()
+        self.last_error = None
+        if wrote and not cancelled() and len(text) <= 240 and len(kept) <= 1024 * 1024:
+            with self._lock:
+                self._cache[cache_key] = bytes(kept)  # type: ignore[index]
+                while len(self._cache) > TTS_CACHE_SIZE:
+                    self._cache.popitem(last=False)
+        return wrote
+
 
 # --------------------------------------------------------------------------- the agent (claude -p)
 
@@ -655,6 +829,21 @@ def _finish(process: "subprocess.Popen[bytes]", grace: float) -> None:
                 stream.close()
         except OSError:
             pass
+
+
+def _session_problem(result: Optional[Dict[str, Any]]) -> Optional[str]:
+    """``missing`` (``--resume`` of a session the CLI does not have) or ``in_use`` (``--session-id`` of one it
+    has), from a failed result event's ``errors`` / ``result``."""
+    if not isinstance(result, dict) or result.get("is_error") is not True:
+        return None
+    texts = [str(result.get("result") or "")]
+    texts += [str(item) for item in result.get("errors") or [] if isinstance(item, (str, int, float))]
+    joined = " ".join(texts).lower()
+    if "no conversation found" in joined:
+        return "missing"
+    if "already in use" in joined:
+        return "in_use"
+    return None
 
 
 def _tool_name(name: Any) -> str:
@@ -851,6 +1040,13 @@ class ClaudeAgent:
             if "not logged in" in detail or "/login" in detail:
                 raise unavailable("claude_signed_out", cache=bool(progress.get("started")))
             raise unavailable("claude_failed", retryable=True, cache=bool(run.tools))
+        problem = _session_problem(run.result)
+        if problem is not None:
+            # The real CLI reports a lost or taken session as a result event ({"subtype": "error_during_execution",
+            # "errors": ["No conversation found with session ID: ..."]}) on stdout as well as on stderr.
+            _finish(process, 2.0)
+            self._forget(process)
+            raise _SessionMissing() if problem == "missing" else _SessionInUse()
         # The answer is here: the CLI exits by itself (about half a second); a reaper makes sure it does.
         threading.Thread(target=self._reap, args=(process,), name="samrabbit-assistant-reap", daemon=True).start()
         return self._interpret(run)
@@ -980,8 +1176,24 @@ class T3Announcer:
         with self._lock:
             return [event for event in self._events if event.id > cursor and event.at >= cutoff]
 
-    def scan(self, *, min_interval: float = ANNOUNCE_SCAN_SECONDS - 0.5) -> None:
-        if not self._scan_lock.acquire(blocking=False):
+    def get(self, number: int) -> Optional[_Announcement]:
+        cutoff = self._clock() - ANNOUNCE_KEEP_SECONDS
+        with self._lock:
+            return next((event for event in self._events if event.id == number and event.at >= cutoff), None)
+
+    def refresh(self, budget: float = ANNOUNCE_REFRESH_BUDGET) -> None:
+        """Before a new conversation takes its cursor: catch up with T3 now (a snapshot at most a scan interval old),
+        so whatever changed while nobody was talking is numbered before the cursor and never announced to it. A T3
+        that hangs delays the conversation by ``budget`` seconds at most (the catch-up then finishes by itself)."""
+        worker = threading.Thread(target=self.scan, kwargs={"min_interval": 0.0, "blocking": True,
+                                                            "max_age": ANNOUNCE_SCAN_SECONDS},
+                                  name="samrabbit-assistant-catch-up", daemon=True)
+        worker.start()
+        worker.join(timeout=budget)
+
+    def scan(self, *, min_interval: float = ANNOUNCE_SCAN_SECONDS - 0.5, blocking: bool = False,
+             max_age: Optional[float] = None) -> None:
+        if not self._scan_lock.acquire(blocking=blocking, timeout=15.0 if blocking else -1):
             return  # another scan is running; its result serves this one too
         try:
             if self._monotonic() - self._scanned < min_interval:
@@ -990,7 +1202,7 @@ class T3Announcer:
             if hub is None or not hub.available():
                 return
             try:
-                items = hub.threads(None, limit=100, max_age=max(1.0, min_interval))
+                items = hub.threads(None, limit=100, max_age=max_age if max_age is not None else max(1.0, min_interval))
             except Exception:  # noqa: BLE001 - T3 down or not paired: nothing to announce
                 return
             self._scanned = self._monotonic()
@@ -1044,6 +1256,7 @@ class _Conversation:
         self.created_at = now
         self.last_at = now
         self.cursor = cursor
+        self.first_cursor = cursor  # announcements numbered after this one belong to this conversation
         self.announced: set = set()
         self.notes: List[str] = []
         self.lock = threading.Lock()
@@ -1051,6 +1264,13 @@ class _Conversation:
         self.recorded_start = False
         self.ended = False
         self.turns = 0
+        # The realtime brain: this conversation's session (opened in the background), what was said (for the summary
+        # a new session starts with after 55 minutes), the current turn's cancel switch.
+        self.realtime: Any = None
+        self.realtime_lock = threading.Lock()
+        self.history: Deque[Tuple[str, str]] = deque(maxlen=HISTORY_TURNS)
+        self.said: Deque[str] = deque(maxlen=3)
+        self.cancel: Optional[threading.Event] = None
 
     def record(self) -> Dict[str, Any]:
         return {"sessionId": self.session_id, "started": self.started, "deviceId": self.device_id,
@@ -1063,18 +1283,192 @@ class _TurnEntry:
         self.at = now
         self.event = threading.Event()
         self.response: Optional[Tuple[int, Dict[str, Any]]] = None
+        self.result: Optional["_TurnResult"] = None  # a finished turn: what a retry replays (JSON or a stream)
         self.keep = False
 
 
 class _TurnRequest:
     def __init__(self, *, conversation_id: Optional[str], turn_id: str, text: Optional[str] = None,
-                 audio: Optional[bytes] = None, container: str = "", language: str = "en-US") -> None:
+                 audio: Optional[bytes] = None, container: str = "", language: str = "en-US",
+                 announce: Optional[int] = None) -> None:
         self.conversation_id = conversation_id
         self.turn_id = turn_id
         self.text = text
         self.audio = audio
         self.container = container
         self.language = language
+        self.announce = announce
+
+
+class _TurnResult:
+    """What a turn said and did, for the buffered JSON answer, the stream's ``done`` and a retry's replay."""
+
+    def __init__(self, conversation_id: str, turn_id: str) -> None:
+        self.conversation_id = conversation_id
+        self.turn_id = turn_id
+        self.heard = ""
+        self.heard_sent = False
+        self.say = ""
+        self.audio: Optional[bytes] = None
+        self.audio_mime = ""
+        self.expect_reply = True
+        self.end = False
+        self.interrupted = False
+        self.brain = "claude"
+        self.actions: List[Dict[str, Any]] = []
+        self.cards: List[Dict[str, Any]] = []
+        self.timings: Dict[str, Any] = {"stt": 0, "agent": 0, "tts": 0}
+
+    def json(self) -> Dict[str, Any]:
+        return {"conversationId": self.conversation_id, "turnId": self.turn_id, "heard": self.heard, "say": self.say,
+                "audio": {"mime": self.audio_mime, "b64": base64.b64encode(self.audio).decode("ascii")}
+                if self.audio else None,
+                "expectReply": self.expect_reply, "endConversation": self.end, "actions": list(self.actions),
+                "timings": {key: self.timings.get(key, 0) for key in ("stt", "agent", "tts")}, "brain": self.brain}
+
+    def done_event(self) -> Dict[str, Any]:
+        value: Dict[str, Any] = {"type": "done", "conversationId": self.conversation_id, "turnId": self.turn_id,
+                                 "expectReply": self.expect_reply, "endConversation": self.end, "brain": self.brain,
+                                 "timings": {"stt": self.timings.get("stt", 0),
+                                             "firstAudio": self.timings.get("firstAudio"),
+                                             "total": self.timings.get("total", 0)}}
+        if self.interrupted:
+            value["interrupted"] = True
+        return value
+
+
+class Streamed:
+    """The turn wrote its own (streamed) response; ``status`` is for the log line (``samrabbit_mobile``)."""
+
+    streamed = True
+
+    def __init__(self, status: int = 200) -> None:
+        self.status = status
+
+
+class StreamWriter:
+    """The streaming turn protocol on one HTTP response: HTTP/1.1, chunked; each frame = 1 type byte (``J`` JSON,
+    ``A`` audio), a 4-byte big-endian length, the payload. Starts the response with its first frame, so anything
+    that fails before that answers as a normal JSON error. A client that went away just stops the writing."""
+
+    def __init__(self, handler: Any) -> None:
+        self.handler = handler
+        self.started = False
+        self.broken = False
+        self._audio = bytearray()
+
+    def _start(self) -> None:
+        handler = self.handler
+        handler.protocol_version = "HTTP/1.1"  # this response only: chunked needs 1.1 (the bridge is 1.0)
+        handler.send_response(200)
+        handler.send_header("Content-Type", STREAM_TYPE)
+        handler.send_header("Transfer-Encoding", "chunked")
+        handler.send_header("Cache-Control", "no-store")
+        handler.send_header("X-Content-Type-Options", "nosniff")
+        handler.send_header("Connection", "close")
+        handler.end_headers()
+        self.started = True
+
+    def frame(self, kind: bytes, payload: bytes) -> None:
+        if self.broken:
+            return
+        try:
+            if not self.started:
+                self._start()
+            data = kind + struct.pack(">I", len(payload)) + payload
+            self.handler.wfile.write(b"%X\r\n" % len(data) + data + b"\r\n")
+            self.handler.wfile.flush()
+        except (OSError, ValueError):
+            self.broken = True
+
+    def event(self, value: Dict[str, Any]) -> None:
+        self.flush_audio()
+        self.frame(b"J", json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+
+    def audio(self, pcm: bytes) -> None:
+        self._audio += pcm
+        while len(self._audio) >= STREAM_FRAME_BYTES:
+            chunk = bytes(self._audio[:STREAM_FRAME_BYTES])
+            del self._audio[:STREAM_FRAME_BYTES]
+            self.frame(b"A", chunk)
+
+    def flush_audio(self) -> None:
+        if self._audio:
+            chunk, self._audio = bytes(self._audio), bytearray()
+            self.frame(b"A", chunk)
+
+    def finish(self) -> None:
+        self.flush_audio()
+        if self.started and not self.broken:
+            try:
+                self.handler.wfile.write(b"0\r\n\r\n")
+                self.handler.wfile.flush()
+            except (OSError, ValueError):
+                self.broken = True
+
+
+class TurnSink:
+    """Where a turn's output goes: the stream (when the watch asked for one) and the result (always)."""
+
+    def __init__(self, result: _TurnResult, stream: Optional[StreamWriter], *, monotonic: Callable[[], float],
+                 started: float, keep_audio: bool) -> None:
+        self.result = result
+        self.stream = stream
+        self._monotonic = monotonic
+        self._started = started
+        self._keep_audio = keep_audio
+        self._pcm = bytearray()
+        self.cancel = threading.Event()
+
+    @property
+    def started(self) -> bool:
+        return self.stream is not None and self.stream.started
+
+    def heard(self, text: str) -> None:
+        self.result.heard = text
+        self.result.heard_sent = True
+        if self.stream is not None:
+            self.stream.event({"type": "heard", "text": text})
+
+    def say_delta(self, text: str) -> None:
+        if self.stream is not None and text:
+            self.stream.event({"type": "say.delta", "text": text})
+
+    def audio(self, pcm: bytes) -> None:
+        if self.result.timings.get("firstAudio") is None:
+            self.result.timings["firstAudio"] = int(round((self._monotonic() - self._started) * 1000))
+        if self._keep_audio and len(self._pcm) <= 8 * 1024 * 1024:
+            self._pcm += pcm
+        if self.stream is not None:
+            self.stream.audio(pcm)
+
+    def action(self, value: Dict[str, Any]) -> None:
+        if self.stream is not None:
+            self.stream.event({"type": "action", **{key: value[key] for key in ("kind", "title", "threadId",
+                                                                                 "artifactId")
+                                                     if value.get(key) not in (None, "")}})
+
+    def card(self, value: Dict[str, Any]) -> None:
+        self.result.cards.append(value)
+        if self.stream is not None:
+            self.stream.event({"type": "card", "title": str(value.get("title") or ""),
+                               "body": str(value.get("body") or "")})
+
+    def pcm(self) -> bytes:
+        return bytes(self._pcm)
+
+    def finish(self, error: Optional[AssistantError] = None) -> None:
+        """``say.done`` (or ``error``), then ``done``, then the end of the stream."""
+        result = self.result
+        result.timings["total"] = int(round((self._monotonic() - self._started) * 1000))
+        if self.stream is None:
+            return
+        if error is not None:
+            self.stream.event({"type": "error", "code": error.code, "message": error.message})
+        elif result.say:
+            self.stream.event({"type": "say.done", "text": result.say})
+        self.stream.event(result.done_event())
+        self.stream.finish()
 
 
 ACTION_KINDS = {"start_task": "task_started", "reply_task": "task_replied", "respond_task": "task_answered",
@@ -1148,7 +1542,7 @@ class AssistantService:
                  temporary: bool = False,
                  installed: bool = False, clock: Callable[[], float] = time.time,
                  monotonic: Callable[[], float] = time.monotonic, agent_timeout: float = AGENT_TIMEOUT_SECONDS,
-                 idle_end: float = IDLE_END_SECONDS) -> None:
+                 idle_end: float = IDLE_END_SECONDS, realtime: Any = None, chatgpt: Any = None) -> None:
         self.agent = agent
         self.voice = voice
         self.settings = agent.settings
@@ -1161,6 +1555,13 @@ class AssistantService:
         self.idle_end = idle_end
         self.server: Any = None
         self.mobile: Any = None
+        self.realtime = realtime  # samrabbit_realtime.RealtimeBrain (None: only Claude answers)
+        self.chatgpt = chatgpt if chatgpt is not None else getattr(realtime, "auth", None)
+        if self.chatgpt is not None:
+            try:
+                self.chatgpt.on_change = self._chatgpt_changed
+            except AttributeError:  # pragma: no cover
+                pass
         self.announcer = T3Announcer(lambda: getattr(self.mobile, "t3", None), clock=clock, monotonic=monotonic)
         self._token = "sra_" + secrets.token_urlsafe(32)
         self._token_hash = hashlib.sha256(self._token.encode("utf-8")).hexdigest()
@@ -1175,6 +1576,7 @@ class AssistantService:
         self._worker: Optional[threading.Thread] = None
         self._stopping = threading.Event()
         self._pruned_at = -1e12
+        self._refreshed_at = -1e12
         if self.workdir:
             agent.configure(self.workdir)
 
@@ -1196,6 +1598,15 @@ class AssistantService:
             self._worker.join(timeout=3.0)
             self._worker = None
         self.agent.stop_all()
+        with self._lock:
+            conversations = list(self._conversations.values())
+        for conversation in conversations:
+            self._close_session(conversation, background=False)
+        if self.chatgpt is not None:
+            try:
+                self.chatgpt.close()
+            except Exception:  # noqa: BLE001
+                pass
         self._save()
         if self.temporary and self.workdir:
             shutil.rmtree(claude_project_dir(self.agent.cwd), ignore_errors=True)
@@ -1243,7 +1654,7 @@ class AssistantService:
             self._prepared = ""
             return None
 
-    # ------------------------------------------------------------------ the internal token (the MCP server)
+    # ------------------------------------------------------------------ the internal token (the tools)
     def internal_device(self, presented: str, peer: str) -> Optional[Dict[str, Any]]:
         if not presented or not presented.startswith("sra_") or len(presented) > 200:
             return None
@@ -1255,8 +1666,8 @@ class AssistantService:
                 "internal": True}
 
     def sync_conversation(self, handler: Any) -> Optional[str]:
-        """The watch conversation a tool call belongs to: by the CLI's session id (``X-SamRabbit-Assistant-Session``),
-        else the only conversation with a turn running."""
+        """The watch conversation a tool call belongs to: by the CLI's (or the realtime turn's) session id
+        (``X-SamRabbit-Assistant-Session``), else the only conversation with a turn running."""
         session = str(handler.headers.get(SESSION_HEADER) or "").strip().lower()
         with self._lock:
             if _SESSION_ID.match(session):
@@ -1266,8 +1677,8 @@ class AssistantService:
             busy = [item for item in self._conversations.values() if item.lock.locked()]
         return busy[0].sync_id if len(busy) == 1 else None
 
-    # ------------------------------------------------------------------ status
-    def off_reason(self) -> Optional[str]:
+    # ------------------------------------------------------------------ which brain
+    def _claude_reason(self) -> Optional[str]:
         reason = self.agent.off_reason()
         if reason:
             return reason
@@ -1276,12 +1687,70 @@ class AssistantService:
             return self.prepare()
         return prepared or None
 
+    def _realtime_reason(self) -> Optional[str]:
+        if self.realtime is None or _realtime is None or _profile is None:
+            return "realtime_missing"
+        if self.server is None:
+            return "assistant_starting"
+        if getattr(_realtime, "mcp", None) is None:
+            return "mcp_server_missing"
+        try:
+            return self.realtime.off_reason()
+        except Exception:  # noqa: BLE001 - the brain's check must never fail a turn
+            _LOG.warning("realtime status failed")
+            return "realtime_failed"
+
+    def brain(self) -> Tuple[Optional[str], Optional[str]]:
+        """``(brain, None)`` for the next turn, or ``(None, why nothing can answer)``. ``auto``: realtime when
+        ChatGPT is connected and the helper is ready, else Claude."""
+        setting = self.settings.brain()
+        if setting == "claude":
+            reason = self._claude_reason()
+            return ("claude", None) if reason is None else (None, reason)
+        realtime_reason = self._realtime_reason()
+        if setting == "realtime":
+            return ("realtime", None) if realtime_reason is None else (None, realtime_reason)
+        if realtime_reason is None:
+            return "realtime", None
+        claude_reason = self._claude_reason()
+        if claude_reason is None:
+            return "claude", None
+        quiet = realtime_reason in ("realtime_missing", "chatgpt_not_connected", "chatgpt_dev_copy")
+        return None, claude_reason if quiet else realtime_reason
+
+    def off_reason(self) -> Optional[str]:
+        brain, reason = self.brain()
+        return None if brain is not None else (reason or "assistant_unavailable")
+
+    def _preferred(self) -> str:
+        setting = self.settings.brain()
+        if setting in ("claude", "realtime"):
+            return setting
+        connected = False
+        try:
+            connected = self.chatgpt is not None and self.chatgpt.connected()
+        except Exception:  # noqa: BLE001
+            connected = False
+        return "realtime" if connected else "claude"
+
+    def _model_for(self, brain: str) -> str:
+        return self.settings.realtime_model() if brain == "realtime" else self.settings.model()
+
+    def _chatgpt_connected(self) -> bool:
+        try:
+            return bool(self.chatgpt is not None and self.chatgpt.connected())
+        except Exception:  # noqa: BLE001
+            return False
+
+    # ------------------------------------------------------------------ status
     def health(self) -> Dict[str, Any]:
-        reason = self.off_reason()
+        brain, reason = self.brain()
         model = self.settings.model()
-        value: Dict[str, Any] = {"available": reason is None, "model": model, "modelName": model_name(model),
-                                 "claude": self.agent.executable() is not None,
-                                 "copy": "installed" if self.installed else "dev", "voice": self.voice.status()}
+        value: Dict[str, Any] = {"available": brain is not None, "brain": brain or self._preferred(),
+                                 "brainSetting": self.settings.brain(), "model": model,
+                                 "modelName": model_name(model), "claude": self.agent.executable() is not None,
+                                 "copy": "installed" if self.installed else "dev", "voice": self.voice.status(),
+                                 "realtime": self._realtime_health()}
         if reason:
             value["reason"] = reason
         with self._lock:
@@ -1291,12 +1760,60 @@ class AssistantService:
                 value["lastTurn"] = dict(self._last_turn)
         return value
 
+    def _realtime_health(self) -> Dict[str, Any]:
+        if self.realtime is None or _realtime is None:
+            return {"available": False, "reason": "realtime_missing",
+                    "chatgpt": {"connected": self._chatgpt_connected()}}
+        try:
+            value = dict(self.realtime.status())
+        except Exception:  # noqa: BLE001
+            return {"available": False, "reason": "check_failed"}
+        reason = self._realtime_reason()
+        value["available"] = reason is None
+        value.pop("reason", None)
+        if reason:
+            value["reason"] = reason
+        value["model"] = self.settings.realtime_model()
+        value["voice"] = self.settings.realtime_voice()
+        return value
+
     def summary_part(self) -> Dict[str, Any]:
-        reason = self.off_reason()
-        value: Dict[str, Any] = {"available": reason is None, "model": self.settings.model()}
+        """``{available, brain, reason?, model, chatgpt: {connected}}``: can the watch talk to the assistant?"""
+        brain, reason = self.brain()
+        chosen = brain or self._preferred()
+        value: Dict[str, Any] = {"available": brain is not None, "brain": chosen, "model": self._model_for(chosen),
+                                 "chatgpt": {"connected": self._chatgpt_connected()}}
         if reason:
             value["reason"] = reason
         return value
+
+    # ------------------------------------------------------------------ ChatGPT (the desktop app's routes)
+    def chatgpt_route(self, action: str) -> Tuple[int, Dict[str, Any]]:
+        """``start`` / ``status`` / ``disconnect`` (``samrabbit_mobile`` checked the desktop token)."""
+        auth = self.chatgpt
+        if auth is None:
+            raise AssistantError(503, "chatgpt_unavailable", "ChatGPT login is not installed on the Mac bridge.")
+        try:
+            if action == "start":
+                return 200, auth.start()
+            if action == "disconnect":
+                return 200, auth.disconnect()
+            return 200, auth.status()
+        except Exception as error:  # noqa: BLE001 - ChatGPTError answers with its own envelope
+            if isinstance(getattr(error, "status", None), int) and callable(getattr(error, "payload", None)):
+                raise AssistantError(error.status, str(getattr(error, "code", "chatgpt_failed")),  # type: ignore
+                                     str(getattr(error, "message", "ChatGPT login failed.")),
+                                     retryable=bool(getattr(error, "retryable", False))) from None
+            raise
+
+    def _chatgpt_changed(self) -> None:
+        """A new login or a disconnect: every session was made with the old token."""
+        if self.realtime is not None:
+            self.realtime.resume()
+        with self._lock:
+            conversations = list(self._conversations.values())
+        for conversation in conversations:
+            self._close_session(conversation)
 
     # ------------------------------------------------------------------ conversations
     def _load(self) -> None:
@@ -1333,17 +1850,28 @@ class AssistantService:
             _LOG.warning("assistant conversations not saved")
 
     def _conversation(self, conversation_id: Optional[str], device: Dict[str, Any]) -> _Conversation:
-        now = self._clock()
+        device_id = str(device.get("deviceId") or "")
         with self._lock:
             if conversation_id:
                 found = self._conversations.get(conversation_id)
                 if found is not None:
-                    if found.device_id != str(device.get("deviceId") or ""):
+                    if found.device_id != device_id:
                         raise AssistantError(404, "conversation_not_found", "No such conversation.")
                     return found
                 saved = self._saved.get(conversation_id)
-                if saved is not None and str(saved.get("deviceId") or "") != str(device.get("deviceId") or ""):
+                if saved is not None and str(saved.get("deviceId") or "") != device_id:
                     raise AssistantError(404, "conversation_not_found", "No such conversation.")
+        # A conversation that starts now takes the announcer's cursor: first catch up with T3, so whatever changed
+        # while nobody talked is numbered before it and never announced as new.
+        self.announcer.refresh()
+        now = self._clock()
+        with self._lock:
+            if conversation_id:
+                found = self._conversations.get(conversation_id)
+                if found is not None:  # another request made it meanwhile
+                    if found.device_id != device_id:
+                        raise AssistantError(404, "conversation_not_found", "No such conversation.")
+                    return found
             else:
                 conversation_id = str(uuid.uuid4())
             saved = self._saved.get(conversation_id) or {}
@@ -1365,6 +1893,16 @@ class AssistantService:
                     self.announcer.scan()
                 except Exception:  # noqa: BLE001 - never stops the worker
                     _LOG.warning("assistant: T3 watch failed")
+            try:
+                self.sweep_sessions()
+            except Exception:  # noqa: BLE001
+                _LOG.warning("assistant: realtime housekeeping failed")
+            if self.chatgpt is not None and self._monotonic() - self._refreshed_at >= 60.0:
+                self._refreshed_at = self._monotonic()
+                try:
+                    self.chatgpt.refresh_if_needed()  # a turn never waits for a token refresh
+                except Exception:  # noqa: BLE001
+                    _LOG.warning("assistant: chatgpt refresh failed")
             if self._monotonic() - last_sweep >= 30.0:
                 last_sweep = self._monotonic()
                 try:
@@ -1383,24 +1921,122 @@ class AssistantService:
                          if now - item.last_at >= ANNOUNCE_KEEP_SECONDS and not item.lock.locked()]:
                 self._saved[item.id] = item.record()
                 self._conversations.pop(item.id, None)
+                self._close_session(item)
             for key in [key for key, entry in self._turns.items()
                         if entry.event.is_set() and self._monotonic() - entry.at > TURN_CACHE_SECONDS]:
                 self._turns.pop(key, None)
         for item in idle:
             self._end(item)
+            self._close_session(item)
         if idle:
             self._save()
         if self.workdir and self._monotonic() - self._pruned_at >= 24 * 3600.0:
             self._pruned_at = self._monotonic()
             prune_sessions(claude_project_dir(self.agent.cwd), now - SESSION_KEEP_SECONDS)
 
+    def sweep_sessions(self) -> None:
+        """Realtime sessions idle for three minutes, or open for 55, close (the next turn opens a new one, with a
+        summary of the conversation so far)."""
+        if _realtime is None:
+            return
+        with self._lock:
+            conversations = [item for item in self._conversations.values() if item.realtime is not None]
+        for conversation in conversations:
+            session = conversation.realtime
+            if session is None or conversation.lock.locked():
+                continue
+            if session.state in ("failed", "closed") or (session.state == "open" and (
+                    time.monotonic() - session.used_at >= _realtime.IDLE_CLOSE_SECONDS or session.expired() or
+                    not session.usable())):
+                self._close_session(conversation, session)
+
+    # ------------------------------------------------------------------ realtime sessions
+    def _session(self, conversation: _Conversation, *, wait: bool) -> Any:
+        """This conversation's realtime session, opened in the background when there is none (or it is too old or
+        broken); ``wait``: until it is open (or why it could not)."""
+        assert _realtime is not None and self.realtime is not None
+        with conversation.realtime_lock:
+            session = conversation.realtime
+            if session is not None and session.state == "open" and (session.expired() or not session.usable()):
+                self._close_session(conversation, session)
+                session = None
+            if session is not None and session.state in ("failed", "closed"):
+                conversation.realtime = session = None
+            if session is None:
+                session = _realtime.RealtimeSession(self.realtime, self._realtime_config(conversation))
+                conversation.realtime = session
+                threading.Thread(target=self._open_session, args=(session,), name="samrabbit-realtime-open",
+                                 daemon=True).start()
+        if not wait:
+            return session
+        if not session.ready.wait(REALTIME_OPEN_WAIT):
+            raise _realtime.RealtimeError("realtime_timeout", "The realtime voice did not connect in time.",
+                                          pause=_realtime.PAUSE_FAILED_SECONDS)
+        if session.state != "open":
+            raise session.error or _realtime.RealtimeError("realtime_failed", "The realtime voice failed.")
+        return session
+
+    def _open_session(self, session: Any) -> None:
+        try:
+            self.realtime.start(session)
+        except Exception:  # noqa: BLE001 - kept on the session (session.error) for the turn that waits
+            if not session.ready.is_set():  # pragma: no cover
+                session.ready.set()
+
+    def _close_session(self, conversation: _Conversation, session: Any = None, *, background: bool = True) -> None:
+        with conversation.realtime_lock:
+            current = conversation.realtime
+            if session is not None and current is not session:
+                return
+            conversation.realtime = None
+        if current is None:
+            return
+        if background:
+            threading.Thread(target=current.close, name="samrabbit-realtime-close", daemon=True).start()
+        else:
+            current.close()
+
+    def _realtime_config(self, conversation: _Conversation) -> Dict[str, Any]:
+        assert _profile is not None
+        hub = getattr(self.mobile, "t3", None)
+        t3_on = False
+        items: Optional[List[Dict[str, Any]]] = None
+        try:
+            t3_on = hub is not None and bool(hub.available())
+            if t3_on and hub.cached() is not None:
+                items = hub.threads(None, limit=40, max_age=1e9)  # the cached snapshot only (no T3 call)
+        except Exception:  # noqa: BLE001
+            items = None
+        writer = getattr(self.server, "calendar", None)
+        calendar_on = writer is not None and hasattr(writer, "create")
+        visuals = getattr(self.server, "genui", None) is not None
+        mac_on = getattr(self.server, "mac", None) is not None
+        earlier = None
+        if conversation.history:
+            earlier = _clip(" ".join(f"Samin said: {heard} You answered: {say}"
+                                     for heard, say in list(conversation.history)[-6:]), 2000)
+        tools = _profile.tool_definitions(t3=t3_on, mac=mac_on, calendar=calendar_on, journal=True, visuals=visuals)
+        text = _profile.instructions(t3_items=items, t3=t3_on, mac=mac_on, visuals=visuals, earlier=earlier)
+        return _profile.session_config(model=self.settings.realtime_model(), voice=self.settings.realtime_voice(),
+                                       instructions_text=text, tools=tools)
+
+    def _runner(self, conversation: _Conversation) -> Any:
+        assert _realtime is not None
+        return _realtime.ToolRunner(bridge_url=self._url(), token=self._token, session=conversation.session_id,
+                                    server=self.server, mobile=self.mobile, said=lambda: list(conversation.said),
+                                    clock=self._clock)
+
     # ------------------------------------------------------------------ routes
-    def turn(self, handler: Any, device: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
+    def turn(self, handler: Any, device: Dict[str, Any]) -> Any:
+        """One turn: ``(status, JSON)``, or ``Streamed`` when the watch asked for the stream (``Accept:
+        application/x-samrabbit-stream``) and it was written."""
         if device.get("internal"):
             raise AssistantError(403, "forbidden", "The assistant cannot talk to itself.")
-        reason = self.off_reason()
-        if reason:
-            raise unavailable(reason)
+        started = self._monotonic()
+        brain, reason = self.brain()
+        if brain is None:
+            raise unavailable(reason or "assistant_unavailable")
+        streaming = STREAM_TYPE in str(handler.headers.get("Accept") or "").lower()
         request = self._read_turn(handler)
         key = (str(device.get("deviceId") or ""), request.turn_id)
         with self._lock:
@@ -1415,15 +2051,27 @@ class AssistantService:
                     self._turns.pop(oldest)
         assert entry is not None
         if not owner:
-            # A retry of a turn: the same answer (the agent runs once). Still running: wait for it.
-            if not entry.event.wait(timeout=TURN_WAIT_SECONDS) or entry.response is None:
+            # A retry of a turn: the same answer (the brain runs once). Still running: wait for it.
+            if not entry.event.wait(timeout=TURN_WAIT_SECONDS) or (entry.response is None and entry.result is None):
                 raise AssistantError(409, "assistant_busy", "Still answering that.", retryable=True)
+            if entry.result is not None:
+                if streaming:
+                    self._replay(handler, entry.result)
+                    return Streamed(200)
+                return 200, entry.result.json()
             return entry.response
+        result = _TurnResult(request.conversation_id or "", request.turn_id)
+        sink = TurnSink(result, StreamWriter(handler) if streaming else None, monotonic=self._monotonic,
+                        started=started, keep_audio=not streaming)
         try:
-            response = self._turn(request, device)
-            entry.response, entry.keep = response, True
+            self._turn(request, device, sink, brain)
+            entry.result, entry.keep = result, True
+            self._trim_cached_audio()
         except AssistantError as error:
             entry.response, entry.keep = (error.status, error.payload()), error.cache
+            if sink.started:
+                sink.finish(error)
+                return Streamed(200)
             raise
         except Exception as error:  # noqa: BLE001 - TranscribeError and friends: a retry may run again
             status = getattr(error, "status", None)
@@ -1431,6 +2079,11 @@ class AssistantService:
             entry.response = (status, payload()) if isinstance(status, int) and callable(payload) else \
                 (500, {"error": {"code": "internal_error", "message": "The bridge failed unexpectedly.",
                                  "retryable": True}})
+            if sink.started:
+                code = str(getattr(error, "code", "") or "internal_error")
+                sink.finish(AssistantError(int(status) if isinstance(status, int) else 500, code,
+                                           str(getattr(error, "message", "") or "The bridge failed unexpectedly.")))
+                return Streamed(200)
             raise
         finally:
             entry.event.set()
@@ -1438,7 +2091,38 @@ class AssistantService:
                 with self._lock:
                     if self._turns.get(key) is entry:
                         self._turns.pop(key, None)
-        return response
+        if streaming:
+            sink.finish()
+            return Streamed(200)
+        return 200, result.json()
+
+    def _trim_cached_audio(self) -> None:
+        with self._lock:
+            kept = 0
+            for entry in reversed(list(self._turns.values())):
+                if entry.result is not None and entry.result.audio:
+                    kept += 1
+                    if kept > MAX_CACHED_AUDIO:
+                        entry.result.audio = None
+
+    def _replay(self, handler: Any, result: _TurnResult) -> None:
+        """A retried streamed turn: what it said and did again (its audio only while it is still cached)."""
+        writer = StreamWriter(handler)
+        if result.heard_sent:
+            writer.event({"type": "heard", "text": result.heard})
+        if result.say:
+            writer.event({"type": "say.delta", "text": result.say})
+        for action in result.actions:
+            writer.event({"type": "action", **{key: action[key] for key in ("kind", "title", "threadId", "artifactId")
+                                               if action.get(key) not in (None, "")}})
+        for card in result.cards:
+            writer.event({"type": "card", "title": str(card.get("title") or ""), "body": str(card.get("body") or "")})
+        if result.audio and result.audio_mime == "audio/wav":
+            writer.audio(result.audio[44:])
+        if result.say:
+            writer.event({"type": "say.done", "text": result.say})
+        writer.event(result.done_event())
+        writer.finish()
 
     def _read_turn(self, handler: Any) -> _TurnRequest:
         declared = str(handler.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
@@ -1471,16 +2155,25 @@ class AssistantService:
         elif declared in ("application/json", ""):
             body = _json_body(handler)
             text = body.get("text")
-            if not isinstance(text, str) or len(text) > MAX_TEXT_CHARS or "\x00" in text:
-                raise AssistantError(400, "invalid_text", f"text must be at most {MAX_TEXT_CHARS} characters.")
+            announce = body.get("announce")
             conversation = body.get("conversationId", header_conversation)
             turn = body.get("turnId", header_turn)
             if conversation is not None and not isinstance(conversation, str):
                 raise AssistantError(400, "invalid_conversation", "conversationId must be an id.")
             if turn is not None and not isinstance(turn, str):
                 raise AssistantError(400, "invalid_turn", "turnId must be a uuid.")
+            number: Optional[int] = None
+            if announce is not None:
+                if isinstance(announce, bool) or not (isinstance(announce, int) or
+                                                      (isinstance(announce, str) and announce.strip().isdigit())):
+                    raise AssistantError(400, "invalid_announce", "announce must be an announcement id.")
+                number = int(str(announce).strip())
+                if not conversation:
+                    raise AssistantError(400, "invalid_conversation", "An announcement needs its conversationId.")
+            elif not isinstance(text, str) or len(text) > MAX_TEXT_CHARS or "\x00" in text:
+                raise AssistantError(400, "invalid_text", f"text must be at most {MAX_TEXT_CHARS} characters.")
             request = _TurnRequest(conversation_id=(conversation or "").strip() or None, turn_id=(turn or "").strip(),
-                                   text=text)
+                                   text=text if number is None else None, announce=number)
         else:
             raise AssistantError(415, "unsupported_media", "Send audio/wav, audio/mp4 or audio/x-m4a, or JSON text.")
         if request.conversation_id is not None and not _CONVERSATION_ID.match(request.conversation_id):
@@ -1490,14 +2183,21 @@ class AssistantService:
             raise AssistantError(400, "invalid_turn", "Send X-SamRabbit-Turn (or turnId): a uuid for this turn.")
         return request
 
-    def _turn(self, request: _TurnRequest, device: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
+    def _turn(self, request: _TurnRequest, device: Dict[str, Any], sink: TurnSink, brain: str) -> None:
         conversation = self._conversation(request.conversation_id, device)
+        result = sink.result
+        result.conversation_id = conversation.id
+        result.brain = brain
         if not conversation.lock.acquire(blocking=False):
             raise AssistantError(409, "assistant_busy", "Still answering the last thing you said.", retryable=True)
+        conversation.cancel = sink.cancel
         try:
             conversation.last_at = self._clock()
             conversation.ended = False
-            timings = {"stt": 0, "agent": 0, "tts": 0}
+            if request.announce is not None:
+                self._announce_turn(conversation, request, sink, brain)
+                self._done(conversation, request, result, None, record=False)  # host.t3_update is its record
+                return
             heard = request.text or ""
             if request.audio is not None:
                 started = time.monotonic()
@@ -1509,68 +2209,243 @@ class AssistantService:
                         raise
                     heard = ""
                 finally:
-                    timings["stt"] = _ms(started)
+                    result.timings["stt"] = _ms(started)
                     changed = getattr(self.mobile, "transcription_changed", None)
                     if callable(changed):
                         changed()
             heard = " ".join(_CONTROL.sub(" ", heard).split())
-            base = {"conversationId": conversation.id, "turnId": request.turn_id}
             if is_noise(heard):
-                return 200, {**base, "heard": "", "say": "", "audio": None, "expectReply": True,
-                             "endConversation": False, "actions": [], "timings": timings}
+                result.heard, result.say, result.expect_reply = "", "", True
+                sink.heard("")
+                return
+            sink.heard(heard)
             self._record_start(conversation, heard)
             self._record(conversation, {"id": f"watch:{request.turn_id}:user", "type": "message.user",
                                         "text": heard, "origin": conversation_origin(conversation)})
-            run: Optional[AgentRun] = None
-            ending = is_closer(heard)
-            if ending:
-                say = goodbye(heard)
-            else:
-                started = time.monotonic()
-                try:
-                    run = self._think(conversation, self._message(conversation, heard))
-                finally:
-                    timings["agent"] = _ms(started)
-                say = spoken(run.text) or ("Sorry, that needed more steps than I can take at once. Try asking for "
-                                           "one thing at a time." if run.max_turns else
-                                           "Done." if actions_from(run) else "Sorry, I don't have an answer for that.")
-                self._record_tools(conversation, request.turn_id, run)
-            started = time.monotonic()
-            audio = self.voice.speak(speakable(say))
-            timings["tts"] = _ms(started)
-            self._record(conversation, {"id": f"watch:{request.turn_id}:assistant",
-                                        "type": "message.assistant.done", "messageId": f"watch:{request.turn_id}",
-                                        "text": say, "origin": conversation_origin(conversation)})
-            conversation.turns += 1
-            conversation.last_at = self._clock()
-            if ending:
+            conversation.said.append(heard)
+            if is_closer(heard):
+                result.say, result.end, result.expect_reply = goodbye(heard), True, False
+                self._say_line(conversation, result.say, sink, brain, open_session=False)
+                self._done(conversation, request, result, None)
                 self._end(conversation)
-            self._save()
-            actions = actions_from(run) if run is not None else []
-            with self._lock:
-                self._last_turn = {"ok": True, "at": _iso(self._clock()), "agentMs": timings["agent"],
-                                   "tools": len(run.tools) if run is not None else 0,
-                                   "toolsConnected": (run.mcp_status == "connected") if run is not None else None}
-            _LOG.info("assistant turn (%s): %d tool%s, stt %d ms, agent %d ms, tts %d ms, audio %s",
-                      "audio" if request.audio is not None else "text", len(run.tools) if run else 0,
-                      "" if run is not None and len(run.tools) == 1 else "s", timings["stt"], timings["agent"],
-                      timings["tts"], "yes" if audio else "no")
-            return 200, {**base, "heard": heard, "say": say,
-                         "audio": {"mime": "audio/mpeg", "b64": base64.b64encode(audio).decode("ascii")}
-                         if audio else None,
-                         "expectReply": expects_reply(say) and not ending, "endConversation": ending,
-                         "actions": actions, "timings": timings}
+                self._close_session(conversation)
+                return
+            run: Optional[AgentRun] = None
+            if brain == "realtime":
+                try:
+                    run = self._realtime_turn(conversation, request, heard, sink)
+                except Exception as error:  # noqa: BLE001 - RealtimeError: Claude answers when nothing was said yet
+                    if _realtime is None or not isinstance(error, _realtime.RealtimeError):
+                        raise
+                    self._realtime_failed(conversation, error)
+                    if sink.result.timings.get("firstAudio") is not None or result.say or result.actions:
+                        raise AssistantError(502, "assistant_interrupted", "The voice connection dropped.",
+                                             retryable=True, cache=True) from None
+                    if self.settings.brain() == "auto" and self._claude_reason() is None:
+                        _LOG.info("assistant: realtime failed (%s), Claude answers", error.code)
+                        run = self._claude_turn(conversation, request, heard, sink)
+                    else:
+                        raise unavailable(error.reason if error.reason in _UNAVAILABLE else "realtime_failed",
+                                          retryable=True) from None
+            else:
+                run = self._claude_turn(conversation, request, heard, sink)
+            conversation.history.append((heard, result.say))
+            self._done(conversation, request, result, run)
         finally:
+            conversation.cancel = None
             conversation.lock.release()
 
-    def _message(self, conversation: _Conversation, heard: str) -> str:
+    def _realtime_failed(self, conversation: _Conversation, error: Any) -> None:
+        """A realtime turn that failed: the brain pauses when OpenAI said so; a broken session is closed (the next
+        turn opens a new one)."""
+        if error.pause and self.realtime is not None:
+            self.realtime.pause(error.pause, error.reason)
+        session = conversation.realtime
+        if session is not None and (not session.usable() or
+                                    error.code in ("realtime_timeout", "realtime_connection_lost")):
+            self._close_session(conversation, session)
+        _LOG.warning("assistant: realtime turn failed (%s)", error.code)
+
+    def _done(self, conversation: _Conversation, request: _TurnRequest, result: _TurnResult,
+              run: Optional[AgentRun], *, record: bool = True) -> None:
+        if result.say and record:
+            self._record(conversation, {"id": f"watch:{request.turn_id}:assistant",
+                                        "type": "message.assistant.done", "messageId": f"watch:{request.turn_id}",
+                                        "text": result.say, "origin": conversation_origin(conversation)})
+        conversation.turns += 1
+        conversation.last_at = self._clock()
+        self._save()
+        with self._lock:
+            self._last_turn = {"ok": True, "at": _iso(self._clock()), "brain": result.brain,
+                               "agentMs": result.timings.get("agent", 0),
+                               "tools": len(run.tools) if run is not None else 0,
+                               "toolsConnected": (run.mcp_status == "connected")
+                               if run is not None and result.brain == "claude" else None}
+        _LOG.info("assistant turn (%s, %s): %d tool%s, stt %d ms, %s %d ms, tts %d ms, first audio %s, audio %s%s",
+                  "audio" if request.audio is not None else "announce" if request.announce is not None else "text",
+                  result.brain, len(run.tools) if run else 0, "" if run is not None and len(run.tools) == 1 else "s",
+                  result.timings.get("stt", 0), "agent", result.timings.get("agent", 0),
+                  result.timings.get("tts", 0),
+                  f"{result.timings['firstAudio']} ms" if result.timings.get("firstAudio") is not None else "none",
+                  "yes" if result.audio or result.timings.get("firstAudio") is not None else "no",
+                  ", interrupted" if result.interrupted else "")
+
+    def _claude_turn(self, conversation: _Conversation, request: _TurnRequest, heard: str,
+                     sink: TurnSink) -> AgentRun:
+        result = sink.result
+        result.brain = "claude"
+        started = time.monotonic()
+        try:
+            run = self._think(conversation, self._message(conversation, heard))
+        finally:
+            result.timings["agent"] = _ms(started)
+        say = spoken(run.text) or ("Sorry, that needed more steps than I can take at once. Try asking for one thing "
+                                   "at a time." if run.max_turns else
+                                   "Done." if actions_from(run) else "Sorry, I don't have an answer for that.")
+        self._record_tools(conversation, request.turn_id, run)
+        result.say = say
+        result.actions = actions_from(run)
+        result.expect_reply = expects_reply(say)
+        sink.say_delta(say)
+        for action in result.actions:
+            sink.action(action)
+        if sink.cancel.is_set():
+            result.interrupted, result.expect_reply = True, False
+            return run
+        self._voice_out(say, sink)
+        return run
+
+    def _voice_out(self, say: str, sink: TurnSink) -> None:
+        """ElevenLabs: streamed PCM for a stream, an mp3 for the buffered answer."""
+        result = sink.result
+        started = time.monotonic()
+        try:
+            if sink.stream is not None:
+                self.voice.stream_pcm(speakable(say), sink.audio, cancelled=sink.cancel.is_set)
+                if sink.cancel.is_set():
+                    result.interrupted, result.expect_reply = True, False
+            else:
+                audio = self.voice.speak(speakable(say))
+                if audio:
+                    result.audio, result.audio_mime = audio, "audio/mpeg"
+        finally:
+            result.timings["tts"] = _ms(started)
+
+    def _realtime_turn(self, conversation: _Conversation, request: _TurnRequest, heard: str,
+                       sink: TurnSink) -> AgentRun:
+        assert _realtime is not None
+        result = sink.result
+        result.brain = "realtime"
+        started = time.monotonic()
+        try:
+            session = self._session(conversation, wait=True)
+            message = self._realtime_message(conversation, session, heard)
+            outcome = _realtime.converse(session, [_realtime.user_item(message)], None, sink,
+                                         self._runner(conversation), sink.cancel)
+        finally:
+            result.timings["agent"] = _ms(started)
+        result.say = spoken(outcome.text)
+        if not result.say and outcome.max_rounds:
+            result.say = "Sorry, that needed more steps than I can take at once."
+        result.actions = list(outcome.actions)
+        result.interrupted = outcome.interrupted
+        result.expect_reply = expects_reply(result.say) and not outcome.interrupted
+        if sink.stream is None:
+            pcm = sink.pcm()
+            if pcm:
+                result.audio, result.audio_mime = _realtime.pcm_to_wav(pcm), "audio/wav"
+        run = AgentRun()
+        for item in outcome.tools:
+            run.tools[str(item["id"])] = {"id": item["id"], "name": item["name"], "input": item.get("input") or {},
+                                          "result": item.get("result"), "isError": bool(item.get("isError")),
+                                          "images": list(item.get("images") or [])}
+        self._record_tools(conversation, request.turn_id, run)
+        return run
+
+    def _realtime_message(self, conversation: _Conversation, session: Any, heard: str) -> str:
+        line = self._now_line(conversation)
+        lines = []
+        if session.now_minute != line:
+            lines.append(line)
+            session.now_minute = line
+        with self._lock:
+            notes, conversation.notes = conversation.notes[-MAX_NOTES:], []
+        lines += [f"[T3 update] {note}" for note in notes]
+        lines.append(heard)
+        return "\n".join(lines)
+
+    def _say_line(self, conversation: _Conversation, line: str, sink: TurnSink, brain: str, *,
+                  open_session: bool, context: Optional[str] = None) -> None:
+        """One line said word for word (a goodbye, an announcement): by the realtime session when there is one (the
+        same voice as every answer), else by ElevenLabs."""
+        result = sink.result
+        if brain == "realtime" and _realtime is not None and self.realtime is not None:
+            session = conversation.realtime
+            try:
+                if open_session or (session is not None and session.usable()):
+                    session = self._session(conversation, wait=True)
+                    items = [_realtime.user_item(context)] if context else []
+                    started = time.monotonic()
+                    try:
+                        outcome = _realtime.converse(session, items, _realtime.verbatim_response(line), sink, None,
+                                                     sink.cancel)
+                    finally:
+                        result.timings["agent"] = _ms(started)
+                    result.interrupted = outcome.interrupted
+                    if sink.stream is None and sink.pcm():
+                        result.audio, result.audio_mime = _realtime.pcm_to_wav(sink.pcm()), "audio/wav"
+                    if sink.result.timings.get("firstAudio") is not None or outcome.text:
+                        return
+            except Exception as error:  # noqa: BLE001 - RealtimeError: ElevenLabs says it instead
+                if not isinstance(error, _realtime.RealtimeError):
+                    raise
+                self._realtime_failed(conversation, error)
+                if sink.result.timings.get("firstAudio") is not None:
+                    return
+        sink.say_delta(line)
+        if not sink.cancel.is_set():
+            self._voice_out(line, sink)
+
+    def _announce_turn(self, conversation: _Conversation, request: _TurnRequest, sink: TurnSink, brain: str) -> None:
+        event = self.announcer.get(int(request.announce or 0))
+        if event is None or event.id <= conversation.first_cursor:
+            raise AssistantError(404, "announcement_not_found", "That announcement is no longer there.")
+        result = sink.result
+        with self._lock:
+            new = event.id not in conversation.announced
+            conversation.announced.add(event.id)
+            conversation.cursor = max(conversation.cursor, event.id)
+            note = f"{event.say} (task id {event.thread_id})"
+            if brain == "realtime":  # said in the session itself, with its id: no note for the next turn
+                conversation.notes = [item for item in conversation.notes if item != note]
+            elif new:
+                conversation.notes = (conversation.notes + [note])[-MAX_NOTES:]
+        if new:
+            self._record_announcement(conversation, event)
+        result.say = event.say
+        result.expect_reply = False
+        self._say_line(conversation, event.say, sink, brain, open_session=True,
+                       context=f"[T3 update] {event.say} (thread id {event.thread_id})")
+
+    def _record_announcement(self, conversation: _Conversation, event: _Announcement) -> None:
+        self._record(conversation, {"id": f"watch:{conversation.id}:announce:{event.id}",
+                                    "type": "host.t3_update", "text": event.say, "threadId": event.thread_id,
+                                    "title": event.title, "projectTitle": event.project, "status": event.status,
+                                    "kind": {"needs_you": "t3.thread.needs_approval", "done": "t3.thread.finished",
+                                             "error": "t3.thread.error"}[event.kind],
+                                    "origin": conversation_origin(conversation)})
+
+    def _now_line(self, conversation: _Conversation) -> str:
         zone = getattr(self.mobile, "zone", None) or timezone.utc
         zone_name = getattr(self.mobile, "zone_name", None) or "UTC"
         moment = datetime.fromtimestamp(self._clock(), zone)
         device = {"watchos": "watch", "ios": "phone"}.get(conversation.platform, "watch")
         stamp = moment.strftime("%A, %B ") + str(moment.day) + moment.strftime(", %Y, ") + \
             str(int(moment.strftime("%I"))) + moment.strftime(":%M %p")
-        lines = [f"[Now: {stamp} {zone_name} · device: {device}]"]
+        return f"[Now: {stamp} {zone_name} · device: {device}]"
+
+    def _message(self, conversation: _Conversation, heard: str) -> str:
+        lines = [self._now_line(conversation)]
         with self._lock:
             notes, conversation.notes = conversation.notes[-MAX_NOTES:], []
         lines += [f"[Announced to him since his last message: {note}]" for note in notes]
@@ -1683,7 +2558,7 @@ class AssistantService:
                                         "type": "conversation.ended", "origin": conversation_origin(conversation)})
         conversation.recorded_start = False
 
-    # ------------------------------------------------------------------ announcements and the end of a conversation
+    # ------------------------------------------------------------------ announcements, warm-up, cancel, end
     def announcements(self, handler: Any, device: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
         if device.get("internal"):
             raise AssistantError(403, "forbidden", "Not for the assistant itself.")
@@ -1710,22 +2585,58 @@ class AssistantService:
                 conversation.notes.append(f"{event.say} (task id {event.thread_id})")
             conversation.notes = conversation.notes[-MAX_NOTES:]
             cursor = conversation.cursor
+        realtime = self.brain()[0] == "realtime" if events else False
         items = []
         for event in events:
-            audio = self.voice.speak(speakable(event.say))
+            # The realtime brain says it in the session's own voice (the watch asks with {"announce": id}).
+            audio = None if realtime else self.voice.speak(speakable(event.say))
             items.append({"id": event.id, "say": event.say,
                           "audio": {"mime": "audio/mpeg", "b64": base64.b64encode(audio).decode("ascii")}
                           if audio else None,
                           "kind": event.kind, "threadId": event.thread_id, "title": event.title})
-            self._record(conversation, {"id": f"watch:{conversation.id}:announce:{event.id}",
-                                        "type": "host.t3_update", "text": event.say, "threadId": event.thread_id,
-                                        "title": event.title, "projectTitle": event.project, "status": event.status,
-                                        "kind": {"needs_you": "t3.thread.needs_approval", "done": "t3.thread.finished",
-                                                 "error": "t3.thread.error"}[event.kind],
-                                        "origin": conversation_origin(conversation)})
+            self._record_announcement(conversation, event)
         if items:
             _LOG.info("assistant announcements: %d", len(items))
         return 200, {"items": items, "cursor": cursor}
+
+    def session(self, handler: Any, device: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
+        """Warm-up: the conversation (new when no id is given) and, for the realtime brain, its session opening in
+        the background."""
+        if device.get("internal"):
+            raise AssistantError(403, "forbidden", "Not for the assistant itself.")
+        body = _optional_json(handler)
+        conversation_id = body.get("conversationId")
+        if conversation_id is not None and (not isinstance(conversation_id, str) or
+                                            (conversation_id.strip() and
+                                             not _CONVERSATION_ID.match(conversation_id.strip()))):
+            raise AssistantError(400, "invalid_conversation", "conversationId must be an id.")
+        brain, reason = self.brain()
+        if brain is None:
+            raise unavailable(reason or "assistant_unavailable")
+        conversation = self._conversation((conversation_id or "").strip() or None, device)
+        conversation.last_at = self._clock()
+        ready = True
+        if brain == "realtime":
+            session = self._session(conversation, wait=False)
+            ready = session.state == "open"
+        return 200, {"conversationId": conversation.id, "brain": brain, "ready": ready}
+
+    def cancel(self, handler: Any, device: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
+        if device.get("internal"):
+            raise AssistantError(403, "forbidden", "Not for the assistant itself.")
+        conversation_id = _json_body(handler).get("conversationId")
+        if not isinstance(conversation_id, str) or not _CONVERSATION_ID.match(conversation_id):
+            raise AssistantError(400, "invalid_conversation", "conversationId is required.")
+        with self._lock:
+            found = self._conversations.get(conversation_id)
+        if found is None or found.device_id != str(device.get("deviceId") or ""):
+            return 200, {"ok": True, "cancelled": False}
+        switch = found.cancel
+        if switch is None or switch.is_set():
+            return 200, {"ok": True, "cancelled": False}
+        switch.set()
+        _LOG.info("assistant reply cancelled")
+        return 200, {"ok": True, "cancelled": True}
 
     def end(self, handler: Any, device: Dict[str, Any]) -> Tuple[int, Dict[str, Any]]:
         if device.get("internal"):
@@ -1737,7 +2648,10 @@ class AssistantService:
             found = self._conversations.get(conversation_id)
         if found is None or found.device_id != str(device.get("deviceId") or ""):
             return 200, {"ok": True, "ended": False}
+        if found.cancel is not None:
+            found.cancel.set()
         self._end(found)
+        self._close_session(found)
         self._save()
         return 200, {"ok": True, "ended": True}
 
@@ -1822,16 +2736,34 @@ def _json_body(handler: Any) -> Dict[str, Any]:
     return value
 
 
+def _optional_json(handler: Any) -> Dict[str, Any]:
+    length = _length(handler, MAX_BODY_BYTES)
+    raw = handler.rfile.read(length) if length else b""
+    if not raw.strip():
+        return {}
+    try:
+        value = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        raise AssistantError(400, "invalid_json", "The body must be a JSON object.") from None
+    if not isinstance(value, dict):
+        raise AssistantError(400, "invalid_json", "The body must be a JSON object.")
+    return value
+
+
 def make_service(*, installed: bool, claude: Optional[str] = None, workdir: Optional[str] = None,
                  key_file: Optional[str] = None, tts_url: Optional[str] = None, model: Optional[str] = None,
                  voice: Optional[str] = None, settings_file: Optional[str] = DEFAULT_SETTINGS_FILE,
                  agent_timeout: float = AGENT_TIMEOUT_SECONDS, tts_timeout: float = TTS_TIMEOUT_SECONDS,
                  clock: Callable[[], float] = time.time,
-                 monotonic: Callable[[], float] = time.monotonic) -> AssistantService:
-    """The installed copy: claude found by itself, ``DEFAULT_DIR``, the voice key in ``DEFAULT_KEY_FILE``. Any other
-    copy (a checkout, a test, a temp HOME): only an explicit ``claude``, a temp folder unless ``workdir`` is given,
-    and no voice unless ``key_file`` is given (so it never spends ElevenLabs credits with the real key)."""
-    settings = Settings(settings_file, model=model, voice=voice)
+                 monotonic: Callable[[], float] = time.monotonic, brain: Optional[str] = None,
+                 chatgpt_auth_file: Optional[str] = None, chatgpt_issuer: Optional[str] = None,
+                 realtime_python: Optional[str] = None, realtime_api: Optional[str] = None) -> AssistantService:
+    """The installed copy: claude found by itself, ``DEFAULT_DIR``, the voice key in ``DEFAULT_KEY_FILE``, the
+    ChatGPT login in ``~/.config/samrabbit/chatgpt-auth.json`` and the realtime venv install.sh made. Any other copy
+    (a checkout, a test, a temp HOME): only an explicit ``claude``, a temp folder unless ``workdir`` is given, no voice
+    unless ``key_file`` is given (so it never spends ElevenLabs credits with the real key), and the realtime brain only
+    with an explicit ``chatgpt_auth_file`` and ``realtime_python`` (never the real login)."""
+    settings = Settings(settings_file, model=model, voice=voice, brain=brain)
     agent = ClaudeAgent(claude, search=installed, settings=settings)
     folder: Optional[str] = os.path.expanduser(workdir) if workdir else \
         (os.path.expanduser(DEFAULT_DIR) if installed else None)  # None: a temp folder, made when first needed
@@ -1843,5 +2775,14 @@ def make_service(*, installed: bool, claude: Optional[str] = None, workdir: Opti
                                  timeout=tts_timeout, monotonic=monotonic)
     else:
         speech = ElevenLabsVoice(None, voice=settings.voice, off="voice_dev_copy", monotonic=monotonic)
+    auth: Any = None
+    realtime: Any = None
+    if _chatgpt is not None:
+        auth = _chatgpt.make_auth(installed=installed, auth_file=chatgpt_auth_file, issuer=chatgpt_issuer)
+    if _realtime is not None and auth is not None:
+        python = realtime_python or (os.path.join(os.path.expanduser(_realtime.DEFAULT_VENV), "bin", "python")
+                                     if installed else None)
+        realtime = _realtime.RealtimeBrain(auth, python=python, api_root=realtime_api or _realtime.API_ROOT,
+                                           model=settings.realtime_model, voice=settings.realtime_voice)
     return AssistantService(agent, speech, workdir=folder, installed=installed, clock=clock, monotonic=monotonic,
-                            agent_timeout=agent_timeout)
+                            agent_timeout=agent_timeout, realtime=realtime, chatgpt=auth)

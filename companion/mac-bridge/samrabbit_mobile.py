@@ -29,9 +29,13 @@ Routes (CONTRACTS-WAVE4 "Mobile API"):
   ``audio/aac``; at most 2 MiB and 90 s) turned into words on the Mac (``samrabbit_transcribe``, on-device macOS
   speech recognition) -> ``{text, durationMs, engine, locale}``. The audio and the words are never logged or kept.
 * The voice assistant (``samrabbit_assistant``): ``POST /v1/mobile/assistant/turn`` (one utterance: audio or JSON
-  text -> what to say, with the Jarvis voice's mp3), ``GET /v1/mobile/assistant/announcements``,
-  ``POST /v1/mobile/assistant/end``; the summary's ``assistant: {available, reason?, model}``. Its tools come back
-  here with the bridge's internal assistant token (loopback only, and only the routes in ``INTERNAL_ROUTES``).
+  text -> what to say; streamed with ``Accept: application/x-samrabbit-stream``), ``POST
+  /v1/mobile/assistant/session`` (warm-up), ``POST /v1/mobile/assistant/cancel`` (stop the reply),
+  ``GET /v1/mobile/assistant/announcements``, ``POST /v1/mobile/assistant/end``; the summary's ``assistant:
+  {available, brain, reason?, model, chatgpt: {connected}}``. Its tools come back here with the bridge's internal
+  assistant token (loopback only, and only the routes in ``INTERNAL_ROUTES``). The Mac's ChatGPT login for its
+  realtime voice (desktop app only: loopback peer + desktop token): ``POST /v1/assistant/chatgpt/start``,
+  ``GET /v1/assistant/chatgpt/status``, ``POST /v1/assistant/chatgpt/disconnect``.
 
 Errors are ``{"error": {"code", "message", "retryable"}}``. Times in the routes this module answers itself are ISO
 8601 (``...Z`` or with the calendar's offset); the reused sync routes keep their epoch milliseconds. Tokens, codes,
@@ -90,6 +94,7 @@ import samrabbit_t3 as t3  # noqa: E402
 _LOG = logging.getLogger("samrabbit-bridge.mobile")
 
 PREFIX = "/v1/mobile/"
+ASSISTANT_PREFIX = "/v1/assistant/"
 DEFAULT_DEVICES_FILE = "~/.config/samrabbit/mobile-devices.json"
 DEFAULT_TIMEZONE = "America/New_York"
 CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no I, O, 0 or 1
@@ -670,6 +675,13 @@ ROUTES: Tuple[_Route, ...] = (
     _Route(r"/v1/mobile/assistant/announcements", "/v1/mobile/assistant/announcements",
            {"GET": ("assistant_announcements", DEVICE)}),
     _Route(r"/v1/mobile/assistant/end", "/v1/mobile/assistant/end", {"POST": ("assistant_end", DEVICE)}),
+    _Route(r"/v1/mobile/assistant/session", "/v1/mobile/assistant/session",
+           {"POST": ("assistant_session", DEVICE)}),
+    _Route(r"/v1/mobile/assistant/cancel", "/v1/mobile/assistant/cancel", {"POST": ("assistant_cancel", DEVICE)}),
+    _Route(r"/v1/assistant/chatgpt/start", "/v1/assistant/chatgpt/start", {"POST": ("chatgpt_start", DESKTOP)}),
+    _Route(r"/v1/assistant/chatgpt/status", "/v1/assistant/chatgpt/status", {"GET": ("chatgpt_status", DESKTOP)}),
+    _Route(r"/v1/assistant/chatgpt/disconnect", "/v1/assistant/chatgpt/disconnect",
+           {"POST": ("chatgpt_disconnect", DESKTOP)}),
 )
 # What the assistant's own tools (the internal token, from loopback) may call: reads, and the actions its tools take.
 INTERNAL_ROUTES = frozenset({"summary", "sync", "t3_threads", "t3_thread", "t3_action", "t3_create", "t3_projects",
@@ -772,7 +784,7 @@ class MobileService:
 
     @staticmethod
     def handles(route: str) -> bool:
-        return route.startswith(PREFIX)
+        return route.startswith(PREFIX) or route.startswith(ASSISTANT_PREFIX)
 
     @staticmethod
     def route_label(route: str) -> str:
@@ -828,6 +840,8 @@ class MobileService:
             result = getattr(self, "_r_" + name)(handler, params, device, route)
             if isinstance(result, _Written):
                 return result.status, None
+            if getattr(result, "streamed", False):  # a streamed assistant turn wrote its own response
+                return int(getattr(result, "status", 200)), None
             status, payload = result
         except Exception as error:  # noqa: BLE001 - every module's error answers with its own envelope
             status, payload = _error_answer(error)
@@ -1144,7 +1158,7 @@ class MobileService:
                 **({"reason": reason} if not available and isinstance(reason, str) and reason else {})}
 
     def _assistant_part(self) -> Dict[str, Any]:
-        """``{available, reason?, model}``: can the watch talk to the assistant?"""
+        """``{available, brain, reason?, model, chatgpt: {connected}}``: can the watch talk to the assistant?"""
         if self.assistant is None:
             return {"available": False, "reason": "assistant_missing"}
         try:
@@ -1596,6 +1610,32 @@ class MobileService:
                          _route: str) -> Tuple[int, Any]:
         return self._assistant().end(handler, device)
 
+    def _r_assistant_session(self, handler: Any, _params: Dict[str, str], device: Dict[str, Any],
+                             _route: str) -> Tuple[int, Any]:
+        return self._assistant().session(handler, device)
+
+    def _r_assistant_cancel(self, handler: Any, _params: Dict[str, str], device: Dict[str, Any],
+                            _route: str) -> Tuple[int, Any]:
+        return self._assistant().cancel(handler, device)
+
+    def _chatgpt(self, handler: Any, action: str) -> Tuple[int, Any]:
+        if action != "status":
+            _optional_body(handler)
+        status, value = self._assistant().chatgpt_route(action)
+        if action != "status":
+            _LOG.info("mobile chatgpt %s", action)
+        return status, value
+
+    def _r_chatgpt_start(self, handler: Any, _params: Dict[str, str], _device: Any, _route: str) -> Tuple[int, Any]:
+        return self._chatgpt(handler, "start")
+
+    def _r_chatgpt_status(self, handler: Any, _params: Dict[str, str], _device: Any, _route: str) -> Tuple[int, Any]:
+        return self._chatgpt(handler, "status")
+
+    def _r_chatgpt_disconnect(self, handler: Any, _params: Dict[str, str], _device: Any,
+                              _route: str) -> Tuple[int, Any]:
+        return self._chatgpt(handler, "disconnect")
+
     def _r_transcribe(self, handler: Any, _params: Dict[str, str], _device: Any, _route: str) -> Tuple[int, Any]:
         """A recording from the watch or the phone (the raw body) -> ``{text, durationMs, engine, locale}``. Checked
         before anything runs: the Content-Type, ``?lang=``, the size (2 MiB), the container's own bytes and its
@@ -1750,8 +1790,9 @@ def print_pairing_code(port: int, desktop_token_file: str) -> int:
         return 2
     request = urllib.request.Request(f"http://127.0.0.1:{port}/v1/mobile/pairing/start", data=b"{}", method="POST",
                                      headers={"X-SamRabbit-Desktop": token, "Content-Type": "application/json"})
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # loopback: never a system proxy
     try:
-        with urllib.request.urlopen(request, timeout=10) as response:
+        with opener.open(request, timeout=10) as response:
             value = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as error:
         print(f"The bridge refused (HTTP {error.code}); is it up to date? Run companion/mac-bridge/install.sh.",

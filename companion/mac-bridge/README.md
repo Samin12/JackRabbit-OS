@@ -47,17 +47,24 @@ You can run it again at any time. It:
    the same for `~/.config/samrabbit/desktop-token` (the desktop app's own token), and creates the conversation store
    folder `~/Library/Application Support/SamRabbit/sync/` (0700). It copies `ELEVENLABS_API_KEY` from
    `~/.hermes/.env`, when it is there, to `~/.config/samrabbit/elevenlabs-key` (0600, never printed; the watch
-   assistant's voice) and prints `voice key: copied …`, `up to date`, `keeping …` or `none …`; `--assistant-model`
-   and `--assistant-voice` are recorded in `~/.config/samrabbit/assistant.json`;
+   assistant's voice) and prints `voice key: copied …`, `up to date`, `keeping …` or `none …`; `--assistant-model`,
+   `--assistant-voice` and `--assistant-brain auto|realtime|claude` are recorded in
+   `~/.config/samrabbit/assistant.json`;
 2. copies the bridge (`samrabbit_bridge.py` and its modules: `samrabbit_mac.py`, `samrabbit_sync.py`, `samrabbit_genui.py`,
    `samrabbit_calendar.py`, `samrabbit_app.py`, `samrabbit_mobile.py`, `samrabbit_t3.py`, `samrabbit_transcribe.py`,
-   `samrabbit_installed.py`, `samrabbit_assistant.py`, `samrabbit_assistant_mcp.py`) to `~/Library/Application Support/SamRabbit/bridge/`, writes the install marker
+   `samrabbit_installed.py`, `samrabbit_assistant.py`, `samrabbit_assistant_mcp.py`, `samrabbit_chatgpt.py`,
+   `samrabbit_realtime.py`, `samrabbit_realtime_profile.py`, `realtime/samrabbit_realtime_peer.py`) to
+   `~/Library/Application Support/SamRabbit/bridge/`, writes the install marker
    `.samrabbit-installed` there (the folder's path; see "Which copy is the installed one" below) and prints
    `bridge copy: installed` (or `dev (<reason>)` for an install into another home), and builds the speech-to-text
    helper `samrabbit-transcribe` there (only when its source or the compiler changed), downloads the en-US speech
    model if it is missing, transcribes one clip that `say -o` writes to a file, and prints `transcription: on
    (SpeechTranscriber, en-US, a test clip took 0.2 s)` or `transcription: off (<reason>)`. A failed build never fails
-   the install;
+   the install. It also makes the realtime voice's venv (`~/Library/Application Support/SamRabbit/realtime-venv`,
+   Python 3.12 via `uv`, `aiortc` and `av` from `realtime/requirements.txt`: pinned with hashes, wheels only; made in a
+   temp folder and swapped in only when the helper's `--check` passes; remade only when the requirements change) and
+   prints `realtime helper: ready (Python 3.12.x, aiortc 1.15.0, av 17.1.0)` or `realtime helper: off (<reason>)`
+   (no `uv`: `brew install uv`). It never fails the install either;
 3. writes `~/Library/LaunchAgents/com.samrabbit.bridge.plist` (RunAtLoad, KeepAlive, a PATH that includes
    `/opt/homebrew/bin`, `--sync-dir`, `--desktop-token-file` (no `--cli`: the install marker makes the installed copy
    use the real Heptabase CLI; see "Which Heptabase CLI" below), the Composio CLI's absolute path as
@@ -68,8 +75,14 @@ You can run it again at any time. It:
 4. pairs the bridge with T3 Code once (`samrabbit_t3.py ensure-paired`: only when there is no good token yet; see
    "Mobile API" below), printing `T3 paired (expires …)` or a warning (the bridge then pairs by itself later);
 5. reloads the agent (`launchctl bootout`/`bootstrap`/`kickstart`), waits for `/health`, prints one status line per
-   feature (ending with `mobile: on (T3 paired, N devices, transcription on)` and `assistant: on (Claude Haiku 5.5,
-   Jarvis voice)` or why it is off), the bridge URL, and how to pair an iPhone.
+   feature (ending with `mobile: on (T3 paired, N devices, transcription on)`, `assistant: on (gpt-realtime-2.1 on
+   ChatGPT, voice marin; fallback Claude Haiku 5.5, Jarvis voice)` (or `assistant: on (Claude Haiku 5.5, Jarvis
+   voice)` until ChatGPT is connected, or why it is off), `realtime: on|off (<reason>)` and `chatgpt: connected (pro
+   plan)` or `not connected`), the bridge URL, and how to pair an iPhone and connect ChatGPT.
+
+Connect ChatGPT once for the watch's realtime voice: SamRabbit (desktop app) > Connect ChatGPT…, or
+`companion/mac-bridge/connect-chatgpt.sh` (it prints a code and https://auth.openai.com/codex/device; sign in there,
+enter the code, and it waits until the Mac is connected; `connect-chatgpt.sh status` / `disconnect`).
 
 Then point the R1 at the bridge from the R1's management page (Connections > Heptabase journal >
 "Connect through your Mac"), and paste the URL and token.
@@ -79,8 +92,8 @@ Mac: `python3 companion/mac-bridge/heptabase-connect.py --r1 https://<R1 address
 It pairs a management session, listens on the loopback redirect the R1 returns, opens Heptabase's Allow screen,
 and forwards the one-time code to the R1, which does the token exchange itself. It uses only the standard library.
 
-`uninstall.sh` stops and removes the agent and keeps the tokens. `uninstall.sh --purge` also deletes both tokens,
-the bridge's T3 token and the list of paired phones.
+`uninstall.sh` stops and removes the agent (and the realtime venv) and keeps the tokens. `uninstall.sh --purge` also
+deletes both tokens, the bridge's T3 token, the list of paired phones and the Mac's ChatGPT login.
 Neither ever deletes the synced conversations in `~/Library/Application Support/SamRabbit/sync/`.
 
 To update an installed bridge (for example to add conversation sync), run `install.sh` again: it keeps both tokens
@@ -447,6 +460,61 @@ answer with ElevenLabs (the Jarvis voice). Every route takes the mobile token, f
   ElevenLabs only with an explicit `--elevenlabs-key-file` (never the real key, never ElevenLabs credits), keeps its
   working files in a temp folder (`--assistant-dir` to choose one), and its tools only reach its own dev-safe answers.
 
+### Realtime voice (the watch's primary brain, like the R1)
+
+The watch assistant answers like the R1 (`samrabbit_realtime.py`): **gpt-realtime-2.1** on Samin's ChatGPT
+subscription, the voice **marin**, the R1's own instructions and tool names. Setting `assistant.brain` (in
+`assistant.json`, or `--assistant-brain`): `auto` (default: realtime when ChatGPT is connected and the helper is
+ready, else Claude), `realtime` or `claude`. A realtime turn that fails before it said anything (OpenAI refused, the
+network, the helper) is answered by Claude instead, and a refusal pauses realtime for a while (`401/403`: 10 minutes,
+`429`: 1 minute). The summary says `assistant: {available, brain, reason?, model, chatgpt: {connected}}`.
+
+- **The login** (`samrabbit_chatgpt.py`): the R1's Codex device flow (`app_EMoamEEZ73f0CkXaXp7hrann`,
+  `https://auth.openai.com`: `deviceauth/usercode`, `deviceauth/token`, `oauth/token`), but the Mac's own login, so
+  it never rotates the R1's refresh token, and it never reads or writes `~/.codex`. Tokens live in
+  `~/.config/samrabbit/chatgpt-auth.json` (0600) and are refreshed five minutes before they expire (and once when
+  OpenAI refuses one); a refused refresh means connect again. Routes for the desktop app (loopback + desktop token):
+  `POST /v1/assistant/chatgpt/start` → `{userCode, verificationUrl, expiresAt}` (the bridge then polls by itself),
+  `GET /v1/assistant/chatgpt/status` → `{connected, plan?, email?, login: {state, …}}`,
+  `POST /v1/assistant/chatgpt/disconnect`. A dev copy uses a login only with an explicit `--chatgpt-auth-file`.
+- **The WebRTC peer**: the watch cannot do WebRTC and a subscription token cannot open a realtime WebSocket, so the
+  Mac is the peer. `realtime/samrabbit_realtime_peer.py` runs in the realtime venv, one process per watch
+  conversation: an `RTCPeerConnection` with no ICE servers (like the R1), a silent outbound audio track and the
+  `oai-events` data channel; it forwards the reply's audio (Opus) as PCM16 16 kHz mono. The bridge does the
+  signaling itself, exactly like the R1's `platform.py` (`POST https://api.openai.com/v1/realtime/calls`, multipart
+  `sdp` + `session`, headers `Authorization: Bearer <access token>`, `Accept`, `OpenAI-Safety-Identifier`,
+  `Content-Type`), so the token never reaches the helper (never on argv, never logged). Helper protocol: JSON lines
+  on stdin/stdout (see the helper's docstring); it never logs anything.
+- **The session**: the R1's `_realtime_session` shape with manual turns: `{type: realtime, model: gpt-realtime-2.1,
+  output_modalities: [audio], audio: {input: {format: audio/pcm 24 kHz, turn_detection: null}, output: {format,
+  voice: marin}}, tools, tool_choice: auto}`. Instructions: `PRIMARY_VOICE_INSTRUCTION` (verbatim from
+  `runtime/sam_runtime/realtime/modes.py`), `T3_VOICE_INSTRUCTION` with the live T3 status block, the Mac and visuals
+  addenda (all verbatim; `tests/test_realtime_profile.py` fails when the runtime's text changes), then a short watch
+  addendum. Tools: the R1's `t3_*` and `mac_*` specs verbatim, `calendar_list_upcoming`, `calendar_create_event`,
+  `journal_add` (only Samin's own words: the Mac checks them against what he said), `journal_read`, `ui_generate`
+  (it appears on the iPhone and in the desktop app), `show_card` / `update_card` / `dismiss_card` (a small card on the
+  watch), plus `get_status` and `recent_conversations`. They run on the Mac one at a time (like the R1's tool queue),
+  through the same mobile API calls as the Claude path's tools (loopback, never through a system proxy).
+- **A conversation's session** opens with `POST /v1/mobile/assistant/session` (or the first turn) and closes on
+  `/end`, a goodbye, three idle minutes, or after 55 minutes (the next turn opens a new one with a short summary).
+  Per turn: `conversation.item.create` (the words, with `[Now: …]` when the minute changed) and `response.create`;
+  the transcript deltas and the audio stream to the watch as they come; a function call runs on the Mac, then
+  `function_call_output` and `response.create` after `response.done`. `POST /v1/mobile/assistant/cancel` sends
+  `response.cancel` and `output_audio_buffer.clear` (the stream ends with `done {interrupted: true}`). Announcements
+  are said by the session itself (`{"announce": id}` turns: a `[T3 update]` item and `response.create` with
+  instructions to say the line verbatim).
+- `/health` adds `assistant.brain`, `assistant.brainSetting` and `assistant.realtime: {available, reason?, model,
+  voice, helper: {ready, python?, aiortc?, av?, reason?}, sessions, chatgpt: {connected, plan?}, lastError?}`.
+
+**Streaming turns** (the contract with the watch). `POST /v1/mobile/assistant/turn` with `Accept:
+application/x-samrabbit-stream` answers `200`, `Content-Type: application/x-samrabbit-stream`, `Transfer-Encoding:
+chunked` (HTTP/1.1), as frames of 1 type byte, a 4-byte big-endian length and the payload: `J` = a UTF-8 JSON event
+(`heard`, `say.delta`, `say.done`, `action`, `card`, `done {conversationId, turnId, expectReply, endConversation,
+interrupted?, brain, timings: {stt, firstAudio, total}}`, `error {code, message}` (then `done`)), `A` = PCM16LE mono
+16 kHz audio, 100 ms per frame. The Claude brain streams the same way (ElevenLabs `pcm_16000`). Without that header the
+answer is the buffered JSON above (a realtime turn's audio as `audio/wav`), so old clients keep working. A retried
+turn id replays the same answer without running again.
+
 **T3 Code.** The bridge has its own T3 session ("SamRabbit bridge", scopes `orchestration:read orchestration:operate`),
 separate from the R1's. It mints a pairing credential with the CLI inside the T3 Code app
 (`ELECTRON_RUN_AS_NODE=1 "/Applications/T3 Code (Alpha).app/Contents/MacOS/T3 Code (Alpha)" …/app.asar/apps/server/dist/bin.mjs
@@ -573,10 +641,25 @@ fake ElevenLabs server and the fake speech-to-text helper: the isolation flags a
 resumed, lost), the MCP protocol (`server/discover`, `initialize`, `tools/list`, `tools/call`, the image block),
 empty and noise turns, goodbyes, timeouts (the process group is killed), voice failures, idempotent turn ids, one turn
 per conversation, announcements (once each), the "Watch" conversation in the sync store, and that a dev copy reaches
-no real Claude, ElevenLabs, T3, journal or calendar. `tests/test_sync.py` covers the conversation store, dedupe, drafts, blobs, the auth matrix (R1 token vs desktop token, loopback vs a real
+no real Claude, ElevenLabs, T3, journal or calendar. `tests/test_realtime.py` drives the realtime brain with a fake
+helper (`tests/fake_realtime_peer.py`: the helper protocol plus OpenAI's data-channel events from a script), a fake
+signaling server and a fake ChatGPT login (`tests/fake_openai.py`): the session's exact shape and headers, the
+stream's frames, the `[Now: …]` line, tools and cards, the journal's verbatim check, cancel, warm-up, idle and 55-minute
+sessions, announcements, the fallback to Claude, the token refresh, brain settings, the device login and its routes,
+and that the token, words and audio never reach the log. `tests/test_realtime_profile.py` checks the vendored R1
+text and tools against `runtime/sam_runtime`. The helper itself (real WebRTC with aiortc) is tested in the realtime
+venv: `<venv>/bin/python -m unittest discover -s companion/mac-bridge/realtime -p 'test_*.py'`
+(`realtime/test_realtime_peer.py`: the helper against a local aiortc peer standing in for OpenAI, and the real bridge
+end to end with it). `tests/test_sync.py` covers the conversation store, dedupe, drafts, blobs, the auth matrix (R1 token vs desktop token, loopback vs a real
 LAN peer through this Mac's own address), SSE and screenshots.
 
 ## Troubleshooting
+
+- The watch answers with Claude, not gpt-realtime: `/health` `assistant.realtime.reason` says why:
+  `chatgpt_not_connected` (SamRabbit > Connect ChatGPT…, or `connect-chatgpt.sh`), `chatgpt_reconnect_required` (the
+  login was revoked: connect again), `realtime_venv_missing` / `realtime_venv_broken` / `realtime_python_too_old`
+  (run `install.sh` again; it needs `uv`), `chatgpt_rejected` / `realtime_busy` (OpenAI refused for now; it tries
+  again by itself), `lastError` names OpenAI's last answer (`http_<status>_<code>`).
 
 - `app: reachable false, detail heptabase_app_unavailable`: open Heptabase, or run `heptabase start`, and check that
   CLI is enabled in Settings > AI Features. Entries wait on the R1 and go out once the app is back.

@@ -26,7 +26,8 @@ signed-in Composio CLI: ``POST /v1/calendar/events`` (+ ``/update``, ``/delete``
 The iPhone app, its widgets and the Apple Watch (``samrabbit_mobile.py``, T3 through ``samrabbit_t3.py``) use
 ``/v1/mobile/*`` with their own per-device tokens (see that module; speech to text for them is
 ``samrabbit_transcribe.py``, the watch's voice assistant ``samrabbit_assistant.py`` with its tools in
-``samrabbit_assistant_mcp.py``); ``/health`` reports ``mobile`` and ``assistant``.
+``samrabbit_assistant_mcp.py``, its realtime voice ``samrabbit_realtime.py`` on the Mac's own ChatGPT login
+``samrabbit_chatgpt.py``); ``/health`` reports ``mobile`` and ``assistant``.
 
 Every route needs ``Authorization: Bearer <token>`` (the token lives in
 ``~/.config/samrabbit/bridge-token``, mode 0600). Journal text and the token are
@@ -902,7 +903,9 @@ def make_server(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, *, token_fil
                 transcribe_helper: Optional[str] = None, assistant_dir: Optional[str] = None,
                 assistant_model: Optional[str] = None, assistant_voice: Optional[str] = None,
                 elevenlabs_key_file: Optional[str] = None, elevenlabs_url: Optional[str] = None,
-                assistant_settings_file: Optional[str] = None) -> BridgeServer:
+                assistant_settings_file: Optional[str] = None, assistant_brain: Optional[str] = None,
+                chatgpt_auth_file: Optional[str] = None, chatgpt_issuer: Optional[str] = None,
+                realtime_python: Optional[str] = None, realtime_api: Optional[str] = None) -> BridgeServer:
     """Conversation sync runs only with a ``sync_dir`` (the command line passes the default one). ``cli`` is a
     path, ``auto`` or ``dry-run``; only the installed copy uses the real CLI without a path (``cli_for``). T3 for the
     mobile API: the installed copy pairs with T3 Code itself; any other copy (a checkout, a test, a copy in a temp
@@ -910,8 +913,8 @@ def make_server(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, *, token_fil
     explicit ``t3_cli`` path (never the T3 Code app's own CLI); it is ``calendar_dev_copy`` unless given ``composio``.
     ``transcribe_helper``: the speech-to-text helper for ``/v1/mobile/transcribe`` (default: ``samrabbit-transcribe``
     next to this script, which install.sh builds). The watch's assistant (``samrabbit_assistant.make_service``): a dev
-    copy runs it only with an explicit ``claude``, and speaks with ElevenLabs only with an explicit
-    ``elevenlabs_key_file``."""
+    copy runs it only with an explicit ``claude``, speaks with ElevenLabs only with an explicit ``elevenlabs_key_file``,
+    and uses the realtime voice only with an explicit ``chatgpt_auth_file`` and ``realtime_python``."""
     installed_copy = is_installed_copy()  # decided once: the journal, T3 and the calendar agree
     if calendar_writer is None and gcal is not None and composio is None and not installed_copy:
         # A dev copy (a checkout, a test, a temp HOME) never changes the real Google Calendar unless given --composio.
@@ -928,7 +931,10 @@ def make_server(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, *, token_fil
             helper = assistant.make_service(installed=installed_copy, claude=claude, workdir=assistant_dir,
                                             key_file=elevenlabs_key_file, tts_url=elevenlabs_url,
                                             model=assistant_model, voice=assistant_voice,
-                                            settings_file=assistant_settings_file or assistant.DEFAULT_SETTINGS_FILE)
+                                            settings_file=assistant_settings_file or assistant.DEFAULT_SETTINGS_FILE,
+                                            brain=assistant_brain, chatgpt_auth_file=chatgpt_auth_file,
+                                            chatgpt_issuer=chatgpt_issuer, realtime_python=realtime_python,
+                                            realtime_api=realtime_api)
         mobile_service = mobile.MobileService(devices_file=mobile_devices_file or mobile.DEFAULT_DEVICES_FILE,
                                               t3_hub=t3_hub, desktop_token_file=desktop_token_file,
                                               timezone_name=mobile_timezone,
@@ -1005,6 +1011,22 @@ def main(argv: Optional[List[str]] = None) -> int:
                              "a copy run from a checkout speaks with ElevenLabs only when given this)")
     parser.add_argument("--elevenlabs-url", default=os.environ.get("SAMRABBIT_ELEVENLABS_URL") or None,
                         help=argparse.SUPPRESS)  # a stand-in ElevenLabs (tests)
+    parser.add_argument("--assistant-brain", default=os.environ.get("SAMRABBIT_ASSISTANT_BRAIN") or None,
+                        choices=("auto", "realtime", "claude"),
+                        help="the watch assistant's brain: auto (realtime when ChatGPT is connected, else Claude; the "
+                             "default, or assistant.brain in assistant.json), realtime or claude")
+    parser.add_argument("--chatgpt-auth-file", default=os.environ.get("SAMRABBIT_CHATGPT_AUTH_FILE") or None,
+                        help="the Mac's ChatGPT login for the realtime voice (default ~/.config/samrabbit/"
+                             "chatgpt-auth.json for the installed copy; a copy run from a checkout uses one only when "
+                             "given this)")
+    parser.add_argument("--realtime-python", default=os.environ.get("SAMRABBIT_REALTIME_PYTHON") or None,
+                        help="the realtime venv's Python (default ~/Library/Application Support/SamRabbit/"
+                             "realtime-venv/bin/python for the installed copy; a copy run from a checkout only when "
+                             "given this)")
+    parser.add_argument("--chatgpt-issuer", default=os.environ.get("SAMRABBIT_CHATGPT_ISSUER") or None,
+                        help=argparse.SUPPRESS)  # a stand-in ChatGPT login (tests)
+    parser.add_argument("--realtime-api-url", default=os.environ.get("SAMRABBIT_REALTIME_API_URL") or None,
+                        help=argparse.SUPPRESS)  # a stand-in OpenAI signaling server (tests)
     options = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stderr)
     try:
@@ -1019,7 +1041,10 @@ def main(argv: Optional[List[str]] = None) -> int:
                              t3_cli=options.t3_cli, t3_token_file=options.t3_token_file,
                              transcribe_helper=options.transcribe_helper, assistant_dir=options.assistant_dir,
                              assistant_model=options.assistant_model, assistant_voice=options.assistant_voice,
-                             elevenlabs_key_file=options.elevenlabs_key_file, elevenlabs_url=options.elevenlabs_url)
+                             elevenlabs_key_file=options.elevenlabs_key_file, elevenlabs_url=options.elevenlabs_url,
+                             assistant_brain=options.assistant_brain, chatgpt_auth_file=options.chatgpt_auth_file,
+                             chatgpt_issuer=options.chatgpt_issuer, realtime_python=options.realtime_python,
+                             realtime_api=options.realtime_api_url)
     except (OSError, ValueError) as error:
         _LOG.error("cannot start: %s", error)
         return 2
@@ -1048,8 +1073,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         if helper is not None:
             state = helper.health()
             speech = state.get("voice") or {}
+            live = state.get("realtime") or {}
             mobile_line += f", assistant {'on' if state.get('available') else 'off (' + str(state.get('reason')) + ')'}" \
-                f" voice {'on' if speech.get('available') else 'off (' + str(speech.get('reason')) + ')'}"
+                f" brain {state.get('brain')}" \
+                f", realtime {'on' if live.get('available') else 'off (' + str(live.get('reason')) + ')'}" \
+                f", voice {'on' if speech.get('available') else 'off (' + str(speech.get('reason')) + ')'}"
     _LOG.info("%s %s listening on %s:%d (%s copy, cli %s, cua-driver %s, sync %s, composio %s, mobile %s)", SERVICE,
               VERSION, options.host, server.server_address[1], "installed" if server.installed_copy else "dev",
               cli_path or "missing",

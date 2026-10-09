@@ -195,7 +195,8 @@ class TurnTest(AssistantBase):
         status, value = self.say(UTTERANCE)
         self.assertEqual(200, status, value)
         self.assertEqual({"conversationId", "turnId", "heard", "say", "audio", "expectReply", "endConversation",
-                          "actions", "timings"}, set(value))
+                          "actions", "timings", "brain"}, set(value))
+        self.assertEqual("claude", value["brain"], "ChatGPT is not connected: the Claude brain answers")
         self.assertEqual((UTTERANCE, REPLY, False, False, []),
                          (value["heard"], value["say"], value["expectReply"], value["endConversation"],
                           value["actions"]))
@@ -320,7 +321,7 @@ class TurnTest(AssistantBase):
         self.assertEqual({"heard": "", "say": "", "audio": None, "expectReply": True, "endConversation": False,
                           "actions": []}, {key: value[key] for key in ("heard", "say", "audio", "expectReply",
                                                                        "endConversation", "actions")})
-        for noise in ("", "uh", "Hmm.", "um, okay"):
+        for noise in ("", "uh", "Hmm.", "um, er"):
             with self.subTest(noise=noise):
                 status, value = self.say(noise)
                 self.assertEqual((200, "", True), (status, value["say"], value["expectReply"]))
@@ -760,12 +761,17 @@ class McpServerTest(AssistantBase):
 class HealthTest(AssistantBase):
     def test_health_and_summary(self) -> None:
         health = self.call("GET", "/health", token=TOKEN)[1]["assistant"]
-        self.assertEqual({"available": True, "model": "claude-haiku-5-5", "modelName": "Claude Haiku 5.5",
-                          "claude": True, "copy": "dev",
+        realtime = health.pop("realtime")
+        self.assertEqual({"available": True, "brain": "claude", "brainSetting": "auto", "model": "claude-haiku-5-5",
+                          "modelName": "Claude Haiku 5.5", "claude": True, "copy": "dev",
                           "voice": {"available": True, "voice": "sI8FqE1zOcqXDhRwCwAx", "voiceName": "Jarvis",
                                     "model": "eleven_flash_v2_5"}, "conversations": 0}, health)
+        self.assertEqual((False, "chatgpt_dev_copy", "gpt-realtime-2.1", "marin", {"connected": False}),
+                         (realtime["available"], realtime["reason"], realtime["model"], realtime["voice"],
+                          realtime["chatgpt"]), "a dev copy without --chatgpt-auth-file never uses a ChatGPT login")
         summary = self.call("GET", "/v1/mobile/summary", token=self.watch)[1]["assistant"]
-        self.assertEqual({"available": True, "model": "claude-haiku-5-5"}, summary)
+        self.assertEqual({"available": True, "brain": "claude", "model": "claude-haiku-5-5",
+                          "chatgpt": {"connected": False}}, summary)
         self.key_file.unlink()
         self.server._health = None  # noqa: SLF001
         voice = self.call("GET", "/health", token=TOKEN)[1]["assistant"]["voice"]
@@ -776,7 +782,8 @@ class HealthTest(AssistantBase):
         status, value = self.say("hi")
         self.assertEqual((503, "assistant_unavailable", "claude_missing"),
                          (status, value["error"]["code"], value["error"]["reason"]))
-        self.assertEqual({"available": False, "reason": "claude_missing", "model": "claude-haiku-5-5"},
+        self.assertEqual({"available": False, "brain": "claude", "reason": "claude_missing", "model": "claude-haiku-5-5",
+                          "chatgpt": {"connected": False}},
                          self.call("GET", "/v1/mobile/summary", token=self.watch)[1]["assistant"])
 
 
@@ -809,9 +816,10 @@ class SpokenTextTest(unittest.TestCase):
                      "cancel the dentist", "bye the way, what's next"):
             with self.subTest(not_closer=text):
                 self.assertFalse(assistant.is_closer(text))
-        for text in ("", "  ", "uh", "Um, hmm.", "..."):
+        for text in ("", "  ", "uh", "Um, hmm.", "...", "er", "Hmm, um, er."):
             self.assertTrue(assistant.is_noise(text), text)
-        for text in ("what", "hi", "no"):
+        # Short confirmations answer "Should I approve it?": never dropped as noise.
+        for text in ("what", "hi", "no", "okay", "OK.", "yes", "Yeah.", "yep", "sure", "mhm", "uh huh", "um, okay"):
             self.assertFalse(assistant.is_noise(text), text)
         self.assertTrue(assistant.expects_reply("Should I approve it?"))
         self.assertFalse(assistant.expects_reply("Done."))
